@@ -1,0 +1,106 @@
+.box {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  background: var(--card, transparent);
+}
+
+.title {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.sub {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.form {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
+}
+
+.primary {
+  padding: 0.55rem 1rem;
+  border: 0;
+  border-radius: 8px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.secondary {
+  padding: 0.4rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
+  cursor: pointer;
+  background: transparent;
+}
+
+.error {
+  border: 1px solid var(--danger, #b3261e);
+  border-radius: 8px;
+  padding: 0.6rem 0.75rem;
+  font-size: 0.85rem;
+}
+
+.errTitle {
+  margin: 0;
+  font-weight: 600;
+}
+
+.errDetail {
+  margin: 0.25rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.spinner {
+  width: 0.9rem;
+  height: 0.9rem;
+  border: 2px solid var(--border);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: yt-spin 0.9s linear infinite;
+}
+
+@keyframes yt-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

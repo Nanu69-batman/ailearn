@@ -1,0 +1,12 @@
+﻿{
+    "frontend":  "tsc clean, contract-check PASS, next build ok",
+    "health":  "200 ok",
+    "golden":  "retrieval 1.0, refusal 1.0, leakage 0.0, citation 1.0, gap 0.0",
+    "backend":  "83 passed, ruff clean",
+    "chat_empty_store":  "200 refused=true citations=0",
+    "date":  "2026-10-03",
+    "target":  "local uvicorn :8123, ALLOW_UNSIGNED_LAUNCH=true, USE_IN_MEMORY=true",
+    "session":  "unsigned dev launch -\u003e 200, token issued",
+    "chat_bad_token":  "401",
+    "history":  "2 messages persisted"
+}
