@@ -17,7 +17,10 @@ export function devSessionFixture(courseId: string): LmsSessionRequest {
     course_id: courseId,
     resource_id: "demo-resource",
     lesson_id: "demo-lesson",
-    // resource IDs, not types — must match real chunk resource IDs backend-side.
+    // resource IDs, not types. SessionBootstrap replaces these placeholders
+    // with the course's real resource IDs before launching (see
+    // SessionBootstrap bootstrap); they are only a fallback for when the
+    // resources endpoint is unreachable.
     resource_scope: ["res_video", "res_pdf", "res_ppt"],
     current_time_ms: 0,
     // signature intentionally OMITTED in dev: the backend only bypasses auth

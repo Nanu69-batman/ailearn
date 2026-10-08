@@ -10,7 +10,6 @@ import {
   YOUTUBE_URL_HINT,
   extractYouTubeId,
 } from "../lib/youtube";
-import styles from "./YouTubeIngestForm.module.css";
 
 export interface IngestedVideo {
   resourceId: string;
@@ -139,18 +138,18 @@ export default function YouTubeIngestForm({
   const busy = phase === "submitting" || phase === "polling";
 
   return (
-    <div className={styles.box}>
-      <h2 className={styles.title}>Load a YouTube video</h2>
-      <p className={styles.sub}>
+    <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+      <h2 className="text-base font-semibold text-gray-900">Load a YouTube video</h2>
+      <p className="mt-1 text-sm text-gray-500">
         Paste a link — we fetch the transcript and make it askable.
       </p>
-      <form className={styles.form} onSubmit={(e) => void handleSubmit(e)}>
-        <label className={styles.srOnly} htmlFor="yt-url">
+      <form className="mt-4 flex flex-col gap-3 sm:flex-row" onSubmit={(e) => void handleSubmit(e)}>
+        <label className="sr-only" htmlFor="yt-url">
           YouTube video URL
         </label>
         <input
           id="yt-url"
-          className={styles.input}
+          className="flex-1 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-800 placeholder-gray-400 outline-none transition focus:border-violet-400 focus:bg-white focus:ring-2 focus:ring-violet-200"
           type="url"
           inputMode="url"
           value={url}
@@ -166,7 +165,7 @@ export default function YouTubeIngestForm({
         />
         <button
           type="submit"
-          className={styles.primary}
+          className="rounded-xl bg-violet-600 px-5 py-2 text-sm font-medium text-white transition hover:bg-violet-700 disabled:opacity-40"
           disabled={busy || disabled || url.trim().length === 0}
         >
           {phase === "submitting"
@@ -178,20 +177,20 @@ export default function YouTubeIngestForm({
       </form>
 
       {clientError && (
-        <div id="yt-url-error" className={styles.error} role="alert">
+        <div id="yt-url-error" className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-600" role="alert">
           Invalid YouTube URL. {clientError}
         </div>
       )}
 
       {busy && (
-        <div className={styles.status} role="status">
-          <span className={styles.spinner} aria-hidden="true" />
+        <div className="mt-3 flex items-center gap-3 rounded-xl border border-gray-200 bg-gray-50 p-3 text-sm text-gray-500" role="status">
+          <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-violet-400 border-t-transparent" aria-hidden="true" />
           {phase === "submitting"
             ? "Starting video ingest…"
             : `Processing video${jobStatus ? ` (${jobStatus})` : ""} · ${formatElapsed(elapsedMs)} elapsed`}
           <button
             type="button"
-            className={styles.secondary}
+            className="ml-auto rounded-lg border border-gray-200 bg-white px-3 py-1 text-xs text-gray-500 hover:bg-gray-50"
             onClick={() => cancel()}
           >
             Cancel
@@ -200,13 +199,13 @@ export default function YouTubeIngestForm({
       )}
 
       {phase === "error" && jobError && (
-        <div className={styles.error} role="alert">
-          <p className={styles.errTitle}>Could not load this video.</p>
-          <p className={styles.errDetail}>{jobError}</p>
-          <div className={styles.actions}>
+        <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-4" role="alert">
+          <p className="font-semibold text-red-600">Could not load this video.</p>
+          <p className="mt-1 text-sm text-gray-600">{jobError}</p>
+          <div className="mt-3 flex gap-3">
             <button
               type="button"
-              className={styles.primary}
+              className="rounded-xl bg-violet-600 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-violet-700"
               onClick={() => {
                 setPhase("idle");
                 setJobError(null);
@@ -217,7 +216,7 @@ export default function YouTubeIngestForm({
             </button>
             <button
               type="button"
-              className={styles.secondary}
+              className="rounded-xl border border-gray-200 bg-white px-4 py-1.5 text-sm text-gray-600 transition hover:bg-gray-50"
               onClick={() => cancel()}
             >
               Dismiss

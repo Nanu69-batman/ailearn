@@ -1,11 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 :root {
-  --bg: #0f1115;
-  --panel: #171b22;
-  --border: #2a3140;
-  --text: #e8ecf1;
-  --muted: #9aa4b2;
-  --accent: #4f8cff;
-  --danger: #e5484d;
+  --bg: #09090b;
+  --panel: #18181b;
+  --border: #27272a;
+  --text: #e4e4e7;
+  --muted: #a1a1aa;
+  --accent: #8b5cf6;
+  --danger: #ef4444;
 }
 
 * {
@@ -14,7 +18,7 @@
 
 body {
   margin: 0;
-  background: var(--bg);
-  color: var(--text);
+  background: #09090b;
+  color: #e4e4e7;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }

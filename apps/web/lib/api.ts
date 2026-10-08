@@ -320,6 +320,14 @@ export interface CourseResource {
   youtube_id?: string | null;
   title?: string | null;
   status?: string | null;
+  /** Streamed by the API for this exact resource; null when no file on disk. */
+  asset_name?: string | null;
+}
+
+/** Per-resource media URL. Never share one demo URL across resources. */
+export function resourceMediaUrl(resourceId: string): string {
+  const base = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/$/, "");
+  return `${base}/resources/${encodeURIComponent(resourceId)}/media`;
 }
 
 export interface CourseResourcesResponse {

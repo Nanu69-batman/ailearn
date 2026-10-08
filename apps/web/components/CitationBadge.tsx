@@ -1,7 +1,6 @@
 "use client";
 
 import type { Citation } from "../lib/api";
-import styles from "./CitationBadge.module.css";
 
 interface CitationBadgeProps {
   citation: Citation;
@@ -36,7 +35,7 @@ export default function CitationBadge({ citation, onSeek }: CitationBadgeProps) 
     return (
       <button
         type="button"
-        className={`${styles.badge} ${styles.video}`}
+        className="rounded-full border border-cyan-200 bg-cyan-50 px-2.5 py-0.5 text-xs font-medium text-cyan-700 transition hover:bg-cyan-100"
         onClick={() => onSeek(startMs)}
         title={`Seek to ${formatRange(startMs, endMs)}`}
         aria-label={`Video citation, seek to ${formatRange(startMs, endMs)}`}
@@ -47,27 +46,27 @@ export default function CitationBadge({ citation, onSeek }: CitationBadgeProps) 
   }
   if (isVideoSource) {
     return (
-      <span className={`${styles.badge} ${styles.doc}`} title={citation.chunk_id}>
+      <span className="rounded-full border border-gray-200 bg-gray-50 px-2.5 py-0.5 text-xs text-gray-500" title={citation.chunk_id}>
         Video ref
       </span>
     );
   }
   if (citation.source_type === "pdf") {
     return (
-      <span className={`${styles.badge} ${styles.doc}`} title={`PDF page ${citation.page_no ?? "?"}`}>
+      <span className="rounded-full border border-gray-200 bg-gray-50 px-2.5 py-0.5 text-xs text-gray-500" title={`PDF page ${citation.page_no ?? "?"}`}>
         PDF p.{citation.page_no ?? "?"}
       </span>
     );
   }
   if (citation.source_type === "pptx") {
     return (
-      <span className={`${styles.badge} ${styles.doc}`} title={`Slide ${citation.slide_no ?? "?"}`}>
+      <span className="rounded-full border border-gray-200 bg-gray-50 px-2.5 py-0.5 text-xs text-gray-500" title={`Slide ${citation.slide_no ?? "?"}`}>
         Slide {citation.slide_no ?? "?"}
       </span>
     );
   }
   return (
-    <span className={styles.badge} title={citation.chunk_id}>
+    <span className="rounded-full border border-gray-200 bg-gray-50 px-2.5 py-0.5 text-xs text-gray-500" title={citation.chunk_id}>
       {citation.source_type}
     </span>
   );

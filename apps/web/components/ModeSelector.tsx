@@ -1,7 +1,6 @@
 "use client";
 
 import type { ChatMode } from "../lib/api";
-import styles from "./ModeSelector.module.css";
 
 const MODES: Array<{ value: ChatMode; label: string; hint: string }> = [
   { value: "qa", label: "Ask", hint: "Q&A at current timestamp" },
@@ -20,11 +19,15 @@ interface ModeSelectorProps {
 
 export default function ModeSelector({ value, onChange, disabled }: ModeSelectorProps) {
   return (
-    <div className={styles.group} role="radiogroup" aria-label="Answer mode">
+    <div className="mb-3 flex flex-wrap gap-1.5" role="radiogroup" aria-label="Answer mode">
       {MODES.map((m) => (
         <label
           key={m.value}
-          className={`${styles.chip} ${value === m.value ? styles.active : ""}`}
+          className={
+            value === m.value
+              ? "cursor-pointer rounded-full border border-violet-300 bg-violet-50 px-3 py-1 text-xs font-medium text-violet-700"
+              : "cursor-pointer rounded-full border border-gray-200 bg-white px-3 py-1 text-xs text-gray-500 transition hover:bg-gray-100"
+          }
           title={m.hint}
         >
           <input
@@ -34,7 +37,7 @@ export default function ModeSelector({ value, onChange, disabled }: ModeSelector
             checked={value === m.value}
             disabled={disabled}
             onChange={() => onChange(m.value)}
-            className={styles.radio}
+            className="sr-only"
           />
           {m.label}
         </label>

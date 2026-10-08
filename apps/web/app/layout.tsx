@@ -13,7 +13,9 @@ interface RootLayoutProps {
 export default function RootLayout({ children }: RootLayoutProps) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body className="min-h-screen bg-zinc-950 text-zinc-100 antialiased">
+        {children}
+      </body>
     </html>
   );
 }

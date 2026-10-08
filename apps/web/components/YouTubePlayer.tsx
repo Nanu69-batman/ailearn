@@ -7,7 +7,6 @@ import {
   useRef,
 } from "react";
 import { youTubeNoCookieEmbedUrl } from "../lib/youtube";
-import styles from "./YouTubePlayer.module.css";
 
 /**
  * Privacy-enhanced YouTube player (youtube-nocookie embed + IFrame Player
@@ -189,16 +188,16 @@ const YouTubePlayer = forwardRef<YouTubePlayerHandle, YouTubePlayerProps>(
     }, [youtubeId]);
 
     return (
-      <div className={styles.wrapper}>
+      <div className="overflow-hidden rounded-2xl border border-white/10 bg-black">
         <div
-          className={styles.frame}
+          className="aspect-video w-full [&_iframe]:h-full [&_iframe]:w-full"
           role="region"
           aria-label={title ?? "YouTube course video player"}
         >
           {/* IFrame API replaces this node with the nocookie player. The
               plain iframe below is the no-JS/API fallback with the same
               video — never both visible once the API mounts. */}
-          <div ref={mountRef} className={styles.mount} />
+          <div ref={mountRef} className="h-full w-full" />
           <noscript>
             <iframe
               src={youTubeNoCookieEmbedUrl(youtubeId)}
@@ -208,7 +207,7 @@ const YouTubePlayer = forwardRef<YouTubePlayerHandle, YouTubePlayerProps>(
             />
           </noscript>
         </div>
-        <p className={styles.hint}>
+        <p className="bg-zinc-950/80 px-4 py-2 text-xs text-zinc-500">
           Pause the video, then ask a question — the chat uses your pause
           position as context.
         </p>

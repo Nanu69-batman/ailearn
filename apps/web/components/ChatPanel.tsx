@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChatMessage, ChatMode } from "../lib/api";
 import {
+  ApiError,
   formatApiError,
   getMessages,
   isSessionExpiredError,
@@ -11,7 +12,6 @@ import {
 import { mockChatAnswer, mockHistory } from "../lib/fixtures";
 import MessageList from "./MessageList";
 import ModeSelector from "./ModeSelector";
-import styles from "./ChatPanel.module.css";
 
 interface ChatPanelProps {
   sessionId: string;
@@ -31,6 +31,22 @@ function newId(): string {
 }
 
 const SESSION_EXPIRED_COPY = "Session expired — please rejoin to continue.";
+
+/**
+ * 404 `session not found` means the backend session is gone (server restarted
+ * without persistence, or state was reset). This is NOT a connectivity
+ * problem: the server answered. Answering from mocks here would be
+ * indistinguishable from a real answer and would destroy trust in every
+ * citation, so it gets the explicit rejoin state instead.
+ */
+function isSessionGoneError(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 404;
+}
+
+/** Session is unusable (401 or 404) -> explicit rejoin state, never a mock. */
+function isFatalSessionError(err: unknown): boolean {
+  return isSessionExpiredError(err) || isSessionGoneError(err);
+}
 
 export default function ChatPanel({
   sessionId,
@@ -75,8 +91,9 @@ export default function ChatPanel({
         }
       } catch (err) {
         if (!cancelled) {
-          if (isSessionExpiredError(err)) {
-            // 401 = session binding rejected — distinct rejoin state.
+          if (isFatalSessionError(err)) {
+            // 401 = session binding rejected, 404 = session gone server-side.
+            // Either way the session is unusable -> distinct rejoin state.
             setSessionExpired(true);
             setHistoryError(SESSION_EXPIRED_COPY);
           } else {
@@ -132,11 +149,17 @@ export default function ChatPanel({
       };
       setMessages((prev) => [...prev, assistantMsg]);
     } catch (err) {
-      if (isSessionExpiredError(err)) {
-        // 401 = session binding rejected — distinct rejoin state, no mock
-        // fallback so the user cannot mistake it for a live answer.
+      if (isFatalSessionError(err)) {
+        // 401 = session binding rejected, 404 = session gone server-side.
+        // Distinct rejoin state, and NEVER a mock answer: a canned reply is
+        // indistinguishable from a real grounded one.
         setSessionExpired(true);
-        setSendError(SESSION_EXPIRED_COPY);
+        setBackendUnreachable(false);
+        setSendError(
+          isSessionGoneError(err)
+            ? `${SESSION_EXPIRED_COPY} (the server no longer has this session — it was lost on restart, so no answer can be grounded)`
+            : SESSION_EXPIRED_COPY,
+        );
         return;
       }
       // Graceful fallback: still answer from fixtures so the demo works
@@ -158,20 +181,20 @@ export default function ChatPanel({
   }
 
   return (
-    <section className={styles.panel} aria-label="Chat with video">
-      <div className={styles.header}>
-        <h2 className={styles.title}>Ask this video</h2>
-        {offline && <span className={styles.offline}>offline mock</span>}
+    <section className="flex flex-col rounded-xl border border-gray-200 bg-white p-4 shadow-sm" aria-label="Chat with video">
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="text-base font-semibold text-gray-900">Ask this video</h2>
+        {offline && <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-xs text-amber-600">offline mock</span>}
       </div>
 
       <ModeSelector value={mode} onChange={setMode} disabled={sending} />
 
       {sessionExpired && (
-        <div className={styles.error} role="alert">
+        <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-600" role="alert">
           {SESSION_EXPIRED_COPY}
           {onRejoin && (
-            <div style={{ marginTop: "0.5rem" }}>
-              <button type="button" onClick={onRejoin}>
+            <div className="mt-2">
+              <button type="button" onClick={onRejoin} className="rounded-lg bg-red-100 px-3 py-1 text-xs text-red-700 hover:bg-red-200">
                 Rejoin session
               </button>
             </div>
@@ -180,18 +203,18 @@ export default function ChatPanel({
       )}
 
       {backendUnreachable && !sessionExpired && (
-        <div className={styles.error} role="alert">
+        <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700" role="alert">
           Backend unreachable — showing mock data.
         </div>
       )}
 
       {historyState === "loading" && (
-        <div className={styles.status} role="status">
+        <div className="mt-3 text-sm text-gray-400" role="status">
           Loading conversation…
         </div>
       )}
       {historyState === "error" && (
-        <div className={styles.error} role="alert">
+        <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-600" role="alert">
           Could not load history: {historyError}
         </div>
       )}
@@ -200,23 +223,23 @@ export default function ChatPanel({
       )}
 
       {sendError && !sessionExpired && (
-        <div className={styles.error} role="alert">
+        <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700" role="alert">
           Live API error (answered from mock): {sendError}
         </div>
       )}
       {sendError && sessionExpired && (
-        <div className={styles.error} role="alert">
+        <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-600" role="alert">
           {sendError}
         </div>
       )}
 
-      <form className={styles.form} onSubmit={(e) => void handleSend(e)}>
-        <label className={styles.srOnly} htmlFor="chat-input">
+      <form className="mt-3 flex gap-2" onSubmit={(e) => void handleSend(e)}>
+        <label className="sr-only" htmlFor="chat-input">
           Ask a question about the video
         </label>
         <input
           id="chat-input"
-          className={styles.input}
+          className="flex-1 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-800 placeholder-gray-400 outline-none transition focus:border-violet-400 focus:bg-white focus:ring-2 focus:ring-violet-200"
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -224,7 +247,7 @@ export default function ChatPanel({
           disabled={sending}
           autoComplete="off"
         />
-        <button type="submit" className={styles.send} disabled={sending || input.trim().length === 0}>
+        <button type="submit" className="rounded-xl bg-violet-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-violet-700 disabled:opacity-40" disabled={sending || input.trim().length === 0}>
           {sending ? "…" : "Send"}
         </button>
       </form>
