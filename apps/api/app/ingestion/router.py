@@ -17,7 +17,11 @@ from pydantic import BaseModel
 
 from app.ingestion.embedder import get_embedder
 from app.ingestion.jobs import _chunk_segments
-from app.ingestion.transcribe import transcribe_with_gemini
+from app.ingestion.transcribe import (
+    media_mime_type,
+    probe_media_duration_s,
+    transcribe_with_gemini,
+)
 from app.ingestion.youtube import (
     DurationExceededError,
     NormalizedMedia,
@@ -82,14 +86,39 @@ def save_ingest_state() -> None:
         log.warning("ingest state save failed: %s", exc)
 
 
+def _match_existing_asset(rtype: str, base: Path) -> str | None:
+    """Find an on-disk asset of this type to re-attach after a snapshot rebuild.
+
+    Deterministic (sorted) so repeated restarts resolve the same file, and
+    type-scoped so a PDF never gets attached to a video resource.
+    """
+    suffixes = {
+        "video": _VIDEO_SUFFIXES,
+        "pdf": {".pdf"},
+        "pptx": {".pptx", ".ppt"},
+        "note": {".txt", ".md"},
+    }.get(rtype, set())
+    if not suffixes or not base.is_dir():
+        return None
+    matches = sorted(
+        p.name for p in base.iterdir() if p.is_file() and p.suffix.lower() in suffixes
+    )
+    return matches[0] if matches else None
+
+
 def ensure_resources_for_chunks(chunks) -> int:
     """Recreate resource registry entries from indexed chunks.
 
     Fallback for snapshots written before ingest-state persistence existed:
     derives one ``done`` resource per resource_id so the course UI and chat
     scopes keep working after a restart.
+
+    Recovery: when the matching file still exists under test-data/ (matched by
+    type), re-attach it so playback works again. Otherwise ``asset_name`` stays
+    None and the media endpoint 404s instead of serving the wrong video.
     """
     made = 0
+    base = _base_dir()
     for chunk in chunks:
         rid = getattr(chunk, "resource_id", None)
         if not rid or rid in _resources:
@@ -98,6 +127,7 @@ def ensure_resources_for_chunks(chunks) -> int:
         rtype = stype if stype in ("video", "pdf", "pptx", "note", "code") else "note"
         course_id = getattr(chunk, "course_id", "demo") or "demo"
         _ensure_course(course_id)
+        asset_name = _match_existing_asset(rtype, base)
         _resources[rid] = {
             "id": rid,
             "course_id": course_id,
@@ -108,8 +138,10 @@ def ensure_resources_for_chunks(chunks) -> int:
                 else "file"
             ),
             "youtube_id": getattr(chunk, "video_id", None),
-            "title": rid,
+            # Prefer the real filename; fall back to the id when unknown.
+            "title": asset_name or rid,
             "status": "done",
+            "asset_name": asset_name,
         }
         _resources_by_course.setdefault(course_id, []).append(rid)
         made += 1
@@ -197,7 +229,19 @@ def _finish_job_files(
     _jobs[job_id]["status"] = "processing"
     try:
         if rtype == "video":
-            segments = transcribe_with_gemini(str(asset), title)
+            # The duration must be measured BEFORE transcription. Without it
+            # every duration guard in transcribe.py is skipped, and a drifted
+            # transcript (Gemini claiming ~1.5x the real length) gets indexed,
+            # which breaks the strict-T no-spoiler gate. This call site is the
+            # exact regression that let those guards sleep.
+            duration_s = probe_media_duration_s(asset)
+            if duration_s is None:
+                log.warning(
+                    "could not measure duration of %s; transcript timestamps "
+                    "for this resource will not be checked against the media",
+                    asset.name,
+                )
+            segments = transcribe_with_gemini(str(asset), title, duration_s=duration_s)
         else:
             segments = extract(asset, rtype)
         row = {"id": resource_id, "course_id": course_id, "type": rtype}
@@ -206,7 +250,11 @@ def _finish_job_files(
         vectors = embedder.embed_batch([c.text for c in chunks]) if chunks else []
         for chunk, vec in zip(chunks, vectors):
             chunk.embedding = vec
-        get_shared_store().index(chunks)
+        store = get_shared_store()
+        # Re-ingestion reuses the same resource_id: drop stale chunks so the
+        # store never accumulates duplicates for one resource.
+        store.remove_resource(resource_id)
+        store.index(chunks)
         save_snapshot()
         save_ingest_state()
         _resources[resource_id]["status"] = "done"
@@ -239,7 +287,9 @@ def _finish_job_youtube(
         vectors = embedder.embed_batch([c.text for c in chunks]) if chunks else []
         for chunk, vec in zip(chunks, vectors):
             chunk.embedding = vec
-        get_shared_store().index(chunks)
+        store = get_shared_store()
+        store.remove_resource(resource_id)
+        store.index(chunks)
         save_snapshot()
         save_ingest_state()
         _resources[resource_id].update(
@@ -260,17 +310,42 @@ def ingest_file(course_id: str, body: IngestBody, background: BackgroundTasks) -
     asset = _resolve_asset(body.path)
     _ensure_course(course_id)
     rtype = _resource_type_for(asset)
-    resource_id, job_id = _new_ids()
-    _resources[resource_id] = {
-        "id": resource_id,
-        "course_id": course_id,
-        "type": rtype,
-        "provider": "file",
-        "youtube_id": None,
-        "title": asset.name,
-        "status": "pending",
-    }
-    _resources_by_course.setdefault(course_id, []).append(resource_id)
+    # Idempotency: re-ingesting the same asset under a course reuses the
+    # existing resource instead of creating a duplicate row.
+    #
+    # Status is deliberately NOT part of the match. A job that fails leaves the
+    # row at ``failed`` while its previous chunks stay indexed; if ``failed``
+    # were excluded, the *next* re-ingest of the same file would mint a fresh
+    # resource_id and leave the old resource permanently stranded in scope,
+    # polluting retrieval with stale text. Match on identity only.
+    resource_id = None
+    for rid in _resources_by_course.get(course_id, []):
+        existing = _resources.get(rid)
+        if (
+            existing is not None
+            and existing.get("asset_name") == asset.name
+            and existing.get("type") == rtype
+        ):
+            resource_id = rid
+            break
+    if resource_id is None:
+        resource_id, _ = _new_ids()
+        _resources[resource_id] = {
+            "id": resource_id,
+            "course_id": course_id,
+            "type": rtype,
+            "provider": "file",
+            "youtube_id": None,
+            "title": asset.name,
+            "status": "pending",
+            # Relative name so the media endpoint can stream this exact asset.
+            "asset_name": asset.name,
+        }
+        _resources_by_course.setdefault(course_id, []).append(resource_id)
+    else:
+        _resources[resource_id]["status"] = "pending"
+        _resources[resource_id].pop("error", None)
+    _, job_id = _new_ids()
     _jobs[job_id] = {
         "job_id": job_id,
         "course_id": course_id,
@@ -352,3 +427,30 @@ def list_resources(course_id: str) -> dict:
     _ensure_course(course_id)
     items = [_resources[rid] for rid in _resources_by_course.get(course_id, [])]
     return {"course_id": course_id, "resources": [dict(r) for r in items]}
+
+
+@router.get("/resources/{resource_id}/media")
+def get_resource_media(resource_id: str):
+    """Stream an ingested file asset so the player shows THIS resource.
+
+    Each file resource gets its own URL; the frontend must never fall back to
+    a single shared demo video. Path is re-validated against the test-data dir.
+    """
+    from fastapi.responses import FileResponse
+
+    resource = _resources.get(resource_id)
+    if resource is None:
+        raise HTTPException(status_code=404, detail="resource not found")
+    asset_name = resource.get("asset_name")
+    if not asset_name:
+        raise HTTPException(status_code=404, detail="no file asset for resource")
+    try:
+        asset = _resolve_asset(asset_name)
+    except HTTPException as exc:
+        raise HTTPException(status_code=404, detail="asset missing on disk") from exc
+    media_type = media_mime_type(asset)
+    return FileResponse(
+        path=asset,
+        media_type=media_type,
+        filename=resource.get("title") or asset.name,
+    )

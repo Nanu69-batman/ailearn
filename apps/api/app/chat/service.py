@@ -11,6 +11,7 @@ from app.chat.prompts import (
     build_grounded_prompt,
     extract_cited_ids,
     rewrite_query,
+    strip_citation_markers,
 )
 from app.chat.schemas import ChatResponse, Citation
 from app.chat.sessions import InMemoryMessageStore, InMemorySessionStore
@@ -98,6 +99,7 @@ class ChatService:
         current_time_ms: int,
         message: str,
         mode: str = "qa",
+        focus_resource_id: str | None = None,
     ) -> ChatResponse:
         from app.chat.launch import clamp_current_time_ms
 
@@ -112,7 +114,12 @@ class ChatService:
 
         retrieval = self._retrieval()
         passages = await retrieval.retrieve(
-            rewritten, session.course_id, allowed, t_ms, k=8
+            rewritten,
+            session.course_id,
+            allowed,
+            t_ms,
+            k=8,
+            focus_resource_id=focus_resource_id,
         )
         passages = apply_strict_timestamp(passages, t_ms, mode)
 
@@ -184,11 +191,17 @@ class ChatService:
             return ChatResponse(answer=REFUSAL_TEXT, citations=[], refused=True)
 
         by_id = {p.chunk_id: p for p in passages}
-        citations = [_passage_to_citation(by_id[c]) for c in cited_ids if c in by_id]
-        self._persist(
-            session_id, message, result.text, [c.model_dump() for c in citations]
-        )
-        return ChatResponse(answer=result.text, citations=citations, refused=False)
+        # Validation above already ran against every distinct cited id.
+        # Every validated citation is surfaced individually, in cited order:
+        # overlapping spans from sliding transcript windows are all shown so the
+        # learner can see every supporting chunk.
+        cited_passages = [by_id[c] for c in cited_ids if c in by_id]
+        citations = [_passage_to_citation(p) for p in cited_passages]
+        # Validation above ran against the raw text, so it is now safe to drop
+        # the transport markers: the UI renders badges from `citations[]`.
+        answer = strip_citation_markers(result.text)
+        self._persist(session_id, message, answer, [c.model_dump() for c in citations])
+        return ChatResponse(answer=answer, citations=citations, refused=False)
 
     def _persist(
         self, session_id: str, user_text: str, answer: str, citations: list[dict]

@@ -26,6 +26,13 @@ async def lifespan(_: FastAPI):
         settings.use_in_memory,
     )
     if settings.use_in_memory:
+        # Sessions/messages are process-local; mirror them to data/ so an API
+        # restart does not 404 every open browser tab (see chat/sessions.py).
+        from app.chat.sessions import load_session_state, set_persistence_enabled
+
+        set_persistence_enabled(True)
+        load_session_state()
+
         from app.retrieval.registry import load_snapshot
 
         loaded = load_snapshot()

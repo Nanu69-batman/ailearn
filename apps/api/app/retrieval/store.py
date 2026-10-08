@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
@@ -51,6 +52,20 @@ TIMESTAMP_GUARD_CLAUSE = (
     " OR (end_ms IS NOT NULL AND end_ms <= :current_time_ms))"
 )
 
+# Indexed-chunk dimensions already reported as mismatched, so the warning in
+# ``InMemoryVectorStore.search`` fires once per dimension rather than per chunk.
+_warned_dims: set[int] = set()
+
+
+class EmbeddingDimensionMismatch(ValueError):
+    """A query vector and an indexed chunk vector have different widths.
+
+    Cosine similarity is only defined on equal-length vectors. ``zip`` truncates
+    to the shorter one, which produces a number that *looks* like a relevance
+    score but has no meaning -- and therefore silently corrupts ranking. This is
+    raised instead of truncating; see :func:`_cosine`.
+    """
+
 
 @dataclass
 class ScoredChunk:
@@ -76,6 +91,25 @@ class VectorStore(Protocol):
 
 
 def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
+    """Cosine similarity, raising on any dimension mismatch.
+
+    Chosen behaviour: RAISE (:class:`EmbeddingDimensionMismatch`) rather than
+    skip-and-log. ``skip`` would still require the caller to decide what a
+    missing candidate means for ranking, and a store where every chunk is
+    skipped degenerates into "no results" -- which is indistinguishable, at the
+    call site, from an empty scope. Raising makes the misconfiguration
+    impossible to miss at the single point where the vectors meet, and
+    ``InMemoryVectorStore.search`` converts it into an explicit skip + warning
+    so one bad chunk cannot take down a whole query.
+
+    The previous implementation zipped the vectors, so a 1536-dim query scored
+    against the first 1536 dims of a 3072-dim Gemini chunk: a plausible float,
+    silently meaningless, and therefore arbitrary ranking.
+    """
+    if len(a) != len(b):
+        raise EmbeddingDimensionMismatch(
+            f"cosine similarity requires equal dimensions, got {len(a)} and {len(b)}"
+        )
     dot = sum(x * y for x, y in zip(a, b))
     na = math.sqrt(sum(x * x for x in a))
     nb = math.sqrt(sum(y * y for y in b))
@@ -112,13 +146,59 @@ class InMemoryVectorStore:
     """Cosine-similarity store for tests/demo; enforces the same predicate."""
 
     def __init__(self, chunks: Sequence[Chunk] | None = None) -> None:
+        # Guards every read and write of ``_chunks``.
+        #
+        # Why: ingestion mutates this store from a background thread while
+        # request threads concurrently index / search / serialise it. Without
+        # a lock the read-modify-write in ``index`` is not atomic across the
+        # ``_chunks = [...]`` rebind and the following ``.extend``, so two
+        # concurrent ingests silently drop each other's chunks, and a snapshot
+        # taken mid-mutation can serialise a half-built list. A plain
+        # ``threading.Lock`` (not an RLock) is enough: no public method calls
+        # another one while holding it.
+        self._lock = threading.Lock()
         self._chunks: list[Chunk] = list(chunks) if chunks else []
 
+    def snapshot_chunks(self) -> list[Chunk]:
+        """Return a shallow copy of the indexed chunks under the lock.
+
+        Callers that need to serialise or iterate the chunk list (snapshot
+        persistence, long scans) take one of these instead of reaching into
+        ``_chunks``, so they cannot observe a list being rebuilt underneath
+        them and cannot hold the lock for the duration of their own work.
+        """
+        with self._lock:
+            return list(self._chunks)
+
     def index(self, chunks: Sequence[Chunk]) -> None:
-        """Add chunks to the store (replacement keyed by chunk id)."""
+        """Add chunks to the store (replacement keyed by chunk id).
+
+        Dedupes by chunk id *and* drops any stale chunk re-keyed under the
+        same resource (re-ingestion of one resource must not accumulate
+        orphaned chunks).
+        """
         known = {c.id for c in chunks}
-        self._chunks = [c for c in self._chunks if c.id not in known]
-        self._chunks.extend(chunks)
+        resource_ids = {c.resource_id for c in chunks}
+        # One critical section: read-modify-write must be atomic, otherwise a
+        # concurrent index() rebinds ``_chunks`` between the rebuild and the
+        # extend below and the extended chunks are written to an orphaned list.
+        with self._lock:
+            rebuilt = [
+                c
+                for c in self._chunks
+                if c.id not in known and c.resource_id not in resource_ids
+            ]
+            rebuilt.extend(chunks)
+            self._chunks = rebuilt
+
+    def remove_resource(self, resource_id: str) -> int:
+        """Drop every indexed chunk for a resource; returns removed count."""
+        with self._lock:
+            before = len(self._chunks)
+            self._chunks = [
+                c for c in self._chunks if c.resource_id != resource_id
+            ]
+            return before - len(self._chunks)
 
     async def search(
         self,
@@ -132,14 +212,37 @@ class InMemoryVectorStore:
             return []
         allowed = frozenset(allowed_resource_ids)
         scored: list[ScoredChunk] = []
-        for chunk in self._chunks:
+        # Scan a lock-protected copy rather than ``self._chunks`` directly:
+        # the snapshot is consistent, and the (potentially long) scoring loop
+        # runs without holding the lock, so a concurrent ingest is not
+        # blocked by an in-flight query.
+        for chunk in self.snapshot_chunks():
             if chunk.embedding is None:
                 continue
             if not _in_scope(chunk, course_id, allowed, current_time_ms):
                 continue
-            scored.append(
-                ScoredChunk(chunk=chunk, score=_cosine(query_vector, chunk.embedding))
-            )
+            # ``_cosine`` raises on a dimension mismatch (see its docstring).
+            # Here the mismatch is caught and the chunk SKIPPED, so one
+            # wrong-width chunk degrades ranking instead of aborting the whole
+            # query, while a chunk can never contribute a truncated, meaningless
+            # score. Warn once per width rather than once per chunk.
+            try:
+                score = _cosine(query_vector, chunk.embedding)
+            except EmbeddingDimensionMismatch:
+                if len(chunk.embedding) not in _warned_dims:
+                    _warned_dims.add(len(chunk.embedding))
+                    log.warning(
+                        "vector store dimension mismatch: query is %d-dim but "
+                        "chunk %s is %d-dim; that chunk is SKIPPED rather than "
+                        "scored, so ranking is not silently corrupted. Re-ingest "
+                        "with the active embedder (see app.ingestion.embedder."
+                        "get_default_embedder) so both sides use the same dim.",
+                        len(query_vector),
+                        getattr(chunk, "id", "?"),
+                        len(chunk.embedding),
+                    )
+                continue
+            scored.append(ScoredChunk(chunk=chunk, score=score))
         scored.sort(key=lambda s: s.score, reverse=True)
         return scored[:k]
 

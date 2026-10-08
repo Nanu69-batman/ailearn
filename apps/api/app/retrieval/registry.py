@@ -13,7 +13,9 @@ dev convenience only — the source of truth remains re-ingestion.
 from __future__ import annotations
 
 import logging
+import os
 import pickle
+import threading
 from pathlib import Path
 
 from app.retrieval.store import InMemoryVectorStore
@@ -53,14 +55,43 @@ def reset_shared_store() -> InMemoryVectorStore:
 
 
 def save_snapshot(path: str | Path | None = None) -> int:
-    """Persist shared-store chunks to disk; returns chunk count. Best-effort."""
+    """Persist shared-store chunks to disk; returns chunk count. Best-effort.
+
+    Atomic: the pickle is written to a unique temp file in the same
+    directory, flushed, fsynced, then moved into place with ``os.replace``.
+    ``os.replace`` is atomic on POSIX and Windows, so a reader (startup
+    ``load_snapshot``) sees either the previous complete snapshot or the new
+    complete one -- never a truncated pickle. A crash mid-write leaves only a
+    ``.tmp`` file, which is cleaned up on the error path.
+
+    Thread-safe: the chunk list is taken as one lock-protected copy (see
+    ``InMemoryVectorStore.snapshot_chunks``), so an ingest mutating the store
+    concurrently cannot make this serialise a half-built list.
+    """
     store = get_shared_store()
+    chunks = store.snapshot_chunks()
     target = _snapshot_target(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    with open(target, "wb") as fh:
-        pickle.dump(list(store._chunks), fh)
-    log.info("saved %d chunks to %s", len(store._chunks), target)
-    return len(store._chunks)
+    # Temp name is unique per writer (pid + thread id) so concurrent saves
+    # cannot stomp on each other's staging file.
+    staging = target.with_name(
+        f"{target.name}.{os.getpid()}.{threading.get_ident():x}.tmp"
+    )
+    try:
+        with open(staging, "wb") as fh:
+            pickle.dump(chunks, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(staging, target)
+    except OSError as exc:
+        log.warning("snapshot save failed: %s", exc)
+        try:
+            staging.unlink(missing_ok=True)
+        except OSError:  # pragma: no cover - best-effort cleanup
+            pass
+        return 0
+    log.info("saved %d chunks to %s", len(chunks), target)
+    return len(chunks)
 
 
 def load_snapshot(path: str | Path | None = None) -> int:

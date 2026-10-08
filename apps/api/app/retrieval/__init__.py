@@ -18,6 +18,7 @@ from app.retrieval.service import (
 )
 from app.retrieval.store import (
     VIDEO_SOURCE_TYPES,
+    EmbeddingDimensionMismatch,
     InMemoryVectorStore,
     PostgresVectorStore,
     ScoredChunk,
@@ -25,6 +26,7 @@ from app.retrieval.store import (
 
 __all__ = [
     "VIDEO_SOURCE_TYPES",
+    "EmbeddingDimensionMismatch",
     "HybridRetriever",
     "InMemoryVectorStore",
     "LeakageViolation",

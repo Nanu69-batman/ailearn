@@ -210,6 +210,9 @@ async def post_chat(body: ChatRequest, request: Request) -> ChatResponse:
             current_time_ms=clamp_current_time_ms(body.current_time_ms),
             message=body.message,
             mode=body.mode.value,
+            # Ranking preference only: boosts the video the learner is watching
+            # without dropping the rest of the course scope.
+            focus_resource_id=body.video_id,
         )
     except SessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail="session not found") from exc

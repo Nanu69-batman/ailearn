@@ -1,4 +1,6 @@
 import asyncio
+import itertools
+import logging
 from pathlib import Path
 
 import pytest
@@ -13,6 +15,13 @@ from app.ingestion.extractors import (
 )
 from app.ingestion.jobs import run_ingestion
 from app.ingestion.models import Segment
+from app.ingestion.transcribe import (
+    MAX_DURATION_OVERSHOOT_RATIO,
+    clamp_segments_to_duration,
+    enforce_duration_alignment,
+    probe_media_duration_s,
+    validate_transcript_payload,
+)
 
 VTT = """WEBVTT
 
@@ -189,3 +198,223 @@ def test_extract_text(tmp_path: Path):
     segs = extract(p, "note")
     assert len(segs) == 2
     assert segs[0].source_type == "note"
+
+
+# --- Duration alignment: the anti-spoiler guard --------------------------------
+#
+# Background: Gemini claimed ~1.5x the true duration of a 655.53s lecture across
+# four independent runs (1109.0s, 998.4s, 974.7s, 981.4s). The strict-T gate
+# (`end_ms <= T`) is the product's no-spoiler guarantee, so wrong timestamps
+# silently break it. Root cause: the local-file call site never passed
+# duration_s, so every duration guard was skipped.
+
+REAL_MP4 = (
+    Path(__file__).resolve().parents[3]
+    / "test-data"
+    / "Partial derivatives, introduction.mp4"
+)
+
+
+def _speech_payload(duration_s: float, scale: float = 1.0) -> list[dict]:
+    """Contiguous 10s speech segments spanning `duration_s * scale`."""
+    segments = []
+    n = round(duration_s * scale / 10.0) or 1
+    for i in range(n):
+        segments.append(
+            {
+                "start_s": float(i * 10),
+                "end_s": float((i + 1) * 10),
+                "text": f"segment {i} of the lecture",
+            }
+        )
+    return segments
+
+
+def test_overshooting_transcript_is_rejected():
+    """A transcript claiming 1.5x the media duration must fail validation."""
+    duration = 655.53
+    payload = _speech_payload(duration, scale=1.5)
+    # 655.53 * 1.5 = 983.3, rounded to whole 10s segments.
+    assert max(s["end_s"] for s in payload) >= duration * 1.45
+
+    with pytest.raises(ValueError, match="refusing to index"):
+        validate_transcript_payload(payload, duration_s=duration)
+
+
+def test_overshooting_transcript_fails_the_ingest_job(tmp_path: Path, monkeypatch):
+    """End to end: a drifted transcript must fail the job, index nothing.
+
+    This is the assertion that matters for the product. Rejecting inside a
+    helper is worthless if the job still marks the resource 'done'.
+    """
+    from app.ingestion import router
+    from app.retrieval import registry
+
+    asset = tmp_path / "lecture.mp4"
+    asset.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 16)
+
+    indexed: list = []
+    removed: list = []
+
+    class _Store:
+        def remove_resource(self, rid):
+            removed.append(rid)
+
+        def index(self, chunks):
+            indexed.extend(chunks)
+
+    class _Embedder:
+        name = "test"
+
+        def embed_batch(self, texts):
+            return [[0.0] for _ in texts]
+
+    monkeypatch.setattr(router, "get_embedder", lambda: _Embedder())
+    monkeypatch.setattr(registry, "get_shared_store", lambda: _Store())
+    monkeypatch.setattr(registry, "save_snapshot", lambda: None)
+    monkeypatch.setattr(router, "save_ingest_state", lambda: None)
+    monkeypatch.setattr(
+        router,
+        "probe_media_duration_s",
+        lambda p: 655.53,
+    )
+
+    def _boom(*_args, **_kwargs):
+        raise ValueError("transcript claims 983.0s but the media is only 655.5s")
+
+    monkeypatch.setattr(router, "transcribe_with_gemini", _boom)
+
+    job_id, rid = "job1", "res1"
+    router._jobs[job_id] = {}
+    router._resources[rid] = {}
+    router._finish_job_files(job_id, "c1", rid, asset, "video", "Lecture")
+
+    assert router._jobs[job_id]["status"] == "failed"
+    assert indexed == []
+    assert removed == []
+
+
+def test_duration_within_tolerance_is_accepted():
+    """A small overshoot is self-corrected rather than rejected."""
+    duration = 655.53
+    payload = _speech_payload(duration, scale=1.0 + MAX_DURATION_OVERSHOOT_RATIO / 2)
+    cleaned = validate_transcript_payload(payload, duration_s=duration)
+
+    assert cleaned, "a within-tolerance transcript must still be accepted"
+    # Corrected, not merely tolerated: nothing may end past the real duration.
+    assert max(s["end_s"] for s in cleaned) <= duration + 1e-6
+
+
+def test_clamping_never_increases_timestamps():
+    """SAFETY DIRECTION: a clamped timestamp is never later than its original.
+
+    If this ever fails, the correction could move content forward and expose
+    unreached material -- a spoiler. It must only ever move content earlier.
+    """
+    duration = 655.53
+    payload = _speech_payload(duration, scale=1.08)
+    clamped = clamp_segments_to_duration(payload, duration)
+
+    assert clamped is not payload, "clamping must not mutate the input"
+    assert len(clamped) == len(payload)
+    for original, corrected in zip(payload, clamped):
+        assert corrected["start_s"] <= original["start_s"]
+        assert corrected["end_s"] <= original["end_s"]
+    assert max(s["end_s"] for s in clamped) <= duration
+
+    # Monotonic and order preserving: the validator's no-overlap/no-gap
+    # contract must survive the rescale.
+    for prev, cur in itertools.pairwise(clamped):
+        assert cur["start_s"] >= prev["start_s"]
+        assert cur["start_s"] <= prev["end_s"] + 2.0
+
+
+def test_local_file_path_passes_duration(tmp_path: Path, monkeypatch):
+    """REGRESSION GUARD: the router must supply a measured duration.
+
+    This is the omission that let every duration guard sleep. If duration_s is
+    ever dropped here again, the overshoot tests above keep passing while the
+    production path silently goes unchecked.
+    """
+    from app.ingestion import router
+    from app.retrieval import registry
+
+    asset = tmp_path / "lecture.mp4"
+    asset.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 16)
+
+    captured: dict = {}
+
+    def _capture(media_path, title, duration_s=None):
+        captured["duration_s"] = duration_s
+        return []
+
+    class _Store:
+        def remove_resource(self, rid):
+            pass
+
+        def index(self, chunks):
+            pass
+
+    class _Embedder:
+        name = "test"
+
+        def embed_batch(self, texts):
+            return [[0.0] for _ in texts]
+
+    monkeypatch.setattr(router, "get_embedder", lambda: _Embedder())
+    monkeypatch.setattr(registry, "get_shared_store", lambda: _Store())
+    monkeypatch.setattr(registry, "save_snapshot", lambda: None)
+    monkeypatch.setattr(router, "save_ingest_state", lambda: None)
+    monkeypatch.setattr(router, "transcribe_with_gemini", _capture)
+    monkeypatch.setattr(router, "probe_media_duration_s", lambda p: 655.53)
+
+    job_id, rid = "job2", "res2"
+    router._jobs[job_id] = {}
+    router._resources[rid] = {}
+    router._finish_job_files(job_id, "c1", rid, asset, "video", "Lecture")
+
+    assert captured["duration_s"] == 655.53
+    assert router._jobs[job_id]["status"] == "done"
+
+
+def test_duration_guard_absent_is_loud(caplog):
+    """No measurable duration => accept WITH A WARNING, never silently.
+
+    Explicitly chosen over rejecting: formats this parser cannot read (mkv,
+    webm, ...) must still ingest, and the strict-T gate stays correct because
+    it keys off the timestamps themselves. But the condition is loud, because
+    an unmeasured duration is exactly what hid a 1.5x drift.
+    """
+    payload = _speech_payload(655.53, scale=1.5)
+
+    with caplog.at_level(logging.WARNING, logger="app.ingestion.transcribe"):
+        result = enforce_duration_alignment(payload, None)
+
+    assert result == payload, "payload must pass through untouched"
+    assert any("duration guard inactive" in r.message for r in caplog.records)
+
+
+@pytest.mark.skipif(not REAL_MP4.exists(), reason="sample lecture not present")
+def test_probe_measures_real_media_duration():
+    """The measurement the whole guard depends on, checked against real bytes.
+
+    655.53s, read from the fragmented-MP4 boxes (mvhd is 0 for this file).
+    Gemini claimed 981.4s for it, so the true duration must come from the
+    container, never from the model.
+    """
+    duration = probe_media_duration_s(REAL_MP4)
+    assert duration is not None
+    assert duration == pytest.approx(655.53, abs=0.5)
+
+
+@pytest.mark.skipif(not REAL_MP4.exists(), reason="sample lecture not present")
+def test_probe_returns_none_for_unreadable_media(tmp_path: Path):
+    """Never guesses: unprobeable media yields None so callers can shout."""
+    bogus = tmp_path / "broken.mp4"
+    bogus.write_bytes(b"not an mp4 at all")
+    assert probe_media_duration_s(bogus) is None
+    assert probe_media_duration_s(tmp_path / "missing.mp4") is None
+    # Non-MP4 containers are out of scope for the box parser.
+    other = tmp_path / "lecture.mkv"
+    other.write_bytes(b"\x00" * 64)
+    assert probe_media_duration_s(other) is None

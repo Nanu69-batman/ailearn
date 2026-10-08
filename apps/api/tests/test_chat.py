@@ -203,6 +203,42 @@ def test_lms_session_unsigned_dev_mode(client: TestClient, monkeypatch):
     assert r.json()["session_token"]
 
 
+def test_unsigned_launch_allowed_in_dev_mode(client: TestClient, monkeypatch):
+    """Regression: local demo sends unsigned launches; dev secret + flag must pass."""
+    monkeypatch.setattr(settings, "lms_launch_secret", "dev-secret")
+    monkeypatch.setattr(settings, "allow_unsigned_launch", True)
+    reset_chat_state()
+    c = TestClient(app)
+    r = c.post("/lms/session", json=launch_payload())
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["session_token"]
+    assert body["learner_id"] == "learner1"
+
+
+def test_unsigned_launch_rejected_with_prod_secret(client: TestClient, monkeypatch):
+    """Production guard: a non-dev secret must refuse unsigned launches even
+    when ALLOW_UNSIGNED_LAUNCH is true (misconfiguration must fail closed)."""
+    monkeypatch.setattr(settings, "lms_launch_secret", "prod-secret-key")
+    monkeypatch.setattr(settings, "allow_unsigned_launch", True)
+    reset_chat_state()
+    c = TestClient(app)
+    r = c.post("/lms/session", json=launch_payload())
+    assert r.status_code == 401
+    assert r.json()["detail"] == "invalid launch"
+
+
+def test_wrong_signature_rejected_in_dev_mode(client: TestClient, monkeypatch):
+    """Dev bypass only covers an ABSENT signature; a bogus one must still fail."""
+    monkeypatch.setattr(settings, "lms_launch_secret", "dev-secret")
+    monkeypatch.setattr(settings, "allow_unsigned_launch", True)
+    reset_chat_state()
+    c = TestClient(app)
+    r = c.post("/lms/session", json=launch_payload(signature="dev"))
+    assert r.status_code == 401
+    assert r.json()["detail"] == "invalid launch"
+
+
 # --- Session token binding (H3) --------------------------------------------
 
 
@@ -290,6 +326,53 @@ def test_unknown_citation_rejected(client: TestClient):
     assert body["refused"] is True
     assert body["citations"] == []
     assert body["answer"] == REFUSAL_TEXT
+
+
+def test_citation_markers_stripped_from_answer(client: TestClient):
+    """Markers are transport format: hidden from users, citations intact."""
+
+    class MarkerLLM:
+        async def complete(self, *, system, user_prompt, passages, mode):
+            cid = passages[0].chunk_id
+            return LLMResult(
+                text=f"In simple terms: light becomes sugar [chunk_id={cid}].",
+                cited_ids=[cid],
+            )
+
+    store = fixture_store()
+    set_service_override(ChatService(store=store, embedder=EMBEDDER, llm=MarkerLLM()))
+    sid, token = create_session(client)
+    r = post_chat(client, sid, token)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["refused"] is False
+    assert "[chunk_id=" not in body["answer"]
+    assert "chunk_id" not in body["answer"]
+    # Markers gone, prose kept, punctuation not orphaned.
+    assert "In simple terms:" in body["answer"]
+    assert " ." not in body["answer"]
+    ids = [c["chunk_id"] for c in body["citations"]]
+    assert ids, "citations must still be populated after stripping"
+    assert any(i in ids for i in ("c_early", "c_late", "c_doc")) or ids
+
+
+def test_citation_validation_unaffected_by_stripping(client: TestClient):
+    """An unknown-ID marker must still trigger refusal, not be stripped away."""
+
+    class EvilLLM:
+        async def complete(self, *, system, user_prompt, passages, mode):
+            return LLMResult(text="Lies [chunk_id=evil_xyz]", cited_ids=["evil_xyz"])
+
+    store = fixture_store()
+    set_service_override(ChatService(store=store, embedder=EMBEDDER, llm=EvilLLM()))
+    sid, token = create_session(client)
+    r = post_chat(client, sid, token)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["refused"] is True
+    assert body["citations"] == []
+    assert body["answer"] == REFUSAL_TEXT
+    assert "evil_xyz" not in body["answer"]
 
 
 def test_uncited_non_refusal_answer_refused(client: TestClient):
@@ -531,3 +614,562 @@ def test_get_service_wires_embedder_via_factory(monkeypatch):
         assert service._embedder is not None
     finally:
         router_mod.set_service_override(None)
+
+
+def test_unknown_scope_refuses(client: TestClient):
+    """Scope IDs matching nothing indexed must refuse (placeholder-scope bug)."""
+    sid, token = create_session(
+        client, resource_scope=["res_video", "res_pdf", "res_ppt"]
+    )
+    r = post_chat(client, sid, token)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["refused"] is True
+    assert body["citations"] == []
+
+
+def test_known_scope_answers(client: TestClient):
+    """Scope matching a real indexed resource must answer with citations."""
+    sid, token = create_session(client, resource_scope=["vid"])
+    r = post_chat(client, sid, token)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["refused"] is False
+    assert body["citations"]
+
+
+# ---------------------------------------------------------------------------
+# Bunched citation markers (production regression).
+#
+# Gemini bunches IDs under one bracket and repeats the key for each one:
+# ``[chunk_id=aaa, chunk_id=bbb]``. The old extraction/strip pattern had a
+# character class without ``=``, so that whole bracket never matched. Two
+# failures followed from the one defect: the marker leaked into the visible
+# answer, and (worse) the IDs inside it were never extracted, so they were
+# never validated and never became citations -- a video-focused answer built
+# from video passages came back citing the PDF.
+# ---------------------------------------------------------------------------
+
+
+def test_strip_handles_bunched_citation_markers():
+    """Every marker shape Gemini emits is removed; prose and punctuation stay."""
+
+    from app.chat.prompts import strip_citation_markers
+
+    cases = {
+        # single marker
+        "single": ("A derivative [chunk_id=abc].", "A derivative."),
+        # bunched with the key repeated per id
+        "bunched": (
+            "derivatives are similar [chunk_id=aaa, chunk_id=bbb]. Next.",
+            "derivatives are similar. Next.",
+        ),
+        # bunched with bare ids after the first
+        "bare": (
+            "derivatives [chunk_id=aaa, bbb, ccc] and more",
+            "derivatives and more",
+        ),
+        # end of sentence, with and without trailing punctuation
+        "eol": (
+            "Rate of change [chunk_id=aaa, chunk_id=bbb].",
+            "Rate of change.",
+        ),
+        # adjacent to punctuation, and on its own line (blank line collapses
+        # to a paragraph break; no marker and no stray bracket survives)
+        "adjacent": (
+            "see [chunk_id=aaa],\n[chunk_id=bbb]\ndone",
+            "see,\n\ndone",
+        ),
+        # separated by newlines / mid-sentence
+        "spaced": (
+            "one [chunk_id=aaa]\ntwo [chunk_id=bbb] three",
+            "one\ntwo three",
+        ),
+    }
+    for name, (raw, expected) in cases.items():
+        cleaned = strip_citation_markers(raw)
+        assert "chunk_id" not in cleaned, f"{name}: marker leaked -> {cleaned!r}"
+        assert "[" not in cleaned or "[" in expected, f"{name}: stray bracket"
+        assert cleaned == expected, f"{name}: got {cleaned!r} want {expected!r}"
+
+    # Text with no markers at all is returned unchanged (no reflow damage).
+    plain = "A plain answer with (parentheses) and a hyphen-word, plus 3.14."
+    assert strip_citation_markers(plain) == plain
+    assert strip_citation_markers("") == ""
+
+
+def test_strip_does_not_break_citation_validation(client: TestClient):
+    """An unknown ID is still refused -- stripping must not rescue it.
+
+    Also asserts that a bunched marker containing an unknown ID is refused,
+    which is the safety property the old pattern silently violated: it could
+    not read those IDs at all, so they were never validated.
+    """
+    from app.chat.prompts import extract_cited_ids
+
+    # Extraction reads every shape, so validation sees every ID.
+    assert extract_cited_ids("x [chunk_id=a, chunk_id=b] y") == ["a", "b"]
+    assert extract_cited_ids("x [chunk_id=a, b, c] y") == ["a", "b", "c"]
+    assert extract_cited_ids("x [chunk_id=a] y") == ["a"]
+
+    class EvilBunchedLLM:
+        async def complete(self, *, system, user_prompt, passages, mode):
+            cid = passages[0].chunk_id
+            return LLMResult(
+                text=f"Mostly true [chunk_id={cid}, chunk_id=evil_xyz].",
+                cited_ids=[cid],
+            )
+
+    store = fixture_store()
+    set_service_override(
+        ChatService(store=store, embedder=EMBEDDER, llm=EvilBunchedLLM())
+    )
+    # The ``client`` fixture provides the signed-launch secret; only the LLM is
+    # swapped out here.
+    sid, token = create_session(client)
+    r = post_chat(client, sid, token)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # The unknown ID is read, rejected, and the whole answer is refused.
+    assert body["refused"] is True
+    assert body["citations"] == []
+    assert body["answer"] == REFUSAL_TEXT
+    assert "evil_xyz" not in body["answer"]
+
+
+def test_focus_returns_video_citations_end_to_end(client: TestClient):
+    """Focused video retrieval must surface video citations through /chat.
+
+    Regression: with the focused video resource, the answer was built from
+    video passages but the response cited the PDF. The video IDs were emitted
+    inside a bunched marker that the extraction pattern could not read, so only
+    the model's trailing single-ID PDF marker survived. This test reproduces
+    that exact shape -- a bunched first marker, a trailing PDF marker -- and
+    asserts the video citations come back.
+    """
+
+    class BunchedLLM:
+        """Mimics Gemini: bunches the top two passages under one bracket."""
+
+        async def complete(self, *, system, user_prompt, passages, mode):
+            video_ids = [p.chunk_id for p in passages if p.source_type == "video"][:2]
+            pdf_ids = [p.chunk_id for p in passages if p.source_type != "video"][:1]
+            bunched = ", ".join(f"chunk_id={c}" for c in video_ids)
+            text = (
+                f"A partial derivative is similar to an ordinary one "
+                f"[{bunched}]. Notes on page one [chunk_id={pdf_ids[0]}]."
+            )
+            return LLMResult(text=text, cited_ids=[])
+
+    pdf_resource = "res_pdf_focus_e2e"
+    video_resource = "res_video_focus_e2e"
+
+    def _chunk(cid: str, resource_id: str, source_type: str, text: str, **kw):
+        c = make_chunk(cid, resource_id, source_type, text, **kw)
+        # File-ingested video: no YouTube id, matched by resource_id only.
+        if source_type == "video":
+            c.video_id = None
+        return c
+
+    # 12 PDF chunks that each outrank the single video chunk on raw cosine,
+    # so only a working focus rank can put the video first.
+    pdf_chunks = [
+        _chunk(
+            f"p_{i}",
+            pdf_resource,
+            "pdf",
+            "partial derivative chapter worked example lecture notes",
+            page_no=i + 1,
+        )
+        for i in range(12)
+    ]
+    video_chunk = _chunk(
+        "v_focus_e2e",
+        video_resource,
+        "video",
+        "a partial derivative is the rate of change of a multivariable function",
+        start_ms=30_000,
+        end_ms=80_000,
+    )
+    store = InMemoryVectorStore([*pdf_chunks, video_chunk])
+    set_service_override(ChatService(store=store, embedder=EMBEDDER, llm=BunchedLLM()))
+
+    sid, token = create_session(
+        client,
+        resource_scope=[video_resource, pdf_resource],
+        resource_id=video_resource,
+        current_time_ms=120_000,
+    )
+    r = post_chat(
+        client,
+        sid,
+        token,
+        video_id=video_resource,
+        current_time_ms=120_000,
+        message="What are partial derivatives?",
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    assert body["refused"] is False
+    # The bunched video marker must survive extraction as citations...
+    assert "v_focus_e2e" in [c["chunk_id"] for c in body["citations"]]
+    assert any(c["source_type"] == "video" for c in body["citations"]), body[
+        "citations"
+    ]
+    # ...and must not survive into the visible answer.
+    assert "chunk_id" not in body["answer"]
+    assert "partial derivative is similar" in body["answer"]
+
+
+# ---------------------------------------------------------------------------
+# Session persistence across restarts (JSON state file).
+# Persistence is off by default so the suite never touches apps/api/data/;
+# these tests turn it on against a tmp_path, mirroring how test_batch_ingest
+# monkeypatches INGEST_STATE_PATH.
+# ---------------------------------------------------------------------------
+
+
+def test_sessions_survive_reload(client: TestClient, monkeypatch, tmp_path):
+    """A session created before a restart must still resolve after reload."""
+    from app.chat import sessions as sessions_mod
+
+    monkeypatch.setattr(
+        sessions_mod, "SESSION_STATE_PATH", tmp_path / "chat_sessions.json"
+    )
+    monkeypatch.setattr(sessions_mod, "_persistence_enabled", True)
+
+    sid, token = create_session(client)
+    assert (tmp_path / "chat_sessions.json").is_file()
+
+    # Simulate the restart: fresh stores, reload only from the file.
+    fresh_sessions = sessions_mod.InMemorySessionStore()
+    fresh_messages = sessions_mod.InMemoryMessageStore()
+    monkeypatch.setattr(sessions_mod, "session_store", fresh_sessions)
+    monkeypatch.setattr(sessions_mod, "message_store", fresh_messages)
+    monkeypatch.setattr(chat_router, "session_store", fresh_sessions)
+    monkeypatch.setattr(chat_router, "message_store", fresh_messages)
+    try:
+        assert sessions_mod.load_session_state() == 1
+        restored = fresh_sessions.get(sid)
+        assert restored is not None
+        assert restored.learner_id == "learner1"
+        assert restored.course_id == "course1"
+        assert restored.current_time_ms == T
+        # Resolvable end-to-end, not just present in the dict.
+        r = client.get(f"/sessions/{sid}/messages?session_token={token}")
+        assert r.status_code == 200, r.text
+    finally:
+        sessions_mod.set_persistence_enabled(False)
+
+
+def test_unknown_session_still_404s(client: TestClient, monkeypatch, tmp_path):
+    """Restore must not invent sessions: an absent id still 404s."""
+    from app.chat import sessions as sessions_mod
+
+    monkeypatch.setattr(
+        sessions_mod, "SESSION_STATE_PATH", tmp_path / "chat_sessions.json"
+    )
+    monkeypatch.setattr(sessions_mod, "_persistence_enabled", True)
+    sid, _token = create_session(client)
+
+    fresh_sessions = sessions_mod.InMemorySessionStore()
+    monkeypatch.setattr(sessions_mod, "session_store", fresh_sessions)
+    monkeypatch.setattr(chat_router, "session_store", fresh_sessions)
+    try:
+        assert sessions_mod.load_session_state() == 1
+        r = post_chat(client, "ses_definitely_missing", "token")
+        assert r.status_code == 404, r.text
+        assert r.json()["detail"] == "session not found"
+        # The real one still works; only the unknown id is refused.
+        assert fresh_sessions.get(sid) is not None
+        assert fresh_sessions.get("ses_definitely_missing") is None
+    finally:
+        sessions_mod.set_persistence_enabled(False)
+
+
+def test_messages_persist_with_session(client: TestClient, monkeypatch, tmp_path):
+    """Messages appended before a reload are retrievable after it."""
+    from app.chat import sessions as sessions_mod
+
+    monkeypatch.setattr(
+        sessions_mod, "SESSION_STATE_PATH", tmp_path / "chat_sessions.json"
+    )
+    monkeypatch.setattr(sessions_mod, "_persistence_enabled", True)
+
+    sid, token = create_session(client)
+    assert post_chat(client, sid, token).status_code == 200
+
+    fresh_sessions = sessions_mod.InMemorySessionStore()
+    fresh_messages = sessions_mod.InMemoryMessageStore()
+    # monkeypatch, NOT bare assignment: a bare `sessions_mod.session_store = ...`
+    # survives teardown and permanently rebinds the module global. The router
+    # keeps its own reference to the *original* object (restored by
+    # monkeypatch), so every later test creates its session in one store while
+    # ChatService reads from the other -> /chat 404s "session not found"
+    # depending on collection order.
+    monkeypatch.setattr(sessions_mod, "session_store", fresh_sessions)
+    monkeypatch.setattr(sessions_mod, "message_store", fresh_messages)
+    monkeypatch.setattr(chat_router, "session_store", fresh_sessions)
+    monkeypatch.setattr(chat_router, "message_store", fresh_messages)
+    try:
+        sessions_mod.load_session_state()
+        msgs = fresh_messages.list_for_session(sid)
+        assert [m.role for m in msgs] == ["user", "assistant"]
+        assert fresh_messages.user_texts(sid) == [msgs[0].content]
+        r = client.get(f"/sessions/{sid}/messages?session_token={token}")
+        assert r.status_code == 200, r.text
+        assert [m["role"] for m in r.json()["messages"]] == ["user", "assistant"]
+    finally:
+        sessions_mod.set_persistence_enabled(False)
+
+
+# --- Follow-up classification: linguistic signals, not length -------------
+#
+# Regression: the old rule prefixed ANY message of <=8 words with the prior
+# turn, so "what is f(x,y)" became "is this partial derivatives? what is
+# f(x,y)". Retrieval then chased the *previous* question and answered both in
+# one turn, citing the wrong chunk.
+
+
+def test_short_selfcontained_question_is_not_rewritten():
+    history = ["is this partial derivatives?"]
+    out = rewrite_query("what is f(x,y)", history)
+    assert out == "what is f(x,y)"
+    assert "partial derivatives" not in out
+
+
+def test_symbolic_question_is_never_rewritten():
+    history = ["what is f(x,y)", "is this partial derivatives?"]
+    for msg in ("what is cos(y)", "what is dy", "what is sin(y)"):
+        out = rewrite_query(msg, history)
+        assert out == msg, f"{msg!r} was rewritten to {out!r}"
+
+
+def test_pronoun_followup_is_rewritten():
+    history = ["what is f(x,y)"]
+    for msg in ("what about that", "and why"):
+        out = rewrite_query(msg, history)
+        assert "what is f(x,y)" in out
+        assert msg in out
+    # an anaphoric pronoun is a genuine follow-up signal
+    assert "what is f(x,y)" in rewrite_query("explain it", history)
+    # a *descriptive* demonstrative is not
+    assert rewrite_query("what is that yellow function", history) == (
+        "what is that yellow function"
+    )
+
+
+def test_empty_history_returns_message():
+    for msg in ("what about that", "what is f(x,y)", "and why"):
+        assert rewrite_query(msg, []) == msg
+        assert rewrite_query(msg, ["", "   "]) == msg
+
+
+def test_rewrite_never_widens_scope(monkeypatch):
+    """Rewriting changes the retrieval query only -- never scope, course or T.
+
+    Drives ``ChatService.chat`` directly with private session/message stores
+    so the assertion cannot be perturbed by module-level store state leaked
+    from other tests.
+    """
+    import asyncio
+
+    from app.chat.sessions import InMemoryMessageStore, InMemorySessionStore
+    from app.retrieval.service import RetrievalService
+
+    calls: list[dict] = []
+    real_retrieve = RetrievalService.retrieve
+
+    async def spy(self, query, course_id, scope, t_ms, *args, **kwargs):
+        calls.append(
+            {
+                "query": query,
+                "course_id": course_id,
+                "scope": list(scope),
+                "t_ms": t_ms,
+                "kwargs": dict(kwargs),
+            }
+        )
+        return await real_retrieve(self, query, course_id, scope, t_ms, *args, **kwargs)
+
+    monkeypatch.setattr(RetrievalService, "retrieve", spy)
+
+    sessions = InMemorySessionStore()
+    messages = InMemoryMessageStore()
+    service = ChatService(
+        store=fixture_store(),
+        embedder=EMBEDDER,
+        llm=DeterministicStubLLM(),
+        sessions=sessions,
+        messages=messages,
+    )
+    session = sessions.create(
+        learner_id="learner1",
+        course_id="course1",
+        resource_id="vid",
+        lesson_id="lesson1",
+        resource_scope=["vid", "handout"],
+        current_time_ms=T,
+    )
+
+    async def run() -> None:
+        await service.chat(
+            session_id=session.id,
+            current_time_ms=T,
+            message="what is photosynthesis light chemical energy",
+        )
+        await service.chat(
+            session_id=session.id, current_time_ms=T, message="what is f(x,y)"
+        )
+
+    asyncio.run(run())
+
+    assert len(calls) == 2
+    first, second = calls
+    # scope / course / gate are byte-identical; only the query string differs
+    assert second["scope"] == first["scope"] == ["vid", "handout"]
+    assert second["course_id"] == first["course_id"] == "course1"
+    assert second["t_ms"] == first["t_ms"] == T
+    assert second["kwargs"] == first["kwargs"]
+    # the standalone message was not prefixed by the prior turn
+    assert second["query"] == "what is f(x,y)"
+
+
+# --- overlapping-citation behaviour ---------------------------------------
+
+
+def _overlap_store() -> InMemoryVectorStore:
+    """Three sliding-window speech chunks covering the SAME passage."""
+    return InMemoryVectorStore(
+        [
+            make_chunk(
+                "c_w1",
+                "vid",
+                "video_transcript",
+                "dy is the change in the y direction of the output",
+                4_180,
+                4_530,
+            ),
+            make_chunk(
+                "c_w2",
+                "vid",
+                "video_transcript",
+                "dy is the change in the y direction here",
+                4_330,
+                5_060,
+            ),
+            make_chunk(
+                "c_w3",
+                "vid",
+                "video_transcript",
+                "the change in the y direction, that is dy",
+                4_530,
+                5_230,
+            ),
+        ]
+    )
+
+
+def test_overlapping_citations_are_all_returned(client: TestClient):
+    """Three heavily-overlapping same-resource windows -> three citations."""
+
+    class OverlapLLM:
+        async def complete(self, *, system, user_prompt, passages, mode):
+            ids = [p.chunk_id for p in passages]
+            return LLMResult(
+                text="dy is the change in the y direction. "
+                + " ".join(f"[chunk_id={i}]" for i in ids),
+                cited_ids=list(ids),
+            )
+
+    store = _overlap_store()
+    set_service_override(ChatService(store=store, embedder=EMBEDDER, llm=OverlapLLM()))
+    sid, token = create_session(client, current_time_ms=6_000)
+    r = post_chat(client, sid, token, current_time_ms=6_000)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["refused"] is False
+    # No merging: every cited chunk is surfaced with its own original span.
+    assert len(body["citations"]) == 3
+    spans = {c["chunk_id"]: (c["start_ms"], c["end_ms"]) for c in body["citations"]}
+    assert spans == {
+        "c_w1": (4_180, 4_530),
+        "c_w2": (4_330, 5_060),
+        "c_w3": (4_530, 5_230),
+    }
+
+
+def test_distinct_resource_citations_are_returned_separately(client: TestClient):
+    """Identical intervals on different resources are NOT duplicates."""
+
+    class TwoResourceLLM:
+        async def complete(self, *, system, user_prompt, passages, mode):
+            ids = [p.chunk_id for p in passages]
+            return LLMResult(
+                text="The video and the handout agree. "
+                + " ".join(f"[chunk_id={i}]" for i in ids),
+                cited_ids=list(ids),
+            )
+
+    video = make_chunk(
+        "c_v", "vid2", "video_transcript", "dy is a change in the y direction", 10, 900
+    )
+    other_video = make_chunk(
+        "c_v2",
+        "vid3",
+        "video_transcript",
+        "dy is a change in the y direction again",
+        10,
+        900,
+    )
+    set_service_override(
+        ChatService(
+            store=InMemoryVectorStore([video, other_video]),
+            embedder=EMBEDDER,
+            llm=TwoResourceLLM(),
+        )
+    )
+    sid, token = create_session(
+        client,
+        resource_id="vid2",
+        resource_scope=["vid2", "vid3"],
+        current_time_ms=2_000,
+    )
+    r = post_chat(
+        client,
+        sid,
+        token,
+        current_time_ms=2_000,
+        message="what is dy in the y direction",
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["refused"] is False
+    assert len(body["citations"]) == 2
+    assert {c["chunk_id"] for c in body["citations"]} == {"c_v", "c_v2"}
+
+
+def test_unknown_id_rejected_independent_of_citation_merging(client: TestClient):
+    """An unknown id alongside valid overlapping ids must still refuse."""
+
+    class EvilOverlapLLM:
+        async def complete(self, *, system, user_prompt, passages, mode):
+            ids = [p.chunk_id for p in passages]
+            return LLMResult(
+                text="dy is the change in the y direction. "
+                + " ".join(f"[chunk_id={i}]" for i in ids)
+                + " [chunk_id=not_a_real_chunk]",
+                cited_ids=ids + ["not_a_real_chunk"],
+            )
+
+    set_service_override(
+        ChatService(store=_overlap_store(), embedder=EMBEDDER, llm=EvilOverlapLLM())
+    )
+    sid, token = create_session(client, current_time_ms=6_000)
+    r = post_chat(client, sid, token, current_time_ms=6_000)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["refused"] is True
+    assert body["citations"] == []
+    assert body["answer"] == REFUSAL_TEXT
