@@ -56,13 +56,52 @@ segment / page / slide, course `course_fixture`).
 - `video_later` / `adversarial` gold sources point at the *withheld* future
   chunk, so any retrieval of them is machine-checkable leakage.
 - Every pause falls exactly on a chunk boundary, so the eval-strict rule
-  (`end_ms <= pause_at_ms`) and the production gate (`start_ms <= T`) agree.
+  (`end_ms <= pause_at_ms`) and the production gate (`end_ms <= T`) agree.
 - Refuse-case questions use vocabulary that appears only in withheld or
   nonexistent content, so gated retrieval cannot support an answer.
 - The harness enforces eval-strict visibility (`end_ms <= T` for video) via
   `apply_strict_cutoff` *before* ranking, then re-asserts with
-  `detect_leakage`. The production store gate (`start_ms <= T`) is looser: it
-  admits a chunk starting exactly at `T`. That known gap is measured on raw
-  production retrieval and reported as `production_gap_rate` (currently 0.48:
-  12/25 queries admit a boundary chunk), not hidden. Tightening the production
-  gate to `end_ms` is a product decision for Phase 3 owners, not this eval.
+  `detect_leakage`. The production store gate is now the same strict rule
+  (`end_ms IS NOT NULL AND end_ms <= :current_time_ms`, see
+  `retrieval/store.py`), so the harness and production agree by construction.
+  `production_gap_rate` is measured on raw production retrieval over the full
+  pool and must be 0; any nonzero value is a parity regression, not a score.
+
+### Baseline refresh — 2026-10-07
+
+Re-ran the harness offline after visual chunks landed and the focus path was
+added. `python -m app.eval.harness --golden ../../docs/eval/golden.jsonl --k 5`,
+`HashingEmbedder` + `InMemoryVectorStore`, no network, no Gemini call
+(`docs/eval-results/baseline-refresh.json`).
+
+| Metric | Loose gate (2026-10-03) | Strict gate (2026-10-03) | Refresh (2026-10-07) |
+|---|---|---|---|
+| `production_gap_rate` | 0.48 (12/25) | 0.0 | **0.0 (0/25)** |
+| `leakage_rate` | — | 0.0 | 0.0 |
+| `retrieval_acc` | — | 1.0 | 1.0 |
+| `citation_acc` | — | 1.0 | 1.0 |
+| `refusal_correctness` | — | 1.0 | 1.0 |
+
+**The strict gate holds.** The production-gap rate is 0.0, a 48-point
+improvement over the loose-gate 0.48 baseline. Unchanged from the 2026-10-03
+strict run — as expected, since neither visual chunks nor the focus path is
+reachable from this fixture (see the coverage caveat below).
+
+**Coverage caveat — the fixture is not the shipped corpus.** The harness builds
+26 synthetic chunks programmatically (12 video / 8 pptx / 6 pdf) in course
+`course_fixture`. It does **not** load `data/store_snapshot.pkl`, so:
+
+- **Visual chunks are untested here.** The real resource `a1b120a6cb5b` now has
+  60 chunks (42 speech + 18 on-screen-text) with real `start_ms`/`end_ms` and
+  3072-dim Gemini embeddings. The fixture has zero visual chunks, so the harness
+  says nothing about whether visual chunks respect the gate.
+- **The focus path is untested here.** `RetrievalService.retrieve` accepts
+  `focus_resource_id` (a second scope-and-T-gated query unioned into the pool),
+  but no golden pair carries a focus field and the harness never passes one.
+
+Both were spot-checked read-only against the real snapshot instead: across 112
+distinct pause times, the strict store gate admitted 0 NULL-`end_ms` video chunks
+and 0 chunks with `end_ms > T`, while the old `start_ms <= T` gate would have
+admitted 262 extra rows. Visual chunks carry valid non-NULL `end_ms`, so the
+gate bounds them correctly. **Closing the fixture-coverage gap is recommended
+follow-up work, not something to assume from these numbers.**
