@@ -1,508 +1,351 @@
-"""Ingestion orchestrator: extract -> chunk -> embed -> upsert."""
+"""Job registry + the ingest pipeline.
+
+Response shapes are frozen by ``apps/web/lib/api.ts`` (read-only here --
+``apps/web`` is never modified)::
+
+    POST /courses/{courseId}/ingest         -> { job_id, resource_id, status }
+    POST /courses/{courseId}/ingest-youtube -> { job_id, resource_id, status }
+    GET  /ingestion/jobs/{jobId}            -> { job_id, resource_id,
+                                                 status, error? }
+    GET  /courses/{courseId}/resources      -> { resources: [...] }
+
+``status`` is one of ``pending|processing|done|failed`` -- the web client
+discriminates on exactly those four.
+
+Ingest is a background task so the POST returns immediately with a job id; the
+web client polls ``/ingestion/jobs/{id}``.
+"""
 
 from __future__ import annotations
 
-import hashlib
+import asyncio
 import logging
-from collections.abc import Mapping
+import threading
+import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
-from app.config import settings
-from app.ingestion.chunkers import chunk_transcript
-from app.ingestion.embedder import EmbeddingProvider, get_default_embedder
-from app.ingestion.extractors import extract
-from app.ingestion.models import Chunk, Segment, text_hash
+from app.ingestion import audio as audio_mod
+from app.ingestion import visual as visual_mod
+from app.ingestion import youtube as yt_mod
+from app.ingestion.chunking import Chunk, TextSegment, chunk_segment
+from app.ingestion.documents import extract
+from app.ingestion.duration import media_duration_ms
 
 log = logging.getLogger(__name__)
 
-# --- Visual fragment merging ---------------------------------------------------
-#
-# Gemini transcribes on-screen writing at the granularity it was *written*, so a
-# single equation arrives as a burst of tiny fragments ("= f(x, y)",
-# "= x^2 y", "= + sin(y)") seconds apart. Each fragment alone is a poor retrieval
-# target: too short to embed meaningfully and too contextless for a learner. So
-# adjacent fragments of the SAME KIND are merged back into one chunk.
-#
-# Two hard rules keep this from becoming a spoiler bug:
-#
-#  1. The merged chunk's ``end_ms`` is the MAXIMUM of the merged fragments' own
-#     ``end_ms`` -- the last moment writing was actually observed on screen. It
-#     is never computed from the merge window, the span cap, or the next
-#     fragment's start. A gap between two fragments is a gap, not content, so a
-#     learner paused inside it must still not receive the second fragment.
-#  2. Merging is bounded by VISUAL_MERGE_MAX_GAP_MS and VISUAL_MERGE_MAX_SPAN_MS,
-#     so unrelated fragments can never collapse into one far-future chunk whose
-#     timestamp lies about what was on screen when.
-VISUAL_MERGE_MAX_GAP_MS = 4_000
-VISUAL_MERGE_MAX_SPAN_MS = 20_000
+VIDEO_SUFFIXES = {".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi"}
+DOC_SUFFIXES = {".pdf", ".pptx"}
 
-# --- Speech window tightening --------------------------------------------------
-#
-# ``chunk_transcript`` emits each window with ``start_ms``/``end_ms`` taken from
-# the FIRST and LAST segment merged into it. Those two bounds are faithful and
-# stay that way: ``end_ms`` is exactly the last segment's own end time, never the
-# window edge, so this change cannot widen an end past real spoken content and
-# cannot break the strict ``end_ms <= T`` spoiler gate. Visual and figure chunks
-# are untouched for the same reason.
-#
-# What merging DOES cost is the start: a chunk inherits its first segment's start,
-# so a sentence spoken in the middle of a 30-60s window is stamped up to a full
-# window early (measured on the demo clip: a line Gemini places at 287.0s was
-# indexed in a chunk starting at 258.9s, 28s early). Overlapping windows also put
-# the same sentence in several chunks whose citations disagree.
-#
-# So speech windows are made smaller and are not allowed to merge across a large
-# gap. Both changes SHRINK a chunk's interval towards its own content; neither
-# ever extends it. The floor of 12s keeps a window long enough to embed as a
-# coherent passage.
-SPEECH_CHUNK_MIN_WINDOW_S = 12.0
-SPEECH_CHUNK_MAX_WINDOW_S = 24.0
-SPEECH_CHUNK_OVERLAP_S = 6.0
-# A pause longer than this ends the window: merging across it would give a chunk
-# a start_ms minutes before its content was actually spoken. Same rationale as
-# VISUAL_MERGE_MAX_GAP_MS.
-SPEECH_MERGE_MAX_GAP_MS = 4_000
-
-# Characters that make an on-screen fragment "maths" rather than a prose label.
-# Merging never crosses kinds: an equation being written must not absorb a
-# heading that happens to be on screen nearby.
-_MATH_CHARS = ("=", "^", "(", ")", "+", "-", "*", "/", "<", ">", "_")
+#: Uploads are capped so a single request cannot wedge the API.
+MAX_UPLOAD_BYTES = 512 * 1024 * 1024
 
 
-def _visual_kind(text: str) -> str:
-    return "math" if any(c in text for c in _MATH_CHARS) else "label"
+@dataclass
+class IngestJob:
+    job_id: str
+    resource_id: str
+    status: str = "pending"
+    error: str | None = None
+    course_id: str | None = None
+    detail: dict = field(default_factory=dict)
 
 
-def _merge_visual_fragments(
-    parts: list[tuple[str, int, int]]
-) -> list[tuple[str, int, int]]:
-    """Group ``(text, start_ms, end_ms)`` fragments into mergeable runs.
-
-    Returns groups of the same shape, each covering exactly the interval its
-    own parts covered: ``start_ms`` is the min start and ``end_ms`` the max end
-    of the parts actually merged. Both bounds therefore come from observed
-    content only -- see the safety note above the constants.
-    """
-    ordered = sorted(parts, key=lambda p: (p[1], p[2]))
-    groups: list[tuple[str, int, int]] = []
-    run: list[tuple[str, int, int]] = []
-    for item in ordered:
-        if run:
-            prev = run[-1]
-            gap = item[1] - prev[2]
-            span = item[2] - run[0][1]
-            joinable = (
-                _visual_kind(prev[0]) == _visual_kind(item[0])
-                and 0 <= gap <= VISUAL_MERGE_MAX_GAP_MS
-                and span <= VISUAL_MERGE_MAX_SPAN_MS
-            )
-            if not joinable:
-                groups.append(_collapse(run))
-                run = []
-        run.append(item)
-    if run:
-        groups.append(_collapse(run))
-    return groups
+_JOBS: dict[str, IngestJob] = {}
+_LOCK = threading.Lock()
 
 
-def _collapse(run: list[tuple[str, int, int]]) -> tuple[str, int, int]:
-    return (
-        "\n".join(text for text, _, _ in run).strip(),
-        min(start for _, start, _ in run),
-        max(end for _, _, end in run),
-    )
+def new_job(course_id: str, resource_id: str) -> IngestJob:
+    job = IngestJob(job_id=f"job_{uuid.uuid4().hex[:12]}", resource_id=resource_id,
+                    course_id=course_id)
+    with _LOCK:
+        _JOBS[job.job_id] = job
+    return job
 
 
-def _visual_chunks(
-    segments: list[Segment],
-    resource_row: Mapping[str, Any],
-    embed_model: str,
-    seen_hashes: set[str],
+def get_job(job_id: str) -> IngestJob | None:
+    with _LOCK:
+        return _JOBS.get(job_id)
+
+
+def update_job(job_id: str, **fields) -> None:
+    with _LOCK:
+        job = _JOBS.get(job_id)
+        if job is not None:
+            for key, value in fields.items():
+                setattr(job, key, value)
+
+
+def clear_jobs() -> None:
+    with _LOCK:
+        _JOBS.clear()
+
+
+def source_type_for(filename: str) -> str:
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".pdf":
+        return "pdf"
+    if suffix == ".pptx":
+        return "pptx"
+    if suffix in VIDEO_SUFFIXES:
+        return "video"
+    raise ValueError(f"unsupported file type {suffix or filename!r}")
+
+
+def _store():
+    from app.retrieval.registry import get_shared_store
+
+    return get_shared_store()
+
+
+def build_chunks(
+    *,
+    resource_id: str,
+    course_id: str,
+    source_type: str,
+    text_segments: list[TextSegment] | None = None,
+    transcript: list[audio_mod.TranscriptSegment] | None = None,
+    visual: list[visual_mod.VisualSegment] | None = None,
+    video_id: str | None = None,
+    title: str | None = None,
 ) -> list[Chunk]:
-    """One chunk per on-screen written-text group, with its own timestamps.
+    """Assemble indexable chunks from every extractor.
 
-    Kept separate from ``chunk_transcript`` on purpose: that chunker merges
-    segments into 30-60s windows, which would smear an equation written at 30s
-    across a window ending at 60s and make its ``end_ms`` a lie. On-screen text
-    must keep the exact interval during which it was visible, because that
-    ``end_ms`` is what the strict ``end_ms <= T`` retrieval gate tests.
+    Audio and visual chunks are tagged ``video`` so they flow through the same
+    strict-T gate the store applies to transcripts. That gate is
+    time-only; nothing distinguishes "spoken" from "on screen" in the
+    timestamp semantics, and merging them here means one gate, not two.
 
-    Short same-kind fragments written seconds apart (one equation captured piece
-    by piece) ARE merged, by ``_merge_visual_fragments``, so a learner asking
-    about the whole expression gets one usable chunk instead of three
-    contextless stubs. The merge never extends ``end_ms`` past the last observed
-    writing, and every chunk still gets non-null ``start_ms``/``end_ms``. A
-    visual segment lacking a real end time cannot prove it finished before T, so
-    it is dropped rather than emitted with a null/zero end -- a null ``end_ms``
-    is excluded by the defensive filter in ``retrieval/store.py``, which is the
-    correct outcome.
+    ``title`` is the source file's original name and is stamped onto every
+    chunk, so ``GET /courses/{id}/resources`` reports what the learner
+    uploaded rather than an internal extractor label like "transcript".
     """
-    from app.ingestion.transcribe import VisualSegment
-
-    resource_id = str(resource_row["id"])
-    course_id = str(resource_row["course_id"])
-    video_id = resource_row.get("video_id")
-
-    # Pass 1: keep only fragments that are usable and not already indexed as
-    # speech. Dropping before the merge stops an already-indexed fragment from
-    # being smuggled back in as part of a merged neighbour.
-    parts: list[tuple[str, int, int]] = []
-    for seg in segments:
-        if not isinstance(seg, VisualSegment):
-            continue
-        text = seg.text.strip()
-        if not text:
-            continue
-        if seg.start_ms is None or seg.end_ms is None or seg.end_ms <= seg.start_ms:
-            log.warning(
-                "dropping visual segment without a usable end_ms: %s", text[:60]
-            )
-            continue
-        h = text_hash(text)
-        if h in seen_hashes:
-            # Already indexed as speech in this resource; a second copy would
-            # double-weight it in the embedding space and skew top-k.
-            log.info("dropping visual text already indexed as speech: %s", text[:60])
-            continue
-        parts.append((text, seg.start_ms, seg.end_ms))
-
-    # Pass 2: one chunk per merged group, timestamped from the group's own parts.
     chunks: list[Chunk] = []
-    for text, start_ms, end_ms in _merge_visual_fragments(parts):
-        h = text_hash(text)
-        if h in seen_hashes:
-            continue
-        seen_hashes.add(h)
-        chunks.append(
-            Chunk(
-                id=hashlib.sha1(
-                    (
-                        resource_id
-                        + "|visual|"
-                        + str(start_ms)
-                        + "-"
-                        + str(end_ms)
-                        + "|"
-                        + h
-                    ).encode("utf-8")
-                ).hexdigest(),
-                resource_id=resource_id,
-                course_id=course_id,
-                source_type="video",
-                video_id=video_id,
-                start_ms=start_ms,
-                end_ms=end_ms,
-                chunk_index=len(chunks),
-                text=text,
-                text_hash=h,
-                embed_model=embed_model,
-            )
+    index = 0
+    for seg in text_segments or []:
+        made = chunk_segment(
+            seg,
+            resource_id=resource_id,
+            course_id=course_id,
+            source_type=source_type,
+            start_index=index,
+            title=title,
         )
+        chunks.extend(made)
+        index += len(made)
+
+    for cue in transcript or []:
+        made = chunk_segment(
+            TextSegment(text=cue.text, start_ms=cue.start_ms, end_ms=cue.end_ms,
+                        kind="transcript"),
+            resource_id=resource_id,
+            course_id=course_id,
+            source_type="video",
+            video_id=video_id,
+            start_index=index,
+            title=title,
+        )
+        chunks.extend(made)
+        index += len(made)
+
+    for frame in visual or []:
+        made = chunk_segment(
+            TextSegment(text=frame.text, start_ms=frame.start_ms,
+                        end_ms=frame.end_ms, kind="visual"),
+            resource_id=resource_id,
+            course_id=course_id,
+            source_type="video",
+            video_id=video_id,
+            start_index=index,
+            title=title,
+        )
+        chunks.extend(made)
+        index += len(made)
     return chunks
 
 
-def _figure_chunks(
-    segments: list[Segment],
-    resource_row: Mapping[str, Any],
-    embed_model: str,
-    seen_hashes: set[str],
-) -> list[Chunk]:
-    """One chunk per figure/diagram element, with its own exact timestamps.
+def _clamp_to_duration(chunks: list[Chunk], duration_ms: int) -> list[Chunk]:
+    """No chunk may claim content past the authoritative duration.
 
-    ``FigureSegment`` subclasses ``VisualSegment``, but figure elements are NOT
-    run through ``_merge_visual_fragments``: that merge exists because Gemini
-    transcribes one equation in pieces ("= f(x, y)", "= x^2 y"), which are
-    fragments of a single expression. Two adjacent figure entries are two
-    distinct things on screen ("a yellow curve", then "he draws a blue arrow
-    pointing from x to y"), so merging them would answer neither question well
-    and would widen ``end_ms`` across a window the learner may not have reached.
-
-    Every chunk therefore carries the element's own observed ``start_ms`` and
-    ``end_ms``, both non-null: an element without a real end time cannot prove it
-    finished before T, so it is dropped rather than emitted with a null/zero end
-    (which the defensive filter in ``retrieval/store.py`` would exclude anyway).
-    ``source_type`` stays ``"video"`` so the strict ``end_ms <= T`` gate applies
-    to figures exactly as it does to speech.
+    Belt-and-braces with the frame/transcript arithmetic: a model-sourced
+    boundary that slipped through still cannot push ``end_ms`` beyond the file.
     """
-    from app.ingestion.transcribe import FigureSegment
-
-    resource_id = str(resource_row["id"])
-    course_id = str(resource_row["course_id"])
-    video_id = resource_row.get("video_id")
-    chunks: list[Chunk] = []
-    for seg in segments:
-        if not isinstance(seg, FigureSegment):
-            continue
-        text = seg.text.strip()
-        if not text:
-            continue
-        if seg.start_ms is None or seg.end_ms is None or seg.end_ms <= seg.start_ms:
-            log.warning("dropping figure segment without a usable end_ms: %s", text[:60])
-            continue
-        h = text_hash(text)
-        if h in seen_hashes:
-            # Already indexed as speech or as on-screen text for this resource;
-            # a second copy would double-weight it and skew top-k.
-            log.info("dropping figure text already indexed: %s", text[:60])
-            continue
-        seen_hashes.add(h)
-        chunks.append(
-            Chunk(
-                id=hashlib.sha1(
-                    (
-                        resource_id
-                        + "|figure|"
-                        + str(seg.start_ms)
-                        + "-"
-                        + str(seg.end_ms)
-                        + "|"
-                        + h
-                    ).encode("utf-8")
-                ).hexdigest(),
-                resource_id=resource_id,
-                course_id=course_id,
-                source_type="video",
-                video_id=video_id,
-                start_ms=seg.start_ms,
-                end_ms=seg.end_ms,
-                chunk_index=len(chunks),
-                text=text,
-                text_hash=h,
-                embed_model=embed_model,
-            )
-        )
-    return chunks
-
-
-def _split_speech_on_gaps(
-    segments: list[Segment], max_gap_ms: int = SPEECH_MERGE_MAX_GAP_MS
-) -> list[list[Segment]]:
-    """Split speech segments into runs that never span a large pause.
-
-    A chunk built from segments either side of a long silence would carry a
-    ``start_ms`` from before the pause, so a sentence spoken after it inherits a
-    start far earlier than it was uttered. Splitting the run keeps every chunk
-    inside one continuous stretch of speech. Purely a SPLIT: no segment is
-    dropped, re-timed, or given a wider interval than it already had.
-    """
-    runs: list[list[Segment]] = []
-    current: list[Segment] = []
-    for seg in segments:
-        if current:
-            prev = current[-1]
-            if (
-                prev.end_ms is not None
-                and seg.start_ms is not None
-                and seg.start_ms - prev.end_ms > max_gap_ms
-            ):
-                runs.append(current)
-                current = []
-        current.append(seg)
-    if current:
-        runs.append(current)
-    return runs
-
-
-def _chunk_segments(
-    segments: list[Segment],
-    resource_row: Mapping[str, Any],
-    embed_model: str,
-) -> list[Chunk]:
-    rtype = str(resource_row.get("type", "note"))
-    if rtype == "video":
-        from app.ingestion.transcribe import FigureSegment, VisualSegment
-
-        # Figures are pulled out first: they subclass VisualSegment, so leaving
-        # them in `visual` would send them through the on-screen fragment merge
-        # and smear several distinct elements into one chunk.
-        figures = [s for s in segments if isinstance(s, FigureSegment)]
-        visual = [
-            s for s in segments if isinstance(s, VisualSegment) and not isinstance(s, FigureSegment)
-        ]
-        speech = [
-            s for s in segments if not isinstance(s, VisualSegment)
-        ]
-        # Each continuous run of speech is chunked separately so a window can
-        # never bridge a long pause (see _split_speech_on_gaps), and every
-        # window is capped so its start_ms sits close to its own content.
-        chunks: list[Chunk] = []
-        for run in _split_speech_on_gaps(speech):
-            chunks.extend(
-                chunk_transcript(
-                    run,
-                    resource_id=str(resource_row["id"]),
-                    course_id=str(resource_row["course_id"]),
-                    source_type=rtype,
-                    video_id=resource_row.get("video_id"),
-                    embed_model=embed_model,
-                    min_window_s=SPEECH_CHUNK_MIN_WINDOW_S,
-                    max_window_s=SPEECH_CHUNK_MAX_WINDOW_S,
-                    overlap_s=SPEECH_CHUNK_OVERLAP_S,
-                )
-            )
-        # `seen` spans all three arrays, so text already indexed as speech, as
-        # on-screen text, or as an earlier figure is never indexed twice for one
-        # resource.
-        seen = {c.text_hash for c in chunks}
-        chunks.extend(_visual_chunks(visual, resource_row, embed_model, seen))
-        chunks.extend(_figure_chunks(figures, resource_row, embed_model, seen))
-        for i, c in enumerate(chunks):
-            c.chunk_index = i
-        return chunks
-    # Non-transcript resources: one chunk per segment unless segments are tiny.
-    chunks: list[Chunk] = []
-    buf: list[Segment] = []
-    buf_len = 0
-
-    def flush() -> None:
-        nonlocal buf, buf_len
-        if not buf:
-            return
-        text = "\n\n".join(s.text.strip() for s in buf).strip()
-        first, last = buf[0], buf[-1]
-        chunks.append(
-            Chunk(
-                id=hashlib.sha1(
-                    (
-                        str(resource_row["id"])
-                        + "|"
-                        + first.segment_key()
-                        + "|"
-                        + text_hash(text)
-                    ).encode("utf-8")
-                ).hexdigest(),
-                resource_id=str(resource_row["id"]),
-                course_id=str(resource_row["course_id"]),
-                source_type=rtype,
-                video_id=resource_row.get("video_id"),
-                start_ms=first.start_ms,
-                end_ms=last.end_ms,
-                page_no=first.page_no,  # first page when spanning pages (never null)
-                slide_no=first.slide_no,  # first slide when spanning slides
-                chunk_index=len(chunks),
-                text=text,
-                text_hash=text_hash(text),
-                embed_model=embed_model,
-            )
-        )
-        buf = []
-        buf_len = 0
-
-    for seg in segments:
-        buf.append(seg)
-        buf_len += len(seg.text)
-        page_key = (seg.page_no, seg.slide_no)
-        if buf_len >= 1200 or (
-            buf and (buf[0].page_no, buf[0].slide_no) != page_key
+    out: list[Chunk] = []
+    for chunk in chunks:
+        if chunk.end_ms is not None and chunk.end_ms > duration_ms:
+            chunk.end_ms = duration_ms
+        if (
+            chunk.start_ms is not None
+            and chunk.end_ms is not None
+            and chunk.end_ms <= chunk.start_ms
         ):
-            flush()
-    flush()
-    for i, c in enumerate(chunks):
-        c.chunk_index = i
-    return chunks
+            log.warning("dropping degenerate chunk %s (end<=start)", chunk.chunk_id)
+            continue
+        out.append(chunk)
+    return out
 
 
-async def _db_reachable(url: str) -> bool:
-    try:
-        from sqlalchemy.ext.asyncio import create_async_engine
+def ingest_media(
+    path: str | Path,
+    *,
+    course_id: str,
+    resource_id: str,
+    video_id: str | None = None,
+    with_visual: bool = True,
+    max_visual_frames: int | None = 40,
+) -> dict:
+    """Audio + visual ingest for a video. Raises when duration is unknown.
 
-        engine = create_async_engine(url, pool_pre_ping=True)
+    Refusing to index without a duration is deliberate: strict-T compares
+    ``end_ms <= T`` and an unknown timeline makes that comparison meaningless.
+    """
+    path = Path(path)
+    duration_ms = media_duration_ms(path)
+    if duration_ms is None:
+        raise ValueError(
+            f"cannot determine duration of {path.name}; refusing to ingest "
+            "time-gated content without an authoritative timeline"
+        )
+
+    transcript, audio_signals = audio_mod.transcribe(path, duration_ms=duration_ms)
+    visual: list[visual_mod.VisualSegment] = []
+    if with_visual:
         try:
-            async with engine.connect() as conn:
-                await conn.execute(__import__("sqlalchemy").text("SELECT 1"))
-            return True
-        finally:
-            await engine.dispose()
-    except Exception:  # noqa: BLE001 - any failure means "not reachable"
-        return False
-
-
-async def _upsert_chunks(url: str, chunks: list[Chunk], resource_id: str) -> None:
-    from sqlalchemy import text
-    from sqlalchemy.ext.asyncio import create_async_engine
-
-    engine = create_async_engine(url)
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(
-                text("DELETE FROM chunks WHERE resource_id = :rid"), {"rid": resource_id}
+            visual = visual_mod.extract_visual_segments(
+                str(path), duration_ms=duration_ms, max_frames=max_visual_frames
             )
-            for c in chunks:
-                row = c.to_row()
-                row["embedding"] = (
-                    "[" + ",".join(repr(v) for v in c.embedding) + "]"
-                    if c.embedding is not None
-                    else None
-                )
-                await conn.execute(
-                    text(
-                        "INSERT INTO chunks (id, resource_id, course_id, source_type,"
-                        " video_id, start_ms, end_ms, page_no, slide_no, chunk_index,"
-                        " text, text_hash, embed_model, embedding, permitted) VALUES"
-                        " (:id, :resource_id, :course_id, :source_type, :video_id,"
-                        " :start_ms, :end_ms, :page_no, :slide_no, :chunk_index,"
-                        " :text, :text_hash, :embed_model, CAST(:embedding AS vector),"
-                        " :permitted)"
-                    ),
-                    row,
-                )
-    finally:
-        await engine.dispose()
+        except Exception as exc:  # noqa: BLE001 - visual is additive to audio
+            log.warning("visual extraction failed for %s: %s", path.name, exc)
+
+    chunks = build_chunks(
+        resource_id=resource_id,
+        course_id=course_id,
+        source_type="video",
+        transcript=transcript,
+        visual=visual,
+        video_id=video_id,
+        # The real uploaded/downloaded filename, so the catalogue shows the
+        # learner their own file name and not the extractor label.
+        title=path.name,
+    )
+    chunks = _clamp_to_duration(chunks, duration_ms)
+    written = _store().add(chunks)
+    report = {
+        "audio_chunks": sum(1 for c in chunks if c.metadata.get("kind") == "transcript"),
+        "visual_chunks": sum(1 for c in chunks if c.metadata.get("kind") == "visual"),
+        "total_chunks": written,
+        "duration_ms": duration_ms,
+        "max_end_ms": max((c.end_ms or 0 for c in chunks), default=0),
+        "audio_signals": audio_signals,
+    }
+    log.info(
+        "ingested %s: %d audio / %d visual chunk(s), max end_ms=%s of %s",
+        path.name, report["audio_chunks"], report["visual_chunks"],
+        report["max_end_ms"], duration_ms,
+    )
+    return report
 
 
-async def _set_job_status(url: str, job_id: str | None, status: str, error: str | None = None) -> None:
-    if not job_id:
-        return
+def ingest_document(
+    path: str | Path, *, course_id: str, resource_id: str, source_type: str
+) -> dict:
+    """Document ingest. Never time-gated, so no duration lookup happens."""
+    path = Path(path)
+    segments = extract(path, source_type)
+    chunks = build_chunks(
+        resource_id=resource_id,
+        course_id=course_id,
+        source_type=source_type,
+        text_segments=segments,
+        title=path.name,
+    )
+    written = _store().add(chunks)
+    return {"document_chunks": written, "total_chunks": written}
+
+
+def ingest_youtube(
+    url: str, *, course_id: str, resource_id: str, with_visual: bool = True
+) -> dict:
+    """Captions first; download+ASR only when captions are unavailable."""
+    from app.config import settings
+
+    video_id = yt_mod.parse_youtube_id(url)
+    if not video_id:
+        raise ValueError(f"could not extract a YouTube video id from {url!r}")
+
+    captions = yt_mod.fetch_captions(video_id)
+    if captions:
+        chunks = build_chunks(
+            resource_id=resource_id,
+            course_id=course_id,
+            source_type="video",
+            text_segments=captions,
+            video_id=video_id,
+        )
+        # Caption ends come from the uploader's own timeline; without a
+        # downloaded file there is no container to check them against, so they
+        # are trusted as observed and only sorted, never invented.
+        chunks.sort(key=lambda c: (c.start_ms or 0))
+        written = _store().add(chunks)
+        return {
+            "video_chunks": written,
+            "caption_chunks": written,
+            "source": "captions",
+            "video_id": video_id,
+        }
+
+    media = yt_mod.download_media(
+        url, data_dir=settings.yt_data_dir, max_minutes=settings.yt_max_minutes
+    )
+    if media is None:
+        raise ValueError(
+            f"no captions and media download failed for {video_id}"
+        )
+    report = ingest_media(
+        media, course_id=course_id, resource_id=resource_id,
+        video_id=video_id, with_visual=with_visual,
+    )
+    report["source"] = "asr"
+    report["video_id"] = video_id
+    return report
+
+
+def run_ingest(job: IngestJob, work) -> None:
+    """Execute ``work()`` on a worker thread, recording the outcome on the job."""
+    update_job(job.job_id, status="processing", error=None)
     try:
-        from sqlalchemy import text
-        from sqlalchemy.ext.asyncio import create_async_engine
-
-        engine = create_async_engine(url)
-        try:
-            async with engine.begin() as conn:
-                await conn.execute(
-                    text(
-                        "UPDATE ingestion_jobs SET status = :status, error = :error,"
-                        " updated_at = now() WHERE id = :id"
-                    ),
-                    {"status": status, "error": error, "id": job_id},
-                )
-        finally:
-            await engine.dispose()
-    except Exception as exc:  # noqa: BLE001 - logging only
-        log.warning("ingestion_jobs update failed: %s", exc)
-
-
-async def run_ingestion(
-    resource_row: Mapping[str, Any],
-    asset_path: str | Path,
-    embedder: EmbeddingProvider | None = None,
-    database_url: str | None = None,
-    job_id: str | None = None,
-) -> list[Chunk]:
-    """Run extract->chunk->embed->upsert. Returns chunks (dry-run when no DB)."""
-    embedder = embedder or get_default_embedder()
-    url = database_url if database_url is not None else settings.database_url
-    db_ok = bool(url) and await _db_reachable(url)
-
-    if db_ok:
-        await _set_job_status(url, job_id, "processing")
-
-    try:
-        segments = extract(asset_path, str(resource_row.get("type", "note")), resource_row.get("video_id"))
-        chunks = _chunk_segments(segments, resource_row, embedder.name)
-        texts = [c.text for c in chunks]
-        vectors = embedder.embed_batch(texts) if texts else []
-        for c, v in zip(chunks, vectors):
-            c.embedding = v
-        if db_ok:
-            await _upsert_chunks(url, chunks, str(resource_row["id"]))
-            await _set_job_status(url, job_id, "done")
-        else:
-            log.info("DB unreachable; dry-run ingestion returning %d chunks", len(chunks))
-        return chunks
+        report = work()
     except Exception as exc:
-        if db_ok:
-            await _set_job_status(url, job_id, "failed", str(exc))
-        raise
+        log.exception("ingest job %s failed", job.job_id)
+        update_job(
+            job.job_id,
+            status="failed",
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return
+    update_job(job.job_id, status="done", detail=report)
+
+
+def schedule(job: IngestJob, work) -> None:
+    """Run an ingest in the background so POST returns a job id immediately."""
+
+    async def _run() -> None:
+        await asyncio.to_thread(run_ingest, job, work)
+
+    try:
+        asyncio.get_running_loop().create_task(_run())
+    except RuntimeError:
+        # No loop (sync context): run inline. Slower, but correct.
+        run_ingest(job, work)
+
+
+def job_payload(job: IngestJob) -> dict:
+    """Shape matching ``IngestJob`` in apps/web/lib/api.ts (exact keys)."""
+    payload = {
+        "job_id": job.job_id,
+        "resource_id": job.resource_id,
+        "status": job.status,
+    }
+    if job.error:
+        payload["error"] = job.error
+    return payload

@@ -44,9 +44,66 @@ from app.eval.fixture import (
     FIXTURE_COURSE_ID,
     build_fixture_chunks,
 )
-from app.ingestion.embedder import HashingEmbedder
-from app.retrieval.service import RetrievalService, RetrievedPassage
-from app.retrieval.store import VIDEO_SOURCE_TYPES, InMemoryVectorStore
+
+# ---------------------------------------------------------------------------
+# TODO(library-rebuild) -- harness source is preserved, not deleted.
+#
+# The three imports below originally read:
+#
+#     from app.ingestion.embedder import HashingEmbedder
+#     from app.retrieval.service import RetrievalService, RetrievedPassage
+#     from app.retrieval.store import VIDEO_SOURCE_TYPES, InMemoryVectorStore
+#
+# The hand-built ingestion/retrieval stack they depended on was deleted in the
+# teardown that cleared the tree for a library rebuild (ADR-002). Rather than
+# delete the measurement capability, this harness is kept intact and every call
+# site below still works verbatim -- but construction now raises, loudly.
+#
+# Two obligations carried forward to whoever rewires this:
+#
+# 1. `production_gap_rate` MUST be re-pointed at the real store. It currently
+#    reports 0 while measuring only `InMemoryVectorStore` + `HashingEmbedder`.
+#    After the rebuild it must report `gap_mode=postgres` (or the Chroma
+#    equivalent) vs `gap_mode=inmemory` in its own output, so a fixture-backed
+#    zero can never be mistaken for a production-backed zero. See ADR-002 §7
+#    "The metric that must not go stale" -- a false assurance is worse than no
+#    metric.
+# 2. The strict-T gate must be present in BOTH harness passes. `apply_strict_cutoff`
+#    (pre-ranking) and the eval-strict re-assertion (post-ranking) are the
+#    harness's mirror of the production gate; the production gate itself is
+#    `end_ms IS NOT NULL AND end_ms <= T`. See ADR-002 §5.1.
+#
+# `DEFAULT_THRESHOLD` was already unvalidated (see this module's docstring) and
+# must be re-tuned against the golden set once real retrieval scores exist.
+# ---------------------------------------------------------------------------
+_REBUILD_HINT = (
+    "app.eval.harness requires the rebuilt retrieval/ingestion stack "
+    "(see docs/adr/ADR-002-retrieval-stack-library-migration.md). "
+)
+
+
+def _pending(name: str):
+    def _raise(*_args, **_kwargs):
+        raise NotImplementedError(
+            f"{_REBUILD_HINT}`{name}` has no implementation. Rebuild it, then "
+            "restore the original import in this module."
+        )
+
+    return _raise
+
+
+HashingEmbedder = _pending("HashingEmbedder")
+RetrievalService = _pending("RetrievalService")
+InMemoryVectorStore = _pending("InMemoryVectorStore")
+
+# Type-only usage (annotations are strings under `from __future__ import
+# annotations`), so no runtime object is needed -- kept as a placeholder name so
+# the dataclass annotations above stay readable.
+RetrievedPassage = type("RetrievedPassage", (), {})
+
+# Still a real value: the harness tests `passage.source_type in
+# VIDEO_SOURCE_TYPES`, and the set is policy data, not retrieval mechanism.
+VIDEO_SOURCE_TYPES: frozenset[str] = frozenset({"video", "video_transcript"})
 
 DEFAULT_K = 5
 DEFAULT_THRESHOLD = 0.08

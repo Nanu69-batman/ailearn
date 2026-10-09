@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from app.chat.llm import DeterministicStubLLM
 from app.chat.prompts import (
     REFUSAL_TEXT,
+    SCOPE_REFUSAL_TEXT,
     build_grounded_prompt,
     extract_cited_ids,
     rewrite_query,
@@ -36,6 +37,26 @@ def _passage_to_citation(passage) -> Citation:
         page_no=passage.page_no,
         slide_no=passage.slide_no,
     )
+
+
+def effective_resource_scope(
+    granted_scope: Sequence[str], focus_resource_id: str | None
+) -> list[str]:
+    """The resources this request may actually read: grant INTERSECT focus.
+
+    Focus is a *narrowing preference*, never an authority. It is applied as an
+    intersection here (and again, structurally, inside the store's ``where``
+    clause) precisely because an earlier revision REPLACED the grant with the
+    focused id -- which let a caller focus an ungranted resource and read it.
+
+    An empty result means the session's materials do not cover what the learner
+    is looking at right now (stale grant, deleted resource, or simply a
+    different resource). It is never widened or substituted.
+    """
+    granted = list(granted_scope or [])
+    if focus_resource_id:
+        granted = [r for r in granted if r == focus_resource_id]
+    return granted
 
 
 def apply_strict_timestamp(passages: Sequence, current_time_ms: int, mode: str):
@@ -88,6 +109,18 @@ class ChatService:
         self._messages = messages or message_store
 
     def _retrieval(self):
+        """Bind the awaitable retrieval seam.
+
+        Three independent strict-T layers now sit between the store and the
+        answer, and all three must stay:
+          1. the store's Chroma ``where`` filter (structural)
+          2. ``store.assert_no_leakage()`` inside ``RetrievalService``
+          3. ``apply_strict_timestamp()`` below, post-retrieval
+
+        Each layer has failed independently in this project's history
+        (ADR-002 section 5.1), so the redundancy is the point rather than
+        an oversight.
+        """
         from app.retrieval.service import RetrievalService
 
         return RetrievalService(store=self._store, embedder=self._embedder)
@@ -108,7 +141,21 @@ class ChatService:
             raise SessionNotFoundError(session_id)
 
         t_ms = clamp_current_time_ms(current_time_ms)
-        allowed = list(session.resource_scope)
+        allowed = effective_resource_scope(session.resource_scope, focus_resource_id)
+        if not allowed:
+            # Fail closed and say WHY. Without this branch the request reached
+            # retrieval with an impossible scope and came back through the
+            # ordinary low-evidence path, telling the learner they had not
+            # watched far enough -- a content explanation for what is actually a
+            # stale session grant. `scope_empty` makes that distinguishable.
+            log.warning(
+                "empty_scope: session grant does not cover the focused resource"
+            )
+            self._persist(session_id, message, SCOPE_REFUSAL_TEXT, [])
+            return ChatResponse(
+                answer=SCOPE_REFUSAL_TEXT, citations=[], refused=True, scope_empty=True
+            )
+
         history = self._messages.user_texts(session_id, limit=5)
         rewritten = rewrite_query(message, history)
 

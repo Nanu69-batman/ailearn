@@ -1,359 +1,469 @@
-"""Vector retrieval backends behind a single protocol.
+"""The retrieval store: Chroma persistent client, scope + strict-T enforced.
 
-All backends must enforce the same deterministic scoping rules *inside* the
-retrieval layer (never via LLM prompting):
+    app/retrieval/
+        store.py    -- ChromaVectorStore: the two obligations live here
+        service.py  -- RetrievalService: awaitable retrieve() for ChatService
+        registry.py -- process-wide shared store + snapshot bookkeeping
 
-  * ``course_id`` equality,
-  * ``resource_id`` membership in the learner's allowed set,
-  * ``permitted = true``,
-  * timestamp guard: transcript chunks with ``end_ms > T`` are invisible
-    (the whole chunk must end at or before the learner's pause point;
-    non-transcript sources are unaffected by ``T``).
+Enforcement, and where it happens
+--------------------------------
+Both obligations are pushed into the Chroma ``where`` filter so they are part
+of the query, not a post-filter someone can forget:
 
-``PostgresVectorStore`` enforces these in SQL; ``InMemoryVectorStore`` enforces
-the identical predicate in Python (tests/demo without a database). The
-post-retrieval assertion in :mod:`app.retrieval.filters` is the second gate.
+1. **Scope.** ``resource_id IN resource_scope``. A chunk from an ungranted
+   resource is never a candidate, so it cannot appear in a citation.
+2. **Strict-T.** ``end_ms IS NOT NULL AND end_ms <= T`` for time-gated source
+   types; docs (pdf/pptx) are ungated because a page is not a moment in time.
+   Never ``start_ms`` -- a gate relaxed to ``start_ms`` measured a 48% spoiler
+   rate (ADR-002 §5.1).
+
+``app/chat/service.py:apply_strict_timestamp`` re-checks strict-T after
+retrieval as a second, independent gate. The redundancy is deliberate: each
+layer has failed independently at some point in this project's history.
+
+Chroma cannot express ``IS NOT NULL`` (metadata values are non-null by
+construction, and a missing key simply fails a comparison), so unknown
+``end_ms`` is stored as a sentinel and the filter requires the real integer.
+Python-side re-filtering then happens as a *third*, cheap assertion layer --
+not as the primary mechanism.
+
+Two mechanisms address starvation, and only the second is sufficient on its own:
+
+1. **Over-fetch** (recall). Request ``k * STARVATION_OVERFETCH`` neighbours so
+   the eligible pool is large enough to contain video chunks at all. This is
+   necessary: Chroma filters AFTER the ANN step, so with ``n_results=k`` the
+   candidates can be entirely ineligible and the eligible set never surfaces.
+2. **Per-family coverage** (the guarantee). Over-fetching alone is not enough
+   -- the extra candidates are simply truncated away by top-k, and because
+   slides restate the learner's question almost verbatim, docs outrank the
+   transcript on pure distance. A learner at T=30s asking "what is on screen"
+   would get slides back and an empty answer about the video.
+
+   So the top-k is formed with a reserved slot per source family that is
+   present *and eligible* in the candidate pool: distance order first, then a
+   guaranteed slot for the best-scoring time-gated passage (and the best
+   doc). Only families actually present in the pool get a slot, so this adds
+   nothing when there is only one source type -- it is a recall guarantee
+   across media kinds, not a re-ranking.
+
+   It cannot weaken the gate: coverage is chosen only from passages that
+   already passed ``where`` and :meth:`ChromaVectorStore._passes_strict_t`.
+
+Low-T starvation (ADR-002 R1)
+-----------------------------
+Chroma/LangChain run approximate nearest-neighbour search and apply metadata
+filters afterwards. At low ``T`` most in-scope chunks are docs (never gated) and
+video chunks are a small minority, so a naive ``n_results=k`` query can be
+entirely consumed by the *unfiltered-then-discarded* majority and return zero
+video chunks even though plenty are eligible.
+
+Mitigation: the query over-fetches (see :data:`STARVATION_OVERFETCH`) so the
+filter has candidates to work with, and the Python re-filter guarantees
+correctness of what survives. Over-fetching cannot leak -- the filter is still
+applied inside Chroma -- it only makes the eligible set large enough to reach
+``k``.
 """
 
 from __future__ import annotations
 
 import logging
-import math
-import threading
-from collections.abc import Sequence
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
-
-if TYPE_CHECKING:  # pragma: no cover - typing only, no runtime cost
-    from app.ingestion.models import Chunk
+from dataclasses import dataclass, field
+from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-# Transcript-bearing source types gated by the learner timestamp T.
-# Ingestion writes ``source_type="video"`` (resource type) while the plan/ADR
-# call the transcript source ``"video_transcript"``; both are gated.
-VIDEO_SOURCE_TYPES = frozenset({"video", "video_transcript"})
-
-# SQL fragment enforcing the strict timestamp boundary: a video chunk is
-# visible only if its *entire* span ends at or before T
-# (``end_ms <= :current_time_ms``), so no retrieved chunk contains content
-# taught after the learner's pause point. It is a strict tightening of the
-# legacy spec clause ``(source_type != 'video_transcript' OR start_ms <= :T)``:
-# it additionally gates ``source_type = 'video'`` (what ingestion actually
-# stores for transcript chunks, see app/ingestion/jobs.py) and compares
-# ``end_ms`` instead of ``start_ms`` so chunks overlapping T
-# (``start_ms <= T < end_ms``) are dropped.
-# NULL ``end_ms`` choice: EXCLUDE. A video chunk with NULL end_ms cannot prove
-# it ends before T, so it is treated as leakage. The explicit
-# ``end_ms IS NOT NULL`` makes that intent testable (plain ``end_ms <= :T``
-# would also filter NULLs via UNKNOWN, but implicitly).
-TIMESTAMP_GUARD_CLAUSE = (
-    "(source_type NOT IN ('video', 'video_transcript')"
-    " OR (end_ms IS NOT NULL AND end_ms <= :current_time_ms))"
+#: Source types subject to the strict-T gate. Must stay a superset of
+#: ``app.chat.service.VIDEO_SOURCE_TYPES``; that layer independently re-checks
+#: and would otherwise drop visual chunks before this layer ever sees them.
+TIME_GATED_SOURCE_TYPES: frozenset[str] = frozenset(
+    {"video", "video_transcript", "visual", "visual_frame"}
 )
 
-# Indexed-chunk dimensions already reported as mismatched, so the warning in
-# ``InMemoryVectorStore.search`` fires once per dimension rather than per chunk.
-_warned_dims: set[int] = set()
+#: Sentinel stored for a time-gated chunk whose end is unknown. Any real
+#: end_ms is >= 0, so ``end_ms == -1`` can never satisfy the ``<= T`` arm and
+#: the chunk is excluded -- which is the required behaviour (NULL end_ms is
+#: EXCLUDE, not UNKNOWN).
+NO_END_MS = -1
 
+#: How many neighbours to request per wanted passage. Chroma filters AFTER
+#: ANN, so requesting only k can starve eligible video chunks behind ineligible
+#: docs. 20x is generous for course-sized corpora and still cheap.
+STARVATION_OVERFETCH = 20
 
-class EmbeddingDimensionMismatch(ValueError):
-    """A query vector and an indexed chunk vector have different widths.
-
-    Cosine similarity is only defined on equal-length vectors. ``zip`` truncates
-    to the shorter one, which produces a number that *looks* like a relevance
-    score but has no meaning -- and therefore silently corrupts ranking. This is
-    raised instead of truncating; see :func:`_cosine`.
-    """
+#: Hard ceiling on the over-fetch, so a large k cannot ask for 10k vectors.
+MAX_CANDIDATES = 2000
 
 
 @dataclass
-class ScoredChunk:
-    """A retrieved chunk with its similarity score (higher = more similar)."""
+class RetrievedPassage:
+    """A retrieved chunk, shaped as ``app.chat`` reads one.
 
-    chunk: Chunk
-    score: float
-
-
-class VectorStore(Protocol):
-    """Repository seam for vector search (pgvector now, swappable later)."""
-
-    async def search(
-        self,
-        course_id: str,
-        allowed_resource_ids: Sequence[str],
-        current_time_ms: int,
-        query_vector: Sequence[float],
-        k: int = 8,
-    ) -> list[ScoredChunk]:
-        """Return up to ``k`` chunks, already scoped to course/scope/T."""
-        ...  # pragma: no cover - protocol
-
-
-def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
-    """Cosine similarity, raising on any dimension mismatch.
-
-    Chosen behaviour: RAISE (:class:`EmbeddingDimensionMismatch`) rather than
-    skip-and-log. ``skip`` would still require the caller to decide what a
-    missing candidate means for ranking, and a store where every chunk is
-    skipped degenerates into "no results" -- which is indistinguishable, at the
-    call site, from an empty scope. Raising makes the misconfiguration
-    impossible to miss at the single point where the vectors meet, and
-    ``InMemoryVectorStore.search`` converts it into an explicit skip + warning
-    so one bad chunk cannot take down a whole query.
-
-    The previous implementation zipped the vectors, so a 1536-dim query scored
-    against the first 1536 dims of a 3072-dim Gemini chunk: a plausible float,
-    silently meaningless, and therefore arbitrary ranking.
+    Field list is pinned by the readers: ``_passage_to_citation``,
+    ``build_grounded_prompt`` and ``apply_strict_timestamp`` touch exactly
+    these attributes.
     """
-    if len(a) != len(b):
-        raise EmbeddingDimensionMismatch(
-            f"cosine similarity requires equal dimensions, got {len(a)} and {len(b)}"
-        )
-    dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a))
-    nb = math.sqrt(sum(y * y for y in b))
-    if na == 0.0 or nb == 0.0:
-        return 0.0
-    return dot / (na * nb)
+
+    chunk_id: str
+    resource_id: str
+    course_id: str
+    source_type: str
+    text: str
+    start_ms: int | None = None
+    end_ms: int | None = None
+    video_id: str | None = None
+    page_no: int | None = None
+    slide_no: int | None = None
+    score: float = 1.0
+    metadata: dict = field(default_factory=dict)
 
 
-def _in_scope(chunk: Chunk, course_id: str, allowed: frozenset, t_ms: int) -> bool:
-    if chunk.course_id != course_id:
-        return False
-    if chunk.resource_id not in allowed:
-        return False
-    if not chunk.permitted:
-        return False
-    if chunk.source_type in VIDEO_SOURCE_TYPES:
-        # Strict gate: the whole chunk must end at or before T.
-        # NULL end_ms is excluded defensively (cannot prove end_ms <= T);
-        # non-video sources are unaffected by T.
-        if chunk.end_ms is None:
-            log.warning(
-                "retrieval scope blocked: video chunk %s has NULL end_ms "
-                "(learner T=%dms)",
-                getattr(chunk, "id", "?"),
-                t_ms,
-            )
-            return False
-        if chunk.end_ms > t_ms:
-            return False
-    return True
+def chroma_metadata(chunk) -> dict:
+    """Flatten a :class:`app.ingestion.chunking.Chunk` into Chroma metadata.
+
+    ``end_ms`` becomes :data:`NO_END_MS` when unknown so the strict-T filter
+    has a comparable integer to work with (Chroma has no null metadata).
+    """
+    gated = chunk.source_type in TIME_GATED_SOURCE_TYPES
+    end_ms = chunk.end_ms if chunk.end_ms is not None else NO_END_MS
+    meta = {
+        "chunk_id": chunk.chunk_id,
+        "resource_id": chunk.resource_id,
+        "course_id": chunk.course_id,
+        "source_type": chunk.source_type,
+        "start_ms": -1 if chunk.start_ms is None else int(chunk.start_ms),
+        "end_ms": int(end_ms),
+        "page_no": -1 if chunk.page_no is None else int(chunk.page_no),
+        "slide_no": -1 if chunk.slide_no is None else int(chunk.slide_no),
+        "video_id": chunk.video_id or "",
+        "kind": str(chunk.metadata.get("kind", "")),
+        # Original uploaded file name. Carried per chunk so a re-ingest
+        # overwrites it; "" means the filename was genuinely unavailable and
+        # the catalogue must show the resource id rather than invent one.
+        "title": str(chunk.metadata.get("title", "") or ""),
+    }
+    log.debug("chroma metadata for %s gated=%s", chunk.chunk_id, gated)
+    return meta
 
 
-class InMemoryVectorStore:
-    """Cosine-similarity store for tests/demo; enforces the same predicate."""
+class _EmbedderFunction:
+    """Adapter from our embedder to Chroma's ``EmbeddingFunction`` protocol.
 
-    def __init__(self, chunks: Sequence[Chunk] | None = None) -> None:
-        # Guards every read and write of ``_chunks``.
-        #
-        # Why: ingestion mutates this store from a background thread while
-        # request threads concurrently index / search / serialise it. Without
-        # a lock the read-modify-write in ``index`` is not atomic across the
-        # ``_chunks = [...]`` rebind and the following ``.extend``, so two
-        # concurrent ingests silently drop each other's chunks, and a snapshot
-        # taken mid-mutation can serialise a half-built list. A plain
-        # ``threading.Lock`` (not an RLock) is enough: no public method calls
-        # another one while holding it.
-        self._lock = threading.Lock()
-        self._chunks: list[Chunk] = list(chunks) if chunks else []
+    Supplied explicitly so Chroma never falls back to its default ONNX model,
+    which downloads weights on first use and would break offline tests.
+    """
 
-    def snapshot_chunks(self) -> list[Chunk]:
-        """Return a shallow copy of the indexed chunks under the lock.
+    def __init__(self, embedder) -> None:
+        self._embedder = embedder
 
-        Callers that need to serialise or iterate the chunk list (snapshot
-        persistence, long scans) take one of these instead of reaching into
-        ``_chunks``, so they cannot observe a list being rebuilt underneath
-        them and cannot hold the lock for the duration of their own work.
-        """
-        with self._lock:
-            return list(self._chunks)
-
-    def index(self, chunks: Sequence[Chunk]) -> None:
-        """Add chunks to the store (replacement keyed by chunk id).
-
-        Dedupes by chunk id *and* drops any stale chunk re-keyed under the
-        same resource (re-ingestion of one resource must not accumulate
-        orphaned chunks).
-        """
-        known = {c.id for c in chunks}
-        resource_ids = {c.resource_id for c in chunks}
-        # One critical section: read-modify-write must be atomic, otherwise a
-        # concurrent index() rebinds ``_chunks`` between the rebuild and the
-        # extend below and the extended chunks are written to an orphaned list.
-        with self._lock:
-            rebuilt = [
-                c
-                for c in self._chunks
-                if c.id not in known and c.resource_id not in resource_ids
-            ]
-            rebuilt.extend(chunks)
-            self._chunks = rebuilt
-
-    def remove_resource(self, resource_id: str) -> int:
-        """Drop every indexed chunk for a resource; returns removed count."""
-        with self._lock:
-            before = len(self._chunks)
-            self._chunks = [
-                c for c in self._chunks if c.resource_id != resource_id
-            ]
-            return before - len(self._chunks)
-
-    async def search(
-        self,
-        course_id: str,
-        allowed_resource_ids: Sequence[str],
-        current_time_ms: int,
-        query_vector: Sequence[float],
-        k: int = 8,
-    ) -> list[ScoredChunk]:
-        if k <= 0 or not allowed_resource_ids:
-            return []
-        allowed = frozenset(allowed_resource_ids)
-        scored: list[ScoredChunk] = []
-        # Scan a lock-protected copy rather than ``self._chunks`` directly:
-        # the snapshot is consistent, and the (potentially long) scoring loop
-        # runs without holding the lock, so a concurrent ingest is not
-        # blocked by an in-flight query.
-        for chunk in self.snapshot_chunks():
-            if chunk.embedding is None:
-                continue
-            if not _in_scope(chunk, course_id, allowed, current_time_ms):
-                continue
-            # ``_cosine`` raises on a dimension mismatch (see its docstring).
-            # Here the mismatch is caught and the chunk SKIPPED, so one
-            # wrong-width chunk degrades ranking instead of aborting the whole
-            # query, while a chunk can never contribute a truncated, meaningless
-            # score. Warn once per width rather than once per chunk.
-            try:
-                score = _cosine(query_vector, chunk.embedding)
-            except EmbeddingDimensionMismatch:
-                if len(chunk.embedding) not in _warned_dims:
-                    _warned_dims.add(len(chunk.embedding))
-                    log.warning(
-                        "vector store dimension mismatch: query is %d-dim but "
-                        "chunk %s is %d-dim; that chunk is SKIPPED rather than "
-                        "scored, so ranking is not silently corrupted. Re-ingest "
-                        "with the active embedder (see app.ingestion.embedder."
-                        "get_default_embedder) so both sides use the same dim.",
-                        len(query_vector),
-                        getattr(chunk, "id", "?"),
-                        len(chunk.embedding),
-                    )
-                continue
-            scored.append(ScoredChunk(chunk=chunk, score=score))
-        scored.sort(key=lambda s: s.score, reverse=True)
-        return scored[:k]
-
-
-class PostgresVectorStore:
-    """pgvector-backed store. SQL enforces course + scope + T + permitted."""
-
-    def __init__(self, database_url: str | None = None, engine=None) -> None:
-        # No connection is opened here; the engine is created lazily on first
-        # search so importing this module never requires a live database.
-        self._database_url = database_url
-        self._engine = engine
-
-    def _get_engine(self):  # lazy: sqlalchemy imported only when needed
-        if self._engine is not None:
-            return self._engine
-        from sqlalchemy.ext.asyncio import create_async_engine
-
-        url = self._database_url
-        if url is None:  # fall back to app settings only at connect time
-            from app.config import settings
-
-            url = settings.database_url
-        self._engine = create_async_engine(url)
-        return self._engine
-
-    async def close(self) -> None:
-        if self._engine is not None:
-            await self._engine.dispose()
-            self._engine = None
-
-    def build_search_sql(
-        self,
-        course_id: str,
-        allowed_resource_ids: Sequence[str],
-        current_time_ms: int,
-        k: int = 8,
-    ) -> tuple[str, dict]:
-        """Build the scoped SELECT (pure: no DB access). Returns (sql, params).
-
-        ``:query_vector`` (pgvector ``"[v,...]"`` literal) and ``:k`` are left
-        as bind parameters for the caller to supply.
-        """
-        ids = sorted(set(allowed_resource_ids))
-        if ids:
-            rid_placeholders = ", ".join(f":rid_{i}" for i in range(len(ids)))
-            scope_clause = f"resource_id IN ({rid_placeholders})"
-        else:
-            scope_clause = "1 = 0"  # empty scope matches nothing, stays valid SQL
-        sql = (
-            "SELECT id, resource_id, course_id, source_type, video_id,"
-            " start_ms, end_ms, page_no, slide_no, chunk_index,"
-            " text, text_hash, embed_model, permitted,"
-            " 1 - (embedding <=> CAST(:query_vector AS vector)) AS score"
-            " FROM chunks"
-            f" WHERE course_id = :course_id AND {scope_clause}"
-            " AND permitted = true"
-            f" AND {TIMESTAMP_GUARD_CLAUSE}"
-            " ORDER BY embedding <=> CAST(:query_vector AS vector)"
-            " LIMIT :k"
-        )
-        params: dict = {
-            "course_id": course_id,
-            "current_time_ms": int(current_time_ms),
-            "k": int(k),
-        }
-        params.update({f"rid_{i}": rid for i, rid in enumerate(ids)})
-        return sql, params
+    def __call__(self, input):
+        return self._embedder.embed_documents(list(input))
 
     @staticmethod
-    def _row_to_scored(row) -> ScoredChunk:
-        from app.ingestion.models import Chunk
+    def name() -> str:
+        return "ailearn"
 
-        chunk = Chunk(
-            id=row["id"],
-            resource_id=row["resource_id"],
-            course_id=row["course_id"],
-            source_type=row["source_type"],
-            chunk_index=row["chunk_index"],
-            text=row["text"],
-            text_hash=row["text_hash"],
-            embed_model=row["embed_model"],
-            video_id=row["video_id"],
-            start_ms=row["start_ms"],
-            end_ms=row["end_ms"],
-            page_no=row["page_no"],
-            slide_no=row["slide_no"],
-            permitted=row["permitted"],
-            embedding=None,
+
+def build_where(
+    *,
+    course_id: str,
+    resource_scope: list[str],
+    current_time_ms: int,
+    focus_resource_id: str | None = None,
+) -> dict:
+    """The scope + strict-T predicate, as a Chroma ``where`` clause.
+
+    Structure (ADR-002 §5.1 asks for the gate to be structural, not a missing
+    ``AND``)::
+
+        course_id == <course>
+        AND resource_id IN <granted scope>
+        AND ( NOT time_gated  OR  (end_ms != NO_END_MS AND end_ms <= T) )
+
+    The third arm is the strict-T gate: it excludes unknown ends (sentinel)
+    and everything after T, and lets docs through untouched.
+    """
+    granted = list(resource_scope or [])
+    if focus_resource_id:
+        # INTERSECTION, never replacement. Narrowing the query is what focus
+        # means; widening it past the grant would be a scope bypass -- a
+        # caller could focus an ungranted resource_id and read it.
+        granted = [r for r in granted if r == focus_resource_id]
+    # An empty grant means no resources are readable. Returning an impossible
+    # filter is the fail-closed choice; letting an empty $in match everything
+    # would hand back the whole corpus.
+    if not granted:
+        return {"resource_id": {"$in": ["__no_granted_resource__"]}}
+    return {
+        "$and": [
+            {"course_id": {"$eq": course_id}},
+            {"resource_id": {"$in": granted}},
+            {
+                "$or": [
+                    {"source_type": {"$nin": list(TIME_GATED_SOURCE_TYPES)}},
+                    {
+                        "$and": [
+                            {"end_ms": {"$ne": NO_END_MS}},
+                            {"end_ms": {"$lte": int(current_time_ms)}},
+                        ]
+                    },
+                ]
+            },
+        ]
+    }
+
+
+class ChromaVectorStore:
+    """Chroma-backed chunk store with scope and strict-T enforced in-query."""
+
+    def __init__(self, *, path: str | Path, embedder=None, collection: str = "chunks") -> None:
+        import chromadb
+
+        from app.ingestion.embedder import get_default_embedder
+
+        self.path = str(path)
+        self._embedder = embedder or get_default_embedder()
+        self._client = chromadb.PersistentClient(path=self.path)
+        self._collection = self._client.get_or_create_collection(
+            name=collection,
+            # Cosine distance: Chroma computes it. No hand-rolled similarity.
+            metadata={"hnsw:space": "cosine"},
+            embedding_function=_EmbedderFunction(self._embedder),
         )
-        return ScoredChunk(chunk=chunk, score=float(row["score"]))
+        log.info("chroma store ready at %s", self.path)
 
-    async def search(
-        self,
-        course_id: str,
-        allowed_resource_ids: Sequence[str],
-        current_time_ms: int,
-        query_vector: Sequence[float],
-        k: int = 8,
-    ) -> list[ScoredChunk]:
-        if k <= 0 or not allowed_resource_ids:
+    # -- writes ---------------------------------------------------------
+
+    def add(self, chunks: list) -> int:
+        """Upsert chunks. Re-ingesting a resource replaces its chunks."""
+        if not chunks:
+            return 0
+        ids = [c.chunk_id for c in chunks]
+        documents = [c.text for c in chunks]
+        metadatas = [chroma_metadata(c) for c in chunks]
+        embeddings = self._embedder.embed_documents(documents)
+        self._collection.upsert(
+            ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
+        )
+        return len(chunks)
+
+    def delete_resource(self, resource_id: str) -> None:
+        self._collection.delete(where={"resource_id": {"$eq": resource_id}})
+
+    def count(self) -> int:
+        return self._collection.count()
+
+    def resources(self, course_id: str) -> list[dict]:
+        """Distinct resources in a course, for ``GET /courses/{id}/resources``.
+
+        ``title`` is the original uploaded file name carried on the chunks.
+        ``kind`` (an internal extractor label such as "transcript") is NOT a
+        usable title -- it was previously surfaced verbatim and every learner
+        saw the word "transcript" instead of their own file name. When no
+        chunk carries a filename, ``title`` is ``None`` so the UI can fall back
+        to the resource id; a title is never invented from the source type.
+        """
+        seen: dict[str, dict] = {}
+        try:
+            got = self._collection.get(include=["metadatas"])
+        except Exception as exc:  # noqa: BLE001 - listing must not 500
+            log.warning("chroma resources listing failed: %s", exc)
             return []
-        from sqlalchemy import text as sa_text
+        for meta in got.get("metadatas") or []:
+            if not meta or meta.get("course_id") != course_id:
+                continue
+            rid = meta.get("resource_id")
+            if not rid:
+                continue
+            # `youtube_id` is the exact field name apps/web reads; the
+            # store's internal key is `video_id`. Renaming here rather
+            # than in the router keeps the shape next to its source.
+            provider_video_id = meta.get("video_id") or None
+            entry = seen.get(rid)
+            if entry is None:
+                seen[rid] = {
+                    "id": rid,
+                    "type": meta.get("source_type", ""),
+                    "provider": "youtube" if provider_video_id else "file",
+                    "youtube_id": provider_video_id,
+                    "title": (meta.get("title") or None),
+                    "status": "ready",
+                    "asset_name": None,
+                }
+                continue
+            # Chunks of one resource all carry the same filename, but a partial
+            # re-ingest can leave some chunks without one. Keep the first real
+            # title found rather than letting an empty one overwrite it.
+            if not entry["title"] and meta.get("title"):
+                entry["title"] = str(meta["title"])
+        return list(seen.values())
 
-        sql, params = self.build_search_sql(
-            course_id, allowed_resource_ids, current_time_ms, k
+    # -- reads ----------------------------------------------------------
+
+    def query(
+        self,
+        query_text: str,
+        *,
+        course_id: str,
+        resource_scope: list[str],
+        current_time_ms: int,
+        k: int = 8,
+        focus_resource_id: str | None = None,
+    ) -> list[RetrievedPassage]:
+        """Vector search under the scope + strict-T predicate.
+
+        Over-fetches to survive Chroma's post-ANN metadata filtering, then
+        applies the per-family coverage guarantee and re-asserts strict-T in
+        Python. See the module docstring on low-T starvation for why both
+        steps are needed.
+        """
+        where = build_where(
+            course_id=course_id,
+            resource_scope=resource_scope,
+            current_time_ms=current_time_ms,
+            focus_resource_id=focus_resource_id,
         )
-        params["query_vector"] = "[" + ",".join(repr(float(v)) for v in query_vector) + "]"
-        engine = self._get_engine()
-        async with engine.connect() as conn:
-            result = await conn.execute(sa_text(sql), params)
-            rows = result.mappings().all()
-        log.debug("pgvector search returned %d rows (k=%d)", len(rows), k)
-        return [self._row_to_scored(r) for r in rows]
+        candidates = min(max(k * STARVATION_OVERFETCH, k), MAX_CANDIDATES)
+        embedding = self._embedder.embed_query(query_text)
+        got = self._collection.query(
+            query_embeddings=[embedding],
+            n_results=candidates,
+            where=where,
+            include=["documents", "metadatas", "distances"],
+        )
+
+        docs = (got.get("documents") or [[]])[0]
+        metas = (got.get("metadatas") or [[]])[0]
+        dists = (got.get("distances") or [[]])[0]
+
+        # Every eligible passage in distance order. The gate is applied here,
+        # before any selection, so coverage can only ever pick from passages
+        # that were already proven eligible.
+        eligible: list[RetrievedPassage] = []
+        for doc, meta, dist in zip(docs, metas, dists):
+            passage = self._to_passage(doc, meta or {}, float(dist))
+            if passage is None:
+                continue
+            # Third gate layer: cheap, and it makes a filter regression fail
+            # loudly here rather than silently serving a spoiler.
+            if not self._passes_strict_t(passage, current_time_ms):
+                log.warning("post-filter dropped %s (strict-T)", passage.chunk_id)
+                continue
+            eligible.append(passage)
+        return self._select_with_coverage(eligible, k)
+
+    @staticmethod
+    def _select_with_coverage(
+        eligible: list[RetrievedPassage], k: int
+    ) -> list[RetrievedPassage]:
+        """Top-k by distance, with a reserved slot per present source family.
+
+        Distance order is preserved for the slots that are not reserved, so
+        this is a recall guarantee across media kinds rather than a re-ranking:
+        the strongest passage of a missing family is appended at the end, and
+        only for families that are actually present in the eligible pool.
+
+        With a single source type this is exactly plain top-k.
+        """
+        if not eligible or k <= 0:
+            return []
+        if len(eligible) <= k:
+            return list(eligible)  # everything fits; no coverage needed
+
+        def family(p: RetrievedPassage) -> str:
+            return "gated" if p.source_type in TIME_GATED_SOURCE_TYPES else "doc"
+
+        present = {family(p) for p in eligible}
+        # Best passage per family, in distance order, for families present in
+        # the eligible pool but missing from a plain top-k.
+        head_ids = {p.chunk_id for p in eligible[:k]}
+        reserved: list[RetrievedPassage] = []
+        for name in ("gated", "doc"):
+            if name not in present:
+                continue
+            best = next(
+                (p for p in eligible if family(p) == name and p.chunk_id not in head_ids),
+                None,
+            )
+            if best is None:
+                continue
+            log.info(
+                "coverage: reserving a slot for a %s source (%s) -- a plain "
+                "top-k would answer from one medium only",
+                name, best.chunk_id,
+            )
+            reserved.append(best)
+
+        # Give up the least relevant slots for the reserved ones. `reserved`
+        # only ever holds passages that already passed the gate.
+        room = max(k - len(reserved), 1)
+        chosen = eligible[:room]
+        for passage in reserved:
+            if len(chosen) < k:
+                chosen.append(passage)
+            else:
+                chosen[-1] = passage
+        return chosen[:k]
+
+    @staticmethod
+    def _to_passage(doc: str, meta: dict, distance: float) -> RetrievedPassage | None:
+        chunk_id = meta.get("chunk_id")
+        if not chunk_id:
+            return None
+        gated = meta.get("source_type") in TIME_GATED_SOURCE_TYPES
+        raw_end = meta.get("end_ms")
+        end_ms = None
+        if gated:
+            end_ms = None if raw_end in (None, NO_END_MS) else int(raw_end)
+        else:
+            end_ms = None
+        raw_start = meta.get("start_ms")
+        start_ms = None if raw_start in (None, -1) else int(raw_start)
+        raw_page = meta.get("page_no")
+        raw_slide = meta.get("slide_no")
+        return RetrievedPassage(
+            chunk_id=chunk_id,
+            resource_id=meta.get("resource_id", ""),
+            course_id=meta.get("course_id", ""),
+            source_type=meta.get("source_type", ""),
+            text=doc or "",
+            start_ms=start_ms,
+            end_ms=end_ms,
+            video_id=meta.get("video_id") or None,
+            page_no=None if raw_page in (None, -1) else int(raw_page),
+            slide_no=None if raw_slide in (None, -1) else int(raw_slide),
+            # Cosine distance -> similarity, for callers that rank by score.
+            score=1.0 - distance,
+            metadata={"kind": meta.get("kind", "")},
+        )
+
+    @staticmethod
+    def _passes_strict_t(passage: RetrievedPassage, current_time_ms: int) -> bool:
+        """Independent re-check of the gate. Same semantics as the store query."""
+        if passage.source_type not in TIME_GATED_SOURCE_TYPES:
+            return True
+        return (
+            passage.end_ms is not None
+            and int(passage.end_ms) <= int(current_time_ms)
+        )
+
+
+def assert_no_leakage(
+    passages: list[RetrievedPassage],
+    *,
+    resource_scope: list[str],
+    current_time_ms: int,
+) -> None:
+    """Post-retrieval assertion. Raises on any leak -- never repairs silently.
+
+    A leak here is a spoiler leak, so the failure mode must be loud
+    (``AssertionError`` into the request handler / log) rather than a filter
+    that quietly drops the offending passage and hides a regression.
+    """
+    granted = set(resource_scope or [])
+    for p in passages:
+        assert p.resource_id in granted, f"scope leak: {p.resource_id} not granted"
+        if p.source_type in TIME_GATED_SOURCE_TYPES:
+            assert p.end_ms is not None, f"strict-T leak: {p.chunk_id} has NULL end_ms"
+            assert int(p.end_ms) <= int(current_time_ms), (
+                f"strict-T leak: {p.chunk_id} ends at {p.end_ms} > {current_time_ms}"
+            )

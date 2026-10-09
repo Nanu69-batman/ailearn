@@ -21,6 +21,11 @@ interface YouTubeIngestFormProps {
   courseId: string;
   onReady: (video: IngestedVideo) => void;
   disabled?: boolean;
+  /**
+   * When set (subject pages), the ingest is scoped to the subject's real
+   * course server-side and the resource is auto-attached to the subject.
+   */
+  subjectId?: string;
 }
 
 type Phase = "idle" | "submitting" | "polling" | "error";
@@ -38,6 +43,7 @@ export default function YouTubeIngestForm({
   courseId,
   onReady,
   disabled,
+  subjectId,
 }: YouTubeIngestFormProps) {
   const [url, setUrl] = useState("");
   const [phase, setPhase] = useState<Phase>("idle");
@@ -120,7 +126,7 @@ export default function YouTubeIngestForm({
     cancelRef.current = false;
     setPhase("submitting");
     try {
-      const res = await ingestYouTube(courseId, url.trim());
+      const res = await ingestYouTube(courseId, url.trim(), subjectId);
       if (cancelRef.current) return;
       if (!res.job_id) {
         setPhase("error");

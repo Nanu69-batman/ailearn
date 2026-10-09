@@ -30,7 +30,12 @@ def _isolate_process_global_state():
     """Give every test a clean, consistent view of the module-level singletons."""
     from app.chat import router as chat_router
     from app.chat import sessions as sessions_mod
-    from app.retrieval import registry as registry_mod
+
+    # TODO(library-rebuild): the `app.retrieval.registry` import and the
+    # `registry_mod.SNAPSHOT_PATH = None` reset below were removed with the
+    # hand-built store. Restore them (or their Chroma equivalent) when the new
+    # store lands, so snapshot persistence can never be enabled against a real
+    # developer data/ directory.
 
     # Captured at import time, not per-test: the canonical objects the app
     # uses. Per-test capture would bake in whatever a previous test leaked.
@@ -57,4 +62,37 @@ def _isolate_process_global_state():
     # Snapshot persistence must stay off unless a test explicitly turns it on
     # against a tmp_path; never let a run write to the developer's data/.
     sessions_mod.set_persistence_enabled(False)
-    registry_mod.SNAPSHOT_PATH = None
+
+
+# ---------------------------------------------------------------------------
+# Ingestion / retrieval fixtures (ADR-002 rebuild)
+# ---------------------------------------------------------------------------
+
+from tests.store_helpers import make_chunk, make_embedder
+
+
+@pytest.fixture
+def embedder():
+    """Offline hashing embedder -- never downloads an ONNX model."""
+    return make_embedder()
+
+
+@pytest.fixture
+def chroma_store(tmp_path, embedder):
+    """A real Chroma store rooted in ``tmp_path``.
+
+    Real rather than a double: the scope and strict-T obligations live in the
+    store's query, so a list-backed fake would test the fake (see the honesty
+    note at the top of ``test_chat_safety.py``). Rooted in tmp_path so no test
+    can write to the developer's ``data/``.
+    """
+    from app.retrieval.store import ChromaVectorStore
+
+    return ChromaVectorStore(
+        path=tmp_path / "chroma", embedder=embedder, collection="test_chunks"
+    )
+
+
+@pytest.fixture
+def make_chunk_fixture():
+    return make_chunk

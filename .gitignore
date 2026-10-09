@@ -28,3 +28,6 @@ node_modules/
 out/
 dist/
 *.local
+
+# server logs (dev uvicorn / next output artifacts)
+*.log

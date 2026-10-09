@@ -5,7 +5,34 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from app.ingestion.models import Chunk, text_hash
+# TODO(library-rebuild): originally
+# `from app.ingestion.models import Chunk, text_hash`. That module was deleted in
+# the teardown clearing the tree for the library rebuild (ADR-002). The fixture
+# source is preserved verbatim; both constructors below raise until the rebuild
+# defines the chunk model and its stable content hash again.
+#
+# NOTE: the replacement chunk model MUST keep an `end_ms` field and the harness
+# MUST keep filtering on `end_ms <= pause_at_ms`. The strict-T gate is product
+# policy (ADR-002 §5.1), not retrieval mechanism, and its removal here would
+# silently disable the eval's spoiler detection.
+_REBUILD_HINT = (
+    "app.eval.fixture requires the rebuilt chunk model "
+    "(see docs/adr/ADR-002-retrieval-stack-library-migration.md). "
+)
+
+
+def _pending(name: str):
+    def _raise(*_args, **_kwargs):
+        raise NotImplementedError(
+            f"{_REBUILD_HINT}`{name}` has no implementation. It must keep an "
+            "`end_ms` field so the strict-T gate survives."
+        )
+
+    return _raise
+
+
+Chunk = _pending("Chunk")
+text_hash = _pending("text_hash")
 
 FIXTURE_COURSE_ID = "course_fixture"
 RES_VIDEO = "res_video"

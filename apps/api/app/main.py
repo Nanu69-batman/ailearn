@@ -10,6 +10,7 @@ from app.chat.router import router as chat_router
 from app.config import settings
 from app.ingestion.router import router as ingestion_router
 from app.middleware import RequestIDMiddleware
+from app.subjects.router import router as subjects_router
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger(__name__)
@@ -33,19 +34,22 @@ async def lifespan(_: FastAPI):
         set_persistence_enabled(True)
         load_session_state()
 
-        from app.retrieval.registry import load_snapshot
-
-        loaded = load_snapshot()
-        if loaded:
-            log.info("restored %d chunks from local snapshot", loaded)
-        from app.ingestion.router import (
-            ensure_resources_for_chunks,
-            load_ingest_state,
-        )
+        # No snapshot restore: the Chroma PersistentClient under data/chroma is
+        # the durable store, so there is no `store_snapshot.pkl` to load and
+        # ingest state needs no rehydration -- indexed chunks outlive restarts.
+        # Opened here (not at import) so importing `app.main` stays side-effect
+        # free for tests.
         from app.retrieval.registry import get_shared_store
 
-        if load_ingest_state() == 0:
-            ensure_resources_for_chunks(get_shared_store()._chunks)
+        store = get_shared_store()
+        log.info("retrieval store ready: %d chunk(s)", store.count())
+
+        # Subjects are the user's unit of organisation and must survive a
+        # restart, same reasoning as sessions above.
+        from app.subjects.store import load_subject_state, set_persistence_enabled
+
+        set_persistence_enabled(True)
+        load_subject_state()
     yield
 
 
@@ -61,7 +65,18 @@ app.add_middleware(
 )
 
 app.include_router(chat_router)
+
+# The library-based ingestion pipeline replaces the deleted hand-built router.
+# Route shapes are unchanged because `apps/web/lib/api.ts` still calls them:
+#   POST /courses/{id}/ingest          (file upload)
+#   POST /courses/{id}/ingest-youtube  {url}
+#   GET  /ingestion/jobs/{id}
+#   GET  /courses/{id}/resources
 app.include_router(ingestion_router)
+
+# Subject organisation: POST/GET /subjects, plus per-subject resource
+# attach/detach. Additive; no existing route shape is touched.
+app.include_router(subjects_router)
 
 
 @app.get("/health")

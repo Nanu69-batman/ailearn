@@ -70,6 +70,13 @@ class ChatResponse(BaseModel):
     answer: str
     citations: list[Citation] = Field(default_factory=list)
     refused: bool = False
+    #: True only when the session grant, intersected with the focused
+    #: resource, is EMPTY -- i.e. the session does not cover the material
+    #: being viewed (stale grant, deleted resource, or a different resource).
+    #: Lets the client tell a session-grant problem apart from a genuine
+    #: low-evidence refusal. Defaults to False so every existing response
+    #: shape and assertion is unchanged.
+    scope_empty: bool = False
 
 
 class MessageOut(BaseModel):

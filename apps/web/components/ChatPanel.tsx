@@ -140,10 +140,20 @@ export default function ChatPanel({
             message: text,
             mode,
           });
+      // Refusal kinds are not interchangeable. `scope_empty` means the session
+      // grant does not cover this material (stale grant) — the backend copy for
+      // that is already honest and correct, so prepending "watched content yet"
+      // would contradict it. Only low-evidence refusals get that prefix.
+      // Read defensively so this compiles whether or not ChatResponse declares
+      // `scope_empty` yet.
+      const scopeEmpty = (res as { scope_empty?: boolean }).scope_empty === true;
       const assistantMsg: ChatMessage = {
         id: newId(),
         role: "assistant",
-        content: res.refused ? `I can't answer from watched content yet.\n\n${res.answer}` : res.answer,
+        content:
+          res.refused && !scopeEmpty
+            ? `I can't answer from watched content yet.\n\n${res.answer}`
+            : res.answer,
         citations: res.citations,
         created_at: new Date().toISOString(),
       };

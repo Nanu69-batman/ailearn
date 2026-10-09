@@ -12,10 +12,20 @@
  *   -> postChat/getMessages attach it (X-Session-Token header)
  *   -> ChatPanel surfaces 401 as "session expired — rejoin".
  *
+ * It also pins the route surface:
+ *   /dashboard
+ *   /ai-tutor/subjects
+ *   /ai-tutor/subjects/[subjectId]
+ *   /ai-tutor/subjects/[subjectId]/content/[resourceId]
+ * asserts the retired /subject/... and /demo paths redirect rather than 404,
+ * that lib/learn.ts builds only the new URLs (no hardcoded subject id), that
+ * the dashboard reads GET /subjects and fabricates no subjects, and that the
+ * landing page has exactly one button pointing at /dashboard.
+ *
  * Run: `npm run contract-check` (from apps/web) or
  * `node scripts/contract-check.mjs`.
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -176,6 +186,206 @@ if (!/rejoin/i.test(chatPanel)) {
   fail(`ChatPanel (${chatPanelPath}) has no rejoin copy for expired sessions`);
 } else {
   pass("ChatPanel has session-expired rejoin copy");
+}
+
+// 11. Route surface. Assert the exact files so a route cannot silently
+//     collapse back into one component with internal state, and so the retired
+//     `/subject/...` tree cannot creep back in.
+const expectRoutes = [
+  "app/(learn)/layout.tsx",
+  "app/(learn)/dashboard/page.tsx",
+  "app/(learn)/ai-tutor/subjects/page.tsx",
+  "app/(learn)/ai-tutor/subjects/[subjectId]/page.tsx",
+  "app/(learn)/ai-tutor/subjects/[subjectId]/content/[resourceId]/page.tsx",
+];
+for (const rel of expectRoutes) {
+  if (!existsSync(join(webRoot, ...rel.split("/")))) {
+    fail(`expected route file missing: ${rel}`);
+  }
+}
+const retiredRoutes = [
+  "app/(learn)/subject",
+  "app/(learn)/[courseId]",
+];
+for (const rel of retiredRoutes) {
+  if (existsSync(join(webRoot, ...rel.split("/")))) {
+    fail(`retired route directory still present: ${rel}`);
+  }
+}
+if (failures === 0) {
+  pass(
+    "route surface = /dashboard + /ai-tutor/subjects + /ai-tutor/subjects/[subjectId] + /ai-tutor/subjects/[subjectId]/content/[resourceId]",
+  );
+}
+
+// 12. The session provider sits in the (learn) layout, above every route in the
+//     group, so /dashboard <-> tutor navigation cannot destroy the session.
+const learnLayout = readFileSync(
+  join(webRoot, "app", "(learn)", "layout.tsx"),
+  "utf8",
+);
+if (!/LearnSessionProvider/.test(learnLayout)) {
+  fail("app/(learn)/layout.tsx does not mount LearnSessionProvider");
+} else {
+  pass("LearnSessionProvider is mounted in the (learn) layout");
+}
+
+// 13. No "demo" routing. The old /subject/... and /demo paths are gone, and
+//     the retired URLs redirect instead of 404ing for anything already shared.
+const nextConfig = readFileSync(join(webRoot, "next.config.mjs"), "utf8");
+for (const [needle, why] of [
+  ["/subject/:courseId", "old /subject/[courseId] path"],
+  ["/demo", "old /demo path"],
+]) {
+  if (!nextConfig.includes(`source: "${needle}"`)) {
+    fail(`next.config.mjs has no redirect for the ${why}`);
+  } else if (!nextConfig.includes("destination:")) {
+    fail("next.config.mjs redirect entry has no destination");
+  } else {
+    pass(`next.config.mjs redirects the ${why}`);
+  }
+}
+
+// 14. URL helpers in lib/learn.ts must build the new structure and must not
+//     reintroduce a hardcoded subject id.
+const learn = readFileSync(join(webRoot, "lib", "learn.ts"), "utf8");
+const pathHelperChecks = [
+  ['export const DASHBOARD_PATH = "/dashboard"', "DASHBOARD_PATH = /dashboard"],
+  [
+    'export const SUBJECTS_PATH = "/ai-tutor/subjects"',
+    "SUBJECTS_PATH = /ai-tutor/subjects",
+  ],
+  ["`${SUBJECTS_PATH}/${encodeURIComponent(subjectId)}`", "subjectPath()"],
+  [
+    "`${subjectPath(subjectId)}/content/${encodeURIComponent(resourceId)}`",
+    "contentPath()",
+  ],
+];
+for (const [needle, why] of pathHelperChecks) {
+  if (!learn.includes(needle)) {
+    fail(`lib/learn.ts is missing ${why} (expected: ${needle})`);
+  }
+}
+if (/`\/subject\/|"\/subject\/|href="\/subject/.test(learn)) {
+  fail("lib/learn.ts still builds /subject/... URLs");
+}
+if (/demo-course|demo-resource/.test(learn)) {
+  fail("lib/learn.ts hardcodes a demo id in a URL helper");
+}
+if (failures === 0) {
+  pass("URL helpers build /dashboard and /ai-tutor/subjects/... only");
+}
+
+// 15. The dashboard must read subjects from GET /subjects and must not ship a
+//     built-in subject.
+const apiClient = readFileSync(apiPath, "utf8");
+if (!/export function getSubjects\(\): Promise<SubjectListResponse>/.test(apiClient)) {
+  fail(`lib/api.ts is missing a typed getSubjects() client for GET /subjects`);
+} else {
+  pass("lib/api.ts exposes getSubjects() -> SubjectListResponse");
+}
+const subjectList = readFileSync(
+  join(webRoot, "components", "SubjectList.tsx"),
+  "utf8",
+);
+if (!/getSubjects\(\)/.test(subjectList)) {
+  fail("components/SubjectList.tsx does not call getSubjects()");
+} else {
+  pass("SubjectList reads subjects from GET /subjects");
+}
+if (!/No subjects yet/.test(subjectList)) {
+  fail("SubjectList has no honest empty state for zero subjects");
+} else {
+  pass("SubjectList has an empty state that fabricates nothing");
+}
+
+// 16. The subject page must read GET /subjects/{id}/resources. A subject id is
+//     NOT a course id: the page used to call getCourseResources(subjectId),
+//     which hits /courses/{subjectId}/resources, matches nothing, and renders
+//     a populated subject as "no videos". It must also NOT fall back to the
+//     subject's course_id — that makes two subjects on one course identical.
+const subjectPage = readFileSync(
+  join(
+    webRoot,
+    "app",
+    "(learn)",
+    "ai-tutor",
+    "subjects",
+    "[subjectId]",
+    "page.tsx",
+  ),
+  "utf8",
+);
+if (
+  !/export function getSubjectResources\(/.test(apiClient) ||
+  !/\/subjects\/\$\{encodeURIComponent\(subjectId\)\}\/resources/.test(apiClient)
+) {
+  fail(
+    "lib/api.ts is missing getSubjectResources() -> GET /subjects/{id}/resources",
+  );
+} else {
+  pass("lib/api.ts exposes getSubjectResources() -> GET /subjects/{id}/resources");
+}
+if (!/load: getSubjectResources/.test(subjectPage)) {
+  fail(
+    "the subject page does not load resources via getSubjectResources — a " +
+      "subject id is not a course id, so getCourseResources(subjectId) " +
+      "returns nothing",
+  );
+} else {
+  pass("subject page lists materials from GET /subjects/{id}/resources");
+}
+if (/getCourseResources\(subjectId/.test(subjectPage)) {
+  fail("the subject page still fetches /courses/{subjectId}/resources");
+} else {
+  pass("subject page never treats a subject id as a course id");
+}
+if (!/No videos in this subject yet/.test(subjectPage)) {
+  fail("the subject page lost its honest empty state");
+} else {
+  pass("subject page keeps an empty state that fabricates nothing");
+}
+
+// 16b. Ingest from a subject page must be scoped by subject_id: the backend
+//      derivers the real course_id from the subject and auto-attaches the new
+//      resource, so it appears in GET /subjects/{id}/resources immediately.
+if (!/subjectId=\{subjectId\}/.test(subjectPage)) {
+  fail(
+    "the subject page does not pass subjectId to YouTubeIngestForm — " +
+      "videos would ingest under the subject id as a fake course id",
+  );
+} else {
+  pass("subject page scopes YouTube ingest by subjectId");
+}
+if (!/subject_id: subjectId/.test(apiClient)) {
+  fail("lib/api.ts ingestYouTube() does not send subject_id in the body");
+} else {
+  pass("ingestYouTube() posts subject_id alongside the url");
+}
+{
+  const ingestForm = readFileSync(
+    join(webRoot, "components", "YouTubeIngestForm.tsx"),
+    "utf8",
+  );
+  if (!/ingestYouTube\(courseId, url\.trim\(\), subjectId\)/.test(ingestForm)) {
+    fail("YouTubeIngestForm does not forward subjectId to ingestYouTube()");
+  } else {
+    pass("YouTubeIngestForm forwards subjectId to the API");
+  }
+}
+
+// 17. The landing page has exactly one call to action and it points at
+//     /dashboard; the broken /demo link must be gone.
+const landing = readFileSync(join(webRoot, "app", "page.tsx"), "utf8");
+const landingLinks = [...landing.matchAll(/href=/g)].length;
+if (landingLinks !== 1) {
+  fail(`landing page must have exactly one link, found ${landingLinks}`);
+} else if (!/href=\{DASHBOARD_PATH\}/.test(landing)) {
+  fail("landing page button does not point at DASHBOARD_PATH");
+} else if (/\/demo\b/.test(landing)) {
+  fail("landing page still links to the broken /demo route");
+} else {
+  pass("landing page = one button -> /dashboard, no /demo link");
 }
 
 if (failures > 0) {

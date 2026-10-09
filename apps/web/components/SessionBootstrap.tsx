@@ -5,6 +5,7 @@ import {
   createLmsSession,
   formatApiError,
   getCourseResources,
+  getSubjectResources,
   isApiConfigured,
   setStoredSessionToken,
   type StoredSession,
@@ -12,7 +13,23 @@ import {
 import { devSessionFixture, mockSession } from "../lib/fixtures";
 
 interface SessionBootstrapProps {
+  /** Course the session launches against (every content endpoint is course-scoped). */
   courseId: string;
+  /**
+   * Subject named by the route, when there is one. On a subject route the grant
+   * is built from THAT subject's materials rather than the whole course: the
+   * learner can only see the subject listing, so anything outside it would be a
+   * grant the route cannot justify. Falls back to the course listing when absent.
+   */
+  subjectId?: string | null;
+  /**
+   * Resource ids the provider already resolved for the active scope, or null
+   * when that lookup failed / returned nothing. When non-empty these are used
+   * verbatim (no second request). When null the bootstrap re-resolves them
+   * itself and, if that also fails, falls back to the fixture scope exactly as
+   * before.
+   */
+  resourceIds?: string[] | null;
   onReady: (session: StoredSession, offline: boolean) => void;
 }
 
@@ -21,14 +38,35 @@ type Status = "pending" | "loading" | "error";
 function toStoredSession(res: {
   session_id: string;
   session_token: string;
+  minted_resource_ids?: string[];
 }): StoredSession {
-  return { session_id: res.session_id, session_token: res.session_token };
+  return {
+    session_id: res.session_id,
+    session_token: res.session_token,
+    minted_resource_ids: res.minted_resource_ids,
+  };
 }
 
-export default function SessionBootstrap({ courseId, onReady }: SessionBootstrapProps) {
+function idSetKey(ids: string[] | null | undefined): string {
+  return ids && ids.length > 0 ? [...ids].sort().join(",") : "unknown";
+}
+
+export default function SessionBootstrap({
+  courseId,
+  subjectId,
+  resourceIds,
+  onReady,
+}: SessionBootstrapProps) {
   const [status, setStatus] = useState<Status>("pending");
   const [error, setError] = useState<string | null>(null);
-  const started = useRef(false);
+  /**
+   * Last key we actually minted for, not a plain "have I started" boolean. A
+   * plain boolean meant a re-ingest that changed the visible resource set could
+   * never re-mint; keying on (course, subject, ids) keeps the original
+   * no-double-mint intent while letting a genuinely different material set mint
+   * a new grant.
+   */
+  const startedKey = useRef<string | null>(null);
 
   async function bootstrap(): Promise<void> {
     setStatus("loading");
@@ -48,22 +86,35 @@ export default function SessionBootstrap({ courseId, onReady }: SessionBootstrap
       // video has been watched. Real IDs fix chat without touching the
       // backend's scope enforcement.
       const launch = devSessionFixture(courseId);
-      try {
-        const fetched = await getCourseResources(courseId);
-        const ids = (fetched.resources ?? []).map((r) => r.id).filter(Boolean);
-        if (ids.length > 0) {
-          launch.resource_scope = ids;
-          launch.resource_id = ids[0];
+      let ids = resourceIds ?? null;
+      if (!ids || ids.length === 0) {
+        // No ids handed down: resolve them here, subject-first so the grant
+        // never exceeds what the current route shows.
+        try {
+          const fetched = subjectId
+            ? await getSubjectResources(subjectId)
+            : await getCourseResources(courseId);
+          const found = (fetched.resources ?? []).map((r) => r.id).filter(Boolean);
+          if (found.length > 0) ids = found;
+        } catch {
+          // Fall through with fixture scope; createLmsSession below surfaces
+          // any real connectivity problem.
         }
-      } catch {
-        // Fall through with fixture scope; createLmsSession below surfaces
-        // any real connectivity problem.
+      }
+      if (ids && ids.length > 0) {
+        launch.resource_scope = ids;
+        launch.resource_id = ids[0];
       }
       const res = await createLmsSession(launch);
       // Persist session_token alongside session_id for chat + history calls.
       setStoredSessionToken(res.session_token);
       setStatus("pending");
-      onReady(toStoredSession(res), false);
+      // Record the ids this grant was minted against so a later revalidation
+      // can tell a still-valid grant from a stale one.
+      onReady(
+        { ...toStoredSession(res), minted_resource_ids: ids && ids.length > 0 ? ids : undefined },
+        false,
+      );
     } catch (err) {
       setStatus("error");
       setError(formatApiError(err));
@@ -71,12 +122,12 @@ export default function SessionBootstrap({ courseId, onReady }: SessionBootstrap
   }
 
   useEffect(() => {
-    if (!started.current) {
-      started.current = true;
-      void bootstrap();
-    }
+    const key = `${courseId}|${subjectId ?? ""}|${idSetKey(resourceIds)}`;
+    if (startedKey.current === key) return;
+    startedKey.current = key;
+    void bootstrap();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [courseId]);
+  }, [courseId, subjectId, resourceIds]);
 
   if (status === "loading") {
     return (

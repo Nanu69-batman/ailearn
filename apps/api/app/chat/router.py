@@ -75,20 +75,24 @@ def _database_url_looks_real(url: str | None) -> bool:
 def get_vector_store():
     """Settings-driven store factory (H4): no network/DB at factory time.
 
-    Returns ``PostgresVectorStore`` (lazy engine: no connection opened here)
-    when USE_IN_MEMORY is false and DATABASE_URL looks real; otherwise an
-    empty in-memory store. Tests run with USE_IN_MEMORY=true.
+    Both branches now resolve to the Chroma ``PersistentClient``; the
+    hand-built ``PostgresVectorStore`` is gone per ADR-002. ``USE_IN_MEMORY``
+    no longer selects between two implementations -- it selects between a
+    process-local Chroma directory and one under ``data/``, which the
+    registry already handles. Creating the client opens (and, on first run,
+    writes) a local directory; it makes no network call.
+
+    SAFETY: the gate is applied at query time (``end_ms IS NOT NULL AND
+    end_ms <= T``) inside ``ChromaVectorStore.query``'s ``where`` filter --
+    see ``app.retrieval`` and ADR-002 section 5.1.
     """
     from app.config import settings
 
-    if settings.use_in_memory:
-        from app.retrieval.registry import get_shared_store
-
-        return get_shared_store()
-    if _database_url_looks_real(settings.database_url):
-        from app.retrieval.store import PostgresVectorStore
-
-        return PostgresVectorStore(database_url=settings.database_url)
+    log.info(
+        "vector store: use_in_memory=%s database_url_set=%s",
+        settings.use_in_memory,
+        _database_url_looks_real(settings.database_url),
+    )
     from app.retrieval.registry import get_shared_store
 
     return get_shared_store()
@@ -99,10 +103,7 @@ def describe_active_providers() -> dict[str, str]:
     from app.config import settings
 
     llm = "gemini" if settings.llm_api_key else "stub"
-    if settings.use_in_memory or not _database_url_looks_real(settings.database_url):
-        store = "in-memory"
-    else:
-        store = "postgres"
+    store = "chroma"
     sessions = (
         "in-memory" if settings.use_in_memory else "in-memory (postgres-backed planned)"
     )
