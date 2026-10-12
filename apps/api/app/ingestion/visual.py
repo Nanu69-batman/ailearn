@@ -4,9 +4,11 @@ The timestamp contract
 ----------------------
 A visual segment's ``start_ms``/``end_ms`` come from **frame index
 arithmetic** -- ``index * FRAME_INTERVAL_S`` -- and from nowhere else. The
-model is asked to describe *what is on screen* and is explicitly told not to
-emit timestamps; its output is parsed for text only, and any timestamp it
-volunteers is discarded.
+model is told *which* frame it is looking at because it has to, but the index
+it echoes back is a **claim, not a fact**. It is accepted only after it is
+matched against the set of indices the sampler actually yielded; an index that
+does not name a sampled frame discards the whole batch rather than being
+trusted, clamped, or rounded to a neighbour.
 
 This is the whole point of the module. A VLM asked for timestamps will produce
 plausible ones that drift, that restart at zero, that refer to the *clip* it
@@ -14,6 +16,12 @@ was shown rather than the *file* it belongs to. A frame sampled at 240s in a
 655s lecture is at 240s because we decoded it at 240s, and no amount of model
 confidence changes that. Frame-index arithmetic is checkable; model-asserted
 time is not, and the strict-T gate depends on it being right.
+
+The same reasoning applies to the index itself, which is why it is
+re-derived from the sampler rather than read out of the reply. A reply that
+labels the frame decoded at 650s as ``index: 5`` would otherwise be stored at
+20000ms, and a learner paused at T=20s would retrieve content from 10:50 --
+a spoiler delivered by the model's own output.
 
 Every visual segment therefore carries non-null ``start_ms``/``end_ms`` and
 flows through the same strict-T gate as audio.
@@ -226,8 +234,11 @@ def _gemini_describe(frames: list[tuple[int, bytes]]) -> dict[int, str]:
     """Ask Gemini to describe each frame. Returns ``{index: description}``.
 
     The model is given frames in order with their indices and nothing else --
-    no timestamps, no duration. Anything it returns that is not a valid index is
-    dropped rather than guessed at.
+    no timestamps, no duration. The index is in the prompt because the model
+    cannot describe "the fourth image" any other way; what it is *not* is a
+    source of new frames. :func:`_validated_descriptions` checks every index in
+    this result against the indices the sampler actually yielded, and discards
+    anything that does not match.
     """
     from google import genai
 
@@ -244,6 +255,15 @@ def _gemini_describe(frames: list[tuple[int, bytes]]) -> dict[int, str]:
 
 
 def _parse_frame_descriptions(raw: str) -> dict[int, str]:
+    """Parse a describe reply into ``{index: description}``.
+
+    Pure JSON extraction -- it does **not** decide which indices are real. A
+    repeated index keeps its first occurrence rather than the last, so a reply
+    that labels two images ``7`` cannot quietly overwrite one with the other.
+    Deciding which indices may become timestamps is
+    :func:`_validated_descriptions`, the one place that knows both what the
+    model said and what the sampler decoded.
+    """
     import json
 
     from app.ingestion.audio import _JSON_BLOCK
@@ -259,12 +279,57 @@ def _parse_frame_descriptions(raw: str) -> dict[int, str]:
         return {}
     out: dict[int, str] = {}
     for item in payload.get("frames") or []:
+        if not isinstance(item, dict):
+            continue
         try:
             index = int(item["index"])
         except (KeyError, TypeError, ValueError):
             continue
+        if index in out:
+            # Ambiguous, not merely redundant: two different frames claiming
+            # one index means the model lost track of which is which. The
+            # validator reports the mismatch, so it is not hidden by an
+            # overwrite either.
+            log.error("visual: index %s appears twice in one reply", index)
+            continue
         out[index] = str(item.get("description") or "").strip()
     return out
+
+
+def _validated_descriptions(
+    result: dict[int, str], sent: set[int]
+) -> tuple[dict[int, str], list[str]]:
+    """Keep only descriptions whose index names a frame we actually sampled.
+
+    This is the trust boundary. ``result`` is keyed by integers the *model*
+    chose; ``sent`` is what the *sampler* decoded. Only an index present in
+    both may become a timestamp, because only those two agreeing means the
+    model was describing the frame we handed it.
+
+    Anything else is dropped and described in the returned notes:
+
+    * an index outside ``sent`` -- the model invented or misremembered a frame.
+      Clamping it onto the last frame, or shifting it onto a neighbour, would
+      file a real description against a moment nobody observed it at, which is
+      exactly how a frame decoded at 650s becomes retrievable at T=20s.
+    * a repeated index -- collapsed by the parser and reported here, so the
+      ambiguity is visible in the pass report rather than resolved by
+      last-write-wins.
+
+    Returns ``(kept, notes)``. Entries that do match are untouched: one bad
+    label costs that entry, not the rest of the batch.
+    """
+    stray = sorted(i for i in result if i not in sent)
+    if not stray:
+        return result, []
+    for index in stray:
+        del result[index]
+    note = (
+        f"model returned index(es) {stray} that were not sampled; their "
+        "descriptions were discarded rather than attached to a neighbouring "
+        "frame"
+    )
+    return result, [note]
 
 
 def build_visual_segments(
@@ -273,14 +338,30 @@ def build_visual_segments(
     duration_ms: int,
     interval_s: float = FRAME_INTERVAL_S,
     keep_empty: bool = False,
-) -> list[VisualSegment]:
+    sampled_indices: list[int] | None = None,
+) -> tuple[list[VisualSegment], list[int]]:
     """Attach derived timestamps to each frame description.
 
     Timestamps come from :func:`frame_bounds` -- frame index arithmetic. Model
     output supplies the description text and nothing else.
+
+    ``sampled_indices`` is the sampler's own list of the frames it decoded, and
+    it is the authority on *which indices exist*. A description whose index is
+    not in that set yields **no segment at all**: it is not clamped down to the
+    end of the video, not rounded to a neighbouring frame, and not stored.
+    Guessing where an unplaceable description belonged is precisely the spoiler
+    this module exists to prevent -- it is a description of something we saw,
+    filed against a time we did not observe it at.
+
+    Unmatched indices are surfaced by :func:`extract_visual_pass` (which owns
+    the sampler's list and the report) rather than returned here, so that this
+    function stays a pure timestamp derivation.
     """
+    allowed = set(sampled_indices) if sampled_indices is not None else None
     segments: list[VisualSegment] = []
     for index in sorted(descriptions):
+        if allowed is not None and index not in allowed:
+            continue
         text = descriptions[index]
         start_ms, end_ms = frame_bounds(
             index, duration_ms=duration_ms, interval_s=interval_s
@@ -471,10 +552,19 @@ def extract_visual_pass(
             time.sleep(gap)
         last_call = time.monotonic()
         result, error = _describe_with_retry(items)
+        span = f"{items[0][0]}-{items[-1][0]}"
         if error:
-            span = f"{items[0][0]}-{items[-1][0]}"
             failures.append(f"frames {span}: {error}")
-        described.update(result)
+            return
+        # The sampler's indices are the only ones that may become timestamps.
+        # A reply naming an index we never decoded cannot be placed on the
+        # timeline, so that entry is dropped and recorded -- never reassigned to
+        # a neighbouring frame, never clamped onto the last one. The other
+        # frames described in the same reply are genuine and are kept.
+        kept, notes = _validated_descriptions(result, {i for i, _ in items})
+        for note in notes:
+            failures.append(f"frames {span}: {note}")
+        described.update(kept)
 
     for seen, (index, jpeg) in enumerate(sample_frames(path, interval_s=interval_s)):
         if max_frames is not None and seen >= max_frames:
@@ -502,8 +592,25 @@ def extract_visual_pass(
         duration_ms=duration_ms,
     )
     report.segments = build_visual_segments(
-        described, duration_ms=duration_ms, interval_s=interval_s
+        described,
+        duration_ms=duration_ms,
+        interval_s=interval_s,
+        # Belt and braces: `_flush` already refused stray indices, but the
+        # sampler is the authority and this is where it is finally known.
+        sampled_indices=sampled,
     )
+    # Requirement: no stored chunk may claim content past the authoritative
+    # duration. `frame_bounds` clamps, and this asserts it rather than trusting
+    # it -- the strict-T gate is only as good as the upper bound it compares to.
+    for seg in report.segments:
+        if seg.end_ms > duration_ms:
+            log.error(
+                "visual: frame %d produced end_ms=%d beyond the %dms duration; "
+                "clamping",
+                seg.frame_index, seg.end_ms, duration_ms,
+            )
+            seg.end_ms = duration_ms
+            seg.start_ms = min(seg.start_ms, max(duration_ms - 1, 0))
     if report.status != "complete":
         for warning in report.warnings:
             log.error("visual: %s", warning)

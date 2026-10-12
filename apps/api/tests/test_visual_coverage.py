@@ -431,6 +431,322 @@ def test_visual_bounds_survive_a_hallucinated_out_of_grid_index(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# 4b. The model may NAME a frame. It may not DECIDE where it is.
+#
+# `test_timestamps_come_from_index_arithmetic` above only proves that a
+# fabricated timecode *inside description text* is ignored. It stubs
+# `_gemini_describe`, so the `index` field never passes through
+# `_parse_frame_descriptions` at all -- the channel by which model output can
+# actually set a timestamp was never asserted. That is why this shipped.
+# ---------------------------------------------------------------------------
+
+
+def _reply(frames: list[tuple[int, bytes]]) -> str:
+    """A describe reply carrying exactly the indices it was sent."""
+    import json
+
+    return json.dumps(
+        {
+            "frames": [
+                {"index": i, "description": f"frame {i}: a plotted curve"}
+                for i, _ in frames
+            ]
+        }
+    )
+
+
+def _pass_raw_reply(monkeypatch, raw_for):
+    """Drive the real parser with a canned model reply, sampler indices intact.
+
+    Only ``google.genai`` is stubbed. Everything from the JSON text through
+    ``_parse_frame_descriptions`` and ``_flush`` to ``build_visual_segments`` is
+    the production code path -- which is the point: the index channel has to be
+    exercised end to end, not simulated away by stubbing the describer.
+    """
+    import sys
+    import types
+
+    sent: list = []
+
+    class _Models:
+        def generate_content(self, model, contents):
+            frames = _last_batch(contents)
+            sent.append([i for i, _ in frames])
+            return types.SimpleNamespace(text=raw_for(frames))
+
+    class _Client:
+        models = _Models()
+
+    genai = types.ModuleType("google.genai")
+    genai.Client = lambda api_key=None: _Client()
+    pkg = types.ModuleType("google")
+    pkg.genai = genai
+    monkeypatch.setitem(sys.modules, "google", pkg)
+    monkeypatch.setitem(sys.modules, "google.genai", genai)
+    return sent
+
+
+def _last_batch(contents) -> list[tuple[int, bytes]]:
+    """Recover ``(index, jpeg)`` pairs from the prompt parts the module builds."""
+    batch: list[tuple[int, bytes]] = []
+    current: int | None = None
+    for part in contents:
+        if isinstance(part, str) and part.startswith("Frame index "):
+            current = int(part.removeprefix("Frame index ").rstrip(":"))
+        elif isinstance(part, dict):
+            batch.append((current, part["inline_data"]["data"]))
+    return batch
+
+
+def test_model_supplied_index_cannot_set_timestamps(monkeypatch):
+    """The core guard: a fabricated index cannot place a chunk on the timeline.
+
+    The reply below is the shape that actually shipped: the model returns a
+    correct description for every frame it was sent, but for one frame also
+    volunteers a wildly out-of-range index (500, 999). Under the old parser
+    those became real chunks at ``500 * 4000ms`` and ``999 * 4000ms``.
+
+    Clamping alone would not be a fix -- it files the description against a
+    timestamp nobody observed, which is the spoiler. The batch is refused and
+    the frames are recorded as a gap.
+    """
+    _stub_sampler(monkeypatch, count=N_FRAMES)
+
+    def _fabricate(frames):
+        import json
+
+        return json.dumps(
+            {
+                "frames": [
+                    {"index": i, "description": f"frame {i}: a plotted curve"}
+                    for i, _ in frames
+                ]
+                + [
+                    {"index": 500, "description": "a stray frame from nowhere"},
+                    {"index": 999, "description": "another stray frame"},
+                ]
+            }
+        )
+
+    _pass_raw_reply(monkeypatch, _fabricate)
+    store = _wire_jobs(monkeypatch)
+
+    jobs_mod.ingest_media("fake.mp4", course_id="coverageprobe", resource_id="res_probe")
+
+    visual = [c for c in store.added if c.metadata.get("kind") == "visual"]
+    assert visual, "the real frames must still be indexed"
+
+    # No chunk may sit at a fabricated index's timestamp.
+    fabricated_starts = {500 * INTERVAL_MS, 999 * INTERVAL_MS}
+    assert not (fabricated_starts & {c.start_ms for c in visual})
+
+    for chunk in visual:
+        assert chunk.start_ms % INTERVAL_MS == 0, (
+            f"chunk starts at {chunk.start_ms}ms, which is not a sampled frame"
+        )
+        assert chunk.start_ms // INTERVAL_MS < N_FRAMES
+        assert chunk.end_ms <= DURATION_MS
+
+    # And the mismatch is recorded rather than silently absorbed. The stray
+    # indices belong to no sampled frame, so the pass stays `complete` over the
+    # 164 real frames while the drop is still visible in `failures`.
+    report = visual_mod.extract_visual_pass("fake.mp4", duration_ms=DURATION_MS)
+    assert report.status == "complete"
+    assert len(report.segments) == N_FRAMES
+    assert report.failures, "a dropped description must be recorded"
+    assert any("not sampled" in f for f in report.failures)
+
+
+def test_unknown_index_is_dropped_not_reassigned(monkeypatch):
+    """One bogus index must not cost the valid frames beside it, or be guessed at.
+
+    Both halves matter. Discarding the whole reply loses real content; keeping
+    the stray entry and clamping it down to the end of the video files a
+    description against a time it was never seen at.
+    """
+    _stub_sampler(monkeypatch, count=N_FRAMES)
+
+    def _one_bad(frames):
+        import json
+
+        return json.dumps(
+            {
+                "frames": [
+                    {"index": i, "description": f"frame {i}: a plotted curve"}
+                    for i, _ in frames
+                ]
+                + [{"index": 12_345, "description": "invented"}]
+            }
+        )
+
+    _pass_raw_reply(monkeypatch, _one_bad)
+
+    report = visual_mod.extract_visual_pass("fake.mp4", duration_ms=DURATION_MS)
+
+    assert [s.frame_index for s in report.segments] == list(range(N_FRAMES)), (
+        "the valid indices in the reply must be unaffected"
+    )
+    assert 12_345 not in {s.frame_index for s in report.segments}
+    # No segment is clamped down onto the last frame to absorb the stray one.
+    assert len([s for s in report.segments if s.end_ms == DURATION_MS]) == 1
+    assert report.failures, "a dropped description must be recorded"
+
+
+def test_duplicate_index_does_not_duplicate_a_chunk(monkeypatch):
+    """A model that labels two images with one index has lost track of them.
+
+    Last-write-wins would silently attribute one image's description to the
+    other and hide the fact that the reply is untrustworthy, so the repeat is
+    a mismatch.
+    """
+    _stub_sampler(monkeypatch, count=N_FRAMES)
+
+    def _repeat(frames):
+        import json
+
+        return json.dumps(
+            {
+                "frames": [
+                    {"index": i, "description": f"frame {i}: a plotted curve"}
+                    for i, _ in frames
+                ]
+                + [{"index": 3, "description": "a second, different frame 3"}]
+            }
+        )
+
+    _pass_raw_reply(monkeypatch, _repeat)
+    store = _wire_jobs(monkeypatch)
+
+    jobs_mod.ingest_media("fake.mp4", course_id="coverageprobe", resource_id="res_probe")
+
+    visual = [c for c in store.added if c.metadata.get("kind") == "visual"]
+    starts = [c.start_ms for c in visual]
+    assert len(starts) == len(set(starts)), "one chunk per sampled frame, no repeats"
+    assert not any("a second, different frame 3" in c.text for c in visual)
+
+
+def test_no_visual_chunk_exceeds_the_duration(monkeypatch):
+    """For a 655500ms file, no stored chunk may claim a moment past its end."""
+    _stub_sampler(monkeypatch, count=N_FRAMES)
+    _pass_raw_reply(monkeypatch, _reply)
+    store = _wire_jobs(monkeypatch)
+
+    jobs_mod.ingest_media("fake.mp4", course_id="coverageprobe", resource_id="res_probe")
+
+    visual = [c for c in store.added if c.metadata.get("kind") == "visual"]
+    assert visual
+    assert max(c.end_ms for c in visual) <= DURATION_MS
+
+
+def test_visual_chunk_count_equals_sampler_index_count(monkeypatch):
+    """164 segments for a 655500ms file at 4s -- never 174, never 165.
+
+    The count is asserted against ``iter_frame_indices``, not a literal, so it
+    keeps meaning "one per sampled frame" if the interval ever changes.
+    """
+    _stub_sampler(monkeypatch, count=N_FRAMES)
+    _pass_raw_reply(monkeypatch, _reply)
+
+    report = visual_mod.extract_visual_pass("fake.mp4", duration_ms=DURATION_MS)
+
+    expected = iter_frame_indices(DURATION_MS, interval_s=FRAME_INTERVAL_S)
+    assert len(expected) == N_FRAMES
+    assert len(report.segments) == len(expected) == N_FRAMES
+    assert [s.frame_index for s in report.segments] == expected
+    assert [s.start_ms for s in report.segments] == [
+        i * INTERVAL_MS for i in expected
+    ]
+
+
+def test_final_partial_interval_is_clamped(monkeypatch):
+    """The last frame's tail is 3500ms of a 4000ms interval, ending at duration.
+
+    ``iter_frame_indices`` samples the final partial interval on purpose -- a
+    655.5s file has 3.5s of content nobody would otherwise describe -- so that
+    tail must close exactly on the authoritative duration.
+    """
+    _stub_sampler(monkeypatch, count=N_FRAMES)
+    _pass_raw_reply(monkeypatch, _reply)
+
+    report = visual_mod.extract_visual_pass("fake.mp4", duration_ms=DURATION_MS)
+
+    last = report.segments[-1]
+    assert last.frame_index == 163
+    assert last.start_ms == 163 * INTERVAL_MS == 652_000
+    assert last.end_ms == DURATION_MS
+    assert last.end_ms - last.start_ms == 3_500 < INTERVAL_MS
+
+    # The clamp holds for indices past the end too -- used to be the leak.
+    assert frame_bounds(164, duration_ms=DURATION_MS)[1] == DURATION_MS
+    assert frame_bounds(99_999, duration_ms=DURATION_MS)[1] == DURATION_MS
+
+
+def test_the_index_channel_is_actually_validated():
+    """Why the previous guard missed this: the stub never reached the parser.
+
+    ``test_timestamps_come_from_index_arithmetic`` replaces
+    ``_gemini_describe``, so its indices are the real ones by construction and
+    the trust boundary is never crossed. :func:`_validated_descriptions` is that
+    boundary, and until now no test fed it a model-chosen index at all.
+    """
+    validate = visual_mod._validated_descriptions
+
+    # A reply whose indices all name sampled frames passes through untouched.
+    kept, notes = validate({4: "a curve", 5: "another"}, {4, 5})
+    assert kept == {4: "a curve", 5: "another"}
+    assert notes == []
+
+    # An index naming no sampled frame yields NO entry...
+    kept, notes = validate({4: "a curve", 500: "invented"}, {4, 5})
+    assert kept == {4: "a curve"}
+    assert notes and "[500]" in notes[0]
+
+    # ...and it is not clamped onto the last sampled frame instead.
+    kept, _ = validate({4: "a curve", 500: "invented"}, {4, 5})
+    assert 5 not in kept
+    assert all(i in {4, 5} for i in kept)
+
+    # A repeated index keeps only the first occurrence, never the last.
+    parsed = visual_mod._parse_frame_descriptions(
+        '{"frames": [{"index": 4, "description": "first"}, '
+        '{"index": 4, "description": "second"}]}'
+    )
+    assert parsed == {4: "first"}
+
+
+def test_a_valid_batch_keeps_its_index_channel_intact(monkeypatch):
+    """The model still gets told which frame it is looking at.
+
+    Dropping the index from the prompt would be the wrong fix: the model needs
+    it to know *which* of eight images it is describing. What must not happen
+    is that index being trusted for storage.
+    """
+    _stub_sampler(monkeypatch, count=N_FRAMES)
+    sent = _pass_raw_reply(monkeypatch, _reply)
+
+    report = visual_mod.extract_visual_pass("fake.mp4", duration_ms=DURATION_MS)
+
+    assert report.status == "complete"
+    assert report.warnings == []
+    assert sent[0] == list(range(8)), (
+        "the prompt must still carry the sampled index for each frame"
+    )
+    assert len(report.segments) == N_FRAMES
+
+
+def test_build_visual_segments_drops_an_unsampled_index():
+    """The storage-layer guard, independent of how the description arrived."""
+    segments = visual_mod.build_visual_segments(
+        {0: "a curve", 5: "another curve", 500: "a frame from nowhere"},
+        duration_ms=DURATION_MS,
+        sampled_indices=list(range(N_FRAMES)),
+    )
+
+    assert [s.frame_index for s in segments] == [0, 5]
+    assert all(s.end_ms <= DURATION_MS for s in segments)
+
+
+# ---------------------------------------------------------------------------
 # 5. Report arithmetic, isolated from the pipeline
 # ---------------------------------------------------------------------------
 
