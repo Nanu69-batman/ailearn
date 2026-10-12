@@ -23,6 +23,8 @@ import logging
 import math
 import re
 
+from app.ingestion import backoff as backoff_mod
+
 log = logging.getLogger(__name__)
 
 #: Offline hashing embedder width.
@@ -94,6 +96,19 @@ class GeminiEmbedder:
     #: Texts per ``embed_content`` call.
     BATCH_SIZE = 100
 
+    #: Attempts and backoff tuned to *this* quota, which is the stingier of the
+    #: two and measures requests per minute, not batches.
+    #:
+    #: The batch form returns a single pooled vector rather than one per text,
+    #: so the real path is one request per chunk -- ~265 requests for a 655s
+    #: lecture against a 100/min free-tier cap. The quota error asks for ~23s,
+    #: so a 2s base would burn all five attempts inside a single quota window
+    #: and fail a pass that had already cost six minutes. 15s x 8 attempts
+    #: spans ~4 minutes of quota refill, which is enough for the whole write.
+    EMBED_MAX_ATTEMPTS = 8
+    EMBED_BACKOFF_S = 15.0
+    EMBED_BACKOFF_CAP_S = 60.0
+
     def _embed(self, texts: list[str]) -> list[list[float]]:
         """Embed texts, verifying one vector comes back per input.
 
@@ -123,9 +138,27 @@ class GeminiEmbedder:
             out.extend(vectors)
         return out
 
-    def _embed_batch(self, batch: list[str]) -> list[list[float]]:
+    def _embed_once(self, batch: list[str]) -> list[list[float]]:
         resp = self._client.models.embed_content(model=self._model, contents=batch)
         return [list(item.values) for item in (resp.embeddings or [])]
+
+    def _embed_batch(self, batch: list[str]) -> list[list[float]]:
+        """Embed one batch, surviving the free tier's per-minute embedding cap.
+
+        A 655s lecture indexes ~250 chunks, which is ~3 batches of 100 against
+        a 100 requests/minute free-tier quota -- and the chunk write is the
+        *last* step of an ingest that has already spent minutes transcribing
+        and describing. An unretried 429 there throws away the entire pass and
+        fails the job, so the wait-and-retry is bounded and shared with the
+        describe loop rather than bespoke to this call.
+        """
+        return backoff_mod.call_with_retry(
+            lambda: self._embed_once(batch),
+            what=f"embed_content({self._model}, {len(batch)} text(s))",
+            max_attempts=self.EMBED_MAX_ATTEMPTS,
+            backoff_s=self.EMBED_BACKOFF_S,
+            backoff_cap_s=self.EMBED_BACKOFF_CAP_S,
+        )
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return self._embed(texts)

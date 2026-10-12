@@ -243,7 +243,7 @@ def ingest_media(
     resource_id: str,
     video_id: str | None = None,
     with_visual: bool = True,
-    max_visual_frames: int | None = 40,
+    max_visual_frames: int | None = None,
     title: str | None | object = _UNSET,
 ) -> dict:
     """Audio + visual ingest for a video. Raises when duration is unknown.
@@ -256,6 +256,14 @@ def ingest_media(
     ``{resource_id}.{ext}`` asset and its name says nothing about the file the
     learner picked. Passing ``None`` records no title rather than falling back
     to the staged name.
+
+    ``max_visual_frames`` used to default to ``40``. That is the shipped bug
+    this function now documents: 40 frames at a 4s interval is the first 160
+    seconds of a 655-second lecture, so the remaining eight minutes were indexed
+    with nothing visual, and the job still reported ``status: done`` with
+    "129 chunks". It defaults to no cap, and if a caller does pass one the
+    report is forced to a non-``complete`` visual status so the truncation is
+    stated rather than inferred.
     """
     path = Path(path)
     duration_ms = media_duration_ms(path)
@@ -267,13 +275,29 @@ def ingest_media(
 
     transcript, audio_signals = audio_mod.transcribe(path, duration_ms=duration_ms)
     visual: list[visual_mod.VisualSegment] = []
+    visual_report = visual_mod.VisualPassReport(duration_ms=duration_ms)
+    warnings: list[str] = []
     if with_visual:
         try:
-            visual = visual_mod.extract_visual_segments(
+            visual_report = visual_mod.extract_visual_pass(
                 str(path), duration_ms=duration_ms, max_frames=max_visual_frames
             )
         except Exception as exc:  # noqa: BLE001 - visual is additive to audio
             log.warning("visual extraction failed for %s: %s", path.name, exc)
+            # Audio is genuinely useful and is already transcribed, so this is
+            # a degraded pass rather than a failed job -- but it is now a
+            # *recorded* degradation. The old code swallowed the exception and
+            # reported the same success either way.
+            warnings.append(
+                f"visual extraction failed: {type(exc).__name__}: {exc}"
+            )
+            visual_report = visual_mod.VisualPassReport(
+                expected_indices=visual_mod.iter_frame_indices(duration_ms),
+                duration_ms=duration_ms,
+                failures=[f"{type(exc).__name__}: {exc}"],
+            )
+        visual = visual_report.segments
+        warnings.extend(visual_report.warnings)
 
     chunks = build_chunks(
         resource_id=resource_id,
@@ -296,12 +320,29 @@ def ingest_media(
         "duration_ms": duration_ms,
         "max_end_ms": max((c.end_ms or 0 for c in chunks), default=0),
         "audio_signals": audio_signals,
+        # Honest accounting for the visual pass. `visual_status` is the field
+        # that must never be read as "the video was fully indexed": it is
+        # "complete" only when every frame on the timeline was described.
+        "visual_status": visual_report.status if with_visual else "skipped",
+        "visual_expected_frames": len(visual_report.expected_indices),
+        "visual_described_frames": len(visual_report.covered_indices),
+        "visual_coverage_pct": visual_report.coverage_pct,
+        "visual_span_pct": visual_report.span_pct,
+        "warnings": warnings,
     }
     log.info(
         "ingested %s: %d audio / %d visual chunk(s), max end_ms=%s of %s",
         path.name, report["audio_chunks"], report["visual_chunks"],
         report["max_end_ms"], duration_ms,
     )
+    if with_visual and visual_report.status != "complete":
+        log.error(
+            "ingest of %s is DEGRADED: visual status=%s, %d/%d frames described "
+            "(%.1f%% of the timeline, span %.1f%% of the duration)",
+            path.name, visual_report.status, report["visual_described_frames"],
+            report["visual_expected_frames"], visual_report.coverage_pct,
+            visual_report.span_pct,
+        )
     return report
 
 
@@ -409,7 +450,14 @@ def schedule(job: IngestJob, work) -> None:
 
 
 def job_payload(job: IngestJob) -> dict:
-    """Shape matching ``IngestJob`` in apps/web/lib/api.ts (exact keys)."""
+    """Shape matching ``IngestJob`` in apps/web/lib/api.ts (exact keys).
+
+    The four keys the web client discriminates on are always present and never
+    renamed. Anything extra is purely additive and omitted unless the ingest
+    actually produced something to say -- a pending job is still exactly
+    ``{job_id, resource_id, status}`` -- so the frozen contract cannot break
+    and a degraded visual pass cannot be silent.
+    """
     payload = {
         "job_id": job.job_id,
         "resource_id": job.resource_id,
@@ -417,4 +465,10 @@ def job_payload(job: IngestJob) -> dict:
     }
     if job.error:
         payload["error"] = job.error
+    detail = job.detail or {}
+    for key in ("visual_status", "visual_coverage_pct", "visual_span_pct"):
+        if key in detail:
+            payload[key] = detail[key]
+    if detail.get("warnings"):
+        payload["warnings"] = list(detail["warnings"])
     return payload

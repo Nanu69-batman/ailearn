@@ -22,7 +22,11 @@ flows through the same strict-T gate as audio.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from app.ingestion import backoff as backoff_mod
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +43,39 @@ FRAMES_PER_BATCH = 8
 #: JPEG quality for sampled frames. Frames are read for text and diagrams, so
 #: high quality matters more than file size here.
 FRAME_JPEG_QUALITY = 85
+
+#: Minimum seconds between two Gemini describe requests, measured start to
+#: start.
+#:
+#: The free tier allows roughly 15 ``generate_content`` requests per minute. A
+#: 655s lecture at a 4s interval is 164 frames = 21 batches, so a burst of 21
+#: unspaced calls *will* be rate limited part-way through. Pacing is what stops
+#: the tail of the video from being the part that gets dropped; the bounded
+#: retry in :func:`_describe_with_retry` covers what pacing alone cannot.
+DESCRIBE_MIN_INTERVAL_S = 4.0
+
+#: Attempts for one batch before it is recorded as a failure. Backoff is
+#: exponential from :data:`DESCRIBE_BACKOFF_S`, capped at :data:`DESCRIBE_BACKOFF_CAP_S`.
+DESCRIBE_MAX_ATTEMPTS = backoff_mod.DEFAULT_MAX_ATTEMPTS
+
+#: Exponential backoff base and ceiling for a rate-limited/transient failure.
+DESCRIBE_BACKOFF_S = backoff_mod.DEFAULT_BACKOFF_S
+DESCRIBE_BACKOFF_CAP_S = backoff_mod.DEFAULT_BACKOFF_CAP_S
+
+#: Extra attempts when a batch returns *nothing usable* rather than an error.
+#:
+#: A truncated or garbled response is indistinguishable from a rate-limit hit
+#: from the caller's side, and quietly discarding those frames is exactly the
+#: failure this module exists to prevent -- so it is retried, then reported.
+DESCRIBE_EMPTY_RETRIES = 2
+
+#: Substrings that mark an exception as worth retrying rather than as a
+#: permanent failure. Matched against ``str(exc)`` because every SDK error
+#: type differs; the numeric codes (429/500/503) and the Gemini status strings
+#: are both in there deliberately.
+def _is_retryable(exc: BaseException) -> bool:
+    """Alias of :func:`app.ingestion.backoff.is_retryable`, kept for readability."""
+    return backoff_mod.is_retryable(exc)
 
 _VISUAL_PROMPT = (
     "You are describing consecutive frames from the same lecture video so a "
@@ -255,6 +292,224 @@ def build_visual_segments(
     return segments
 
 
+@dataclass
+class VisualPassReport:
+    """What the visual pass actually managed to describe.
+
+    The shipped bug was not that descriptions were wrong -- it was that a pass
+    covering 24% of the file reported exactly the same "129 chunks" success as
+    a complete one. This dataclass exists so the caller can *tell the
+    difference*, and so the difference is visible in the job record rather
+    than only in a log line nobody reads.
+    """
+
+    segments: list[VisualSegment] = field(default_factory=list)
+    #: Every index the timeline says should have been sampled.
+    expected_indices: list[int] = field(default_factory=list)
+    #: Indices PyAV actually yielded.
+    sampled_indices: list[int] = field(default_factory=list)
+    #: Indices the model actually returned a description for.
+    described_indices: list[int] = field(default_factory=list)
+    #: One human-readable line per batch that could not be described.
+    failures: list[str] = field(default_factory=list)
+    #: A caller-supplied ``max_frames`` cut the walk short. Always degraded,
+    #: never silently "complete", even if every frame it did reach succeeded.
+    truncated: bool = False
+    #: The authoritative timeline the pass was timed against.
+    duration_ms: int = 0
+    #: ``False`` when no describe pass ran at all (``describe=False``), which is
+    #: "skipped" rather than "failed" -- nothing was attempted to go wrong.
+    attempted: bool = True
+
+    @property
+    def covered_indices(self) -> list[int]:
+        """Expected indices that came back with a description."""
+        seen = set(self.described_indices)
+        return [i for i in self.expected_indices if i in seen]
+
+    @property
+    def status(self) -> str:
+        """``complete`` | ``partial`` | ``failed`` | ``skipped``.
+
+        ``complete`` means the whole timeline was described. Anything short of
+        that is named, never rounded up.
+        """
+        if not self.attempted or not self.expected_indices:
+            return "skipped"
+        if not self.covered_indices:
+            return "failed"
+        if self.truncated or len(self.covered_indices) < len(self.expected_indices):
+            return "partial"
+        return "complete"
+
+    @property
+    def coverage_pct(self) -> float:
+        """Share of the timeline that got a description. The honesty metric."""
+        if not self.expected_indices:
+            return 0.0
+        return round(100.0 * len(self.covered_indices) / len(self.expected_indices), 1)
+
+    @property
+    def span_pct(self) -> float:
+        """Share of the duration reachable by at least one described frame.
+
+        This is the number that made the shipped bug visible: the stored
+        ``res_95f6dc70e36a`` reported 24.4% -- 160 seconds of a 655-second
+        lecture described as though it were the whole thing. Distinct from
+        :attr:`coverage_pct`: describing frames 0-39 *and* 163 gives 100%
+        span but 25% coverage, and quoting the span alone would hide the hole
+        in the middle.
+        """
+        if not self.segments or self.duration_ms <= 0:
+            return 0.0
+        return round(
+            100.0 * max(s.end_ms for s in self.segments) / self.duration_ms, 1
+        )
+
+    @property
+    def warnings(self) -> list[str]:
+        out: list[str] = []
+        if self.truncated:
+            out.append(
+                f"visual pass stopped after {len(self.sampled_indices)} of "
+                f"{len(self.expected_indices)} frames (frame cap); the rest of "
+                "the video has no on-screen description"
+            )
+        status = self.status
+        if status == "failed":
+            out.append(
+                f"visual pass described 0 of {len(self.expected_indices)} frames"
+            )
+        elif status == "partial":
+            out.append(
+                f"visual pass described {len(self.covered_indices)} of "
+                f"{len(self.expected_indices)} frames "
+                f"({self.coverage_pct}% of the timeline)"
+            )
+        out.extend(self.failures)
+        return out
+
+
+def _describe_with_retry(
+    frames: list[tuple[int, bytes]],
+    *,
+    max_attempts: int | None = None,
+    sleep=time.sleep,
+) -> tuple[dict[int, str], str]:
+    """Describe one batch, surviving rate limits. Returns ``(result, error)``.
+
+    Never raises: a batch that cannot be described is reported as an error
+    string so the caller can keep going and *record the gap*. Letting the
+    exception out is what turned a partial pass into a truncated one with no
+    trace.
+    """
+    attempts = max_attempts or DESCRIBE_MAX_ATTEMPTS
+    empty_attempts = min(attempts, DESCRIBE_EMPTY_RETRIES + 1)
+    last = "no description attempt was made"
+    for attempt in range(1, attempts + 1):
+        try:
+            result = _gemini_describe(frames)
+        except Exception as exc:  # noqa: BLE001 - classified, never propagated
+            last = f"{type(exc).__name__}: {exc}"
+            if not _is_retryable(exc) or attempt >= attempts:
+                log.error("visual: describe batch abandoned after %d attempt(s): %s",
+                          attempt, last)
+                return {}, last
+            delay = min(DESCRIBE_BACKOFF_CAP_S, DESCRIBE_BACKOFF_S ** attempt)
+            log.warning("visual: describe attempt %d/%d failed (%s); retrying in %.0fs",
+                        attempt, attempts, last, delay)
+            sleep(delay)
+            continue
+        if result:
+            return result, ""
+        last = "model returned no usable frame descriptions"
+        if attempt >= empty_attempts:
+            log.error("visual: %s for indices %s", last,
+                      [i for i, _ in frames])
+            return {}, last
+        sleep(min(DESCRIBE_BACKOFF_CAP_S, DESCRIBE_BACKOFF_S ** attempt))
+    return {}, last
+
+
+def extract_visual_pass(
+    path: str,
+    *,
+    duration_ms: int,
+    interval_s: float = FRAME_INTERVAL_S,
+    batch_size: int = FRAMES_PER_BATCH,
+    max_frames: int | None = None,
+    describe: bool = True,
+) -> VisualPassReport:
+    """Full visual pass with an honest account of what it covered.
+
+    ``max_frames`` defaults to *no cap*. The shipped default of 40 truncated a
+    655-second lecture to its first 160 seconds -- 40 frames at a 4s interval
+    -- and reported the result as a successful ingest. A cap is still available
+    for callers that genuinely want one, but it now marks the pass
+    :attr:`VisualPassReport.truncated`, which forces a non-``complete`` status.
+    """
+    expected = iter_frame_indices(duration_ms, interval_s=interval_s)
+    if not describe:
+        # Offline mode: no sampling and no model call at all. `describe=False`
+        # must stay a hard no-model guarantee, not merely "the batches happen
+        # not to fill".
+        return VisualPassReport(
+            expected_indices=expected, duration_ms=duration_ms, attempted=False
+        )
+
+    described: dict[int, str] = {}
+    sampled: list[int] = []
+    failures: list[str] = []
+    truncated = False
+    batch: list[tuple[int, bytes]] = []
+    last_call = 0.0
+
+    def _flush(items: list[tuple[int, bytes]]) -> None:
+        nonlocal last_call
+        gap = DESCRIBE_MIN_INTERVAL_S - (time.monotonic() - last_call)
+        if last_call and gap > 0:
+            time.sleep(gap)
+        last_call = time.monotonic()
+        result, error = _describe_with_retry(items)
+        if error:
+            span = f"{items[0][0]}-{items[-1][0]}"
+            failures.append(f"frames {span}: {error}")
+        described.update(result)
+
+    for seen, (index, jpeg) in enumerate(sample_frames(path, interval_s=interval_s)):
+        if max_frames is not None and seen >= max_frames:
+            truncated = True
+            log.error(
+                "visual: frame cap %d truncated the walk of %s -- %d of %d "
+                "frames will never be described",
+                max_frames, Path(path).name, min(seen, len(expected)), len(expected),
+            )
+            break
+        sampled.append(index)
+        batch.append((index, jpeg))
+        if len(batch) >= batch_size:
+            _flush(batch)
+            batch = []
+    if batch:
+        _flush(batch)
+
+    report = VisualPassReport(
+        expected_indices=expected,
+        sampled_indices=sampled,
+        described_indices=sorted(described),
+        failures=failures,
+        truncated=truncated,
+        duration_ms=duration_ms,
+    )
+    report.segments = build_visual_segments(
+        described, duration_ms=duration_ms, interval_s=interval_s
+    )
+    if report.status != "complete":
+        for warning in report.warnings:
+            log.error("visual: %s", warning)
+    return report
+
+
 def extract_visual_segments(
     path: str,
     *,
@@ -264,27 +519,17 @@ def extract_visual_segments(
     max_frames: int | None = None,
     describe: bool = True,
 ) -> list[VisualSegment]:
-    """Full visual pass: sample frames, describe them, derive their timestamps.
+    """Segments only. Thin wrapper over :func:`extract_visual_pass`.
 
-    ``describe=False`` samples and times frames without calling the model --
-    used by tests, which must not touch the network.
+    Prefer the report form in the ingest pipeline -- it is the only way to see
+    whether the pass covered the video. This wrapper exists for tests and for
+    callers that genuinely only want the segments.
     """
-    described: dict[int, str] = {}
-    if not describe:
-        # Offline mode: sample and time frames without ever calling the model.
-        # `describe=False` must be a hard no-model guarantee, not merely "the
-        # batches happen not to fill".
-        return []
-    batch: list[tuple[int, bytes]] = []
-    for seen, (index, jpeg) in enumerate(sample_frames(path, interval_s=interval_s)):
-        if max_frames is not None and seen >= max_frames:
-            break
-        batch.append((index, jpeg))
-        if len(batch) >= batch_size:
-            described.update(_gemini_describe(batch))
-            batch = []
-    if batch:
-        described.update(_gemini_describe(batch))
-    return build_visual_segments(
-        described, duration_ms=duration_ms, interval_s=interval_s
-    )
+    return extract_visual_pass(
+        path,
+        duration_ms=duration_ms,
+        interval_s=interval_s,
+        batch_size=batch_size,
+        max_frames=max_frames,
+        describe=describe,
+    ).segments
