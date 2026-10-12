@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -56,9 +57,45 @@ class ChatRequest(BaseModel):
     mode: ChatMode = Field(default=ChatMode.qa)
 
 
+#: What kind of signal a citation was drawn from, for material where that
+#: distinction is meaningful (i.e. video). A Whisper transcript chunk and a
+#: sampled-frame vision chunk BOTH carry ``source_type == "video"`` and are
+#: indistinguishable to a learner without this field.
+#:
+#: ``transcript`` -> spoken audio (Whisper / YouTube captions).
+#: ``visual``     -> a sampled video frame described by the vision model.
+CitationModality = Literal["transcript", "visual"]
+
+#: Chunk metadata ``kind`` -> public modality. Deliberately NOT exhaustive and
+#: deliberately NOT defaulted: ``document`` (PDF/slide text) is not a video
+#: modality at all, so it has no honest value here and maps to None.
+_KIND_TO_MODALITY: dict[str, CitationModality] = {
+    "transcript": "transcript",
+    "caption": "transcript",
+    "visual": "visual",
+}
+
+
+def normalize_modality(kind: str | None) -> CitationModality | None:
+    """Map a stored chunk ``kind`` to the public modality vocabulary.
+
+    Returns ``None`` for a missing, empty, or unrecognised ``kind``. That is
+    the honest answer: we do not know how the evidence was produced, so we say
+    nothing rather than assert "transcript". Callers fall back to their
+    neutral display when this is None.
+    """
+    if not kind:
+        return None
+    return _KIND_TO_MODALITY.get(str(kind).strip().lower())
+
+
 class Citation(BaseModel):
     chunk_id: str
     source_type: str | None = None
+    #: "transcript" | "visual" | None. None means the chunk carried no
+    #: recognised ``kind`` -- NOT "it was a transcript". Additive field; every
+    #: pre-existing response shape is unchanged when it is absent.
+    modality: CitationModality | None = None
     video_id: str | None = None
     start_ms: int | None = None
     end_ms: int | None = None

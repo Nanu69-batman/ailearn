@@ -212,9 +212,21 @@ export type CitationSourceType =
   | "note"
   | "code";
 
+/**
+ * How the evidence behind a citation was produced.
+ *
+ * A transcript chunk (Whisper/captions) and a sampled-frame chunk (vision)
+ * both carry `source_type: "video"`, so `modality` is the only signal telling
+ * a learner which one they are looking at. `null`/absent means the backend
+ * did not record it -- NOT "transcript".
+ */
+export type CitationModality = "transcript" | "visual";
+
 export interface Citation {
   chunk_id: string;
   source_type?: CitationSourceType | null;
+  /** Absent/null on older or partial data; the chip then renders as before. */
+  modality?: CitationModality | null;
   video_id?: string | null;
   start_ms?: number | null;
   end_ms?: number | null;

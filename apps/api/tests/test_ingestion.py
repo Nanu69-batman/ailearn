@@ -818,3 +818,147 @@ def test_ingest_without_subject_id_behaves_as_before(
     assert captured["course_id"] == "course_1"
     subjects = isolated_subject_store.subject_store.list_all()
     assert all(not s.resource_ids for s in subjects)
+
+
+# ---------------------------------------------------------------------------
+# Upload title is the ORIGINAL filename, not the staged asset name
+# ---------------------------------------------------------------------------
+
+_UNSET_SENTINEL = object()
+
+
+def _fake_ingest_recording_title(wired, monkeypatch):
+    """Replace the router's ingest call, indexing chunks with the real title.
+
+    The fake honours the ``title`` kwarg the router passes, so assertions
+    cover the whole chain: multipart filename -> ``title=`` -> chunk metadata
+    -> ``resources()``. No ASR, no network, nothing written to real data/.
+    """
+    import app.ingestion.router as router_mod
+    from app.ingestion import jobs as jobs_mod_real
+    from app.ingestion.chunking import TextSegment
+
+    monkeypatch.setattr(router_mod, "schedule", lambda job, work: work())
+    captured: dict = {}
+
+    def fake_ingest(path, *, course_id, resource_id, **kwargs):
+        captured["path"] = Path(path)
+        captured["title"] = kwargs.get("title", _UNSET_SENTINEL)
+        chunks = jobs_mod_real.build_chunks(
+            resource_id=resource_id,
+            course_id=course_id,
+            source_type="video",
+            text_segments=[TextSegment(text="hello", start_ms=0, end_ms=1_000)],
+            title=(
+                None
+                if captured["title"] is _UNSET_SENTINEL
+                else captured["title"]
+            ),
+        )
+        wired.add(chunks)
+        return {"total_chunks": len(chunks)}
+
+    monkeypatch.setattr(router_mod, "ingest_media", fake_ingest)
+    return captured
+
+
+def _upload_and_read_resource(client, filename: str, payload: bytes = b"\x00" * 64):
+    resp = client.post(
+        "/courses/course_1/ingest",
+        files={"file": (filename, payload, "video/mp4")},
+    )
+    assert resp.status_code == 200, resp.text
+    resource_id = resp.json()["resource_id"]
+    listing = client.get("/courses/course_1/resources").json()["resources"]
+    return next(e for e in listing if e["id"] == resource_id)
+
+
+def test_upload_title_is_original_filename(client, wired, monkeypatch):
+    """The catalogue shows the name the learner uploaded.
+
+    Regression: the upload path stages the file as ``{resource_id}.{ext}`` and
+    the title came from that staged path, so every video was titled
+    ``res_49ccbdb02150.mp4`` -- an internal id the learner never saw and
+    cannot map back to their own file.
+    """
+    _fake_ingest_recording_title(wired, monkeypatch)
+    entry = _upload_and_read_resource(client, "Partial-derivatives.mp4")
+    assert entry["title"] == "Partial-derivatives.mp4"
+
+
+def test_asset_name_remains_staged_name(client, wired, monkeypatch):
+    """``asset_name`` is still the staged on-disk name.
+
+    The media endpoint globs ``{resource_id}.*`` in the upload dir, so serving
+    depends on the staged naming. ``title`` and ``asset_name`` are different
+    fields for different purposes and must not be conflated.
+    """
+    captured = _fake_ingest_recording_title(wired, monkeypatch)
+    entry = _upload_and_read_resource(client, "Partial-derivatives.mp4")
+
+    assert entry["title"] == "Partial-derivatives.mp4"
+    assert entry["asset_name"] == f"{entry['id']}.mp4"
+    assert captured["path"].name == entry["asset_name"]
+    assert captured["path"].exists()
+
+
+def test_upload_filename_directory_is_stripped(client, wired, monkeypatch):
+    """A browser can send a full local path; only the basename becomes a title.
+
+    Unsanitised, that filename carries a separator and a drive letter into
+    stored metadata and the UI, and a POSIX path could point anywhere.
+    """
+    _fake_ingest_recording_title(wired, monkeypatch)
+    entry = _upload_and_read_resource(client, "C:\\Users\\x\\lecture.mp4")
+
+    assert entry["title"] == "lecture.mp4"
+    for separator in ("\\", "/"):
+        assert separator not in entry["title"]
+    assert "Users" not in entry["title"]
+
+
+def test_missing_filename_leaves_title_null(wired, tmp_path, monkeypatch):
+    """No usable filename -> ``title is None``, never a staged-name stand-in.
+
+    ``{resource_id}.{ext}`` is a fabrication from the caller's point of view:
+    it names an internal asset, not a file the learner chose. An honest empty
+    state lets the UI fall back to the resource id.
+    """
+    from app.ingestion import jobs as jobs_mod_real
+    from app.ingestion.jobs import sanitize_filename
+
+    assert sanitize_filename(None) is None
+    for junk in ("", "   ", "..", ".", "/", "///"):
+        assert sanitize_filename(junk) is None
+
+    fake = tmp_path / "staged.mp4"
+    fake.write_bytes(b"not real media")
+    monkeypatch.setattr(jobs_mod_real, "media_duration_ms", lambda path, **kw: 10_000)
+    jobs_mod_real.ingest_media(
+        fake, course_id="course_1", resource_id="res_noname",
+        with_visual=False, title=None,
+    )
+
+    entry = next(e for e in wired.resources("course_1") if e["id"] == "res_noname")
+    assert entry["title"] is None
+    # Specifically not the staged file's own name.
+    assert entry["title"] != fake.name
+
+
+def test_title_is_length_capped(client, wired, monkeypatch):
+    """An absurd filename is truncated before it reaches metadata."""
+    from app.ingestion.jobs import MAX_TITLE_LENGTH, sanitize_filename
+
+    # 900 chars: long enough to blow the 200-char cap, short enough that
+    # python-multipart accepts the part header. A 5000-char name is rejected
+    # with a 400 by the parser before the handler runs, which would test the
+    # multipart parser rather than the cap.
+    long_name = "a" * 896 + ".mp4"
+    capped = sanitize_filename(long_name)
+    assert len(capped) <= MAX_TITLE_LENGTH
+    # The extension survives, so the UI can still tell what kind of file it is.
+    assert capped.endswith(".mp4")
+
+    _fake_ingest_recording_title(wired, monkeypatch)
+    entry = _upload_and_read_resource(client, long_name)
+    assert len(entry["title"]) <= MAX_TITLE_LENGTH

@@ -30,6 +30,7 @@ from app.ingestion.jobs import (
     ingest_youtube,
     job_payload,
     new_job,
+    sanitize_filename,
     schedule,
     source_type_for,
 )
@@ -65,6 +66,12 @@ async def ingest_file(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    # The only moment the learner's own filename exists. It is captured here
+    # and carried into the resource title, because from the next line on the
+    # file is the staged `{resource_id}.{ext}` asset whose name is an internal
+    # identifier and not what the learner uploaded.
+    original_name = sanitize_filename(file.filename)
+
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     resource_id = _resource_id()
     target = UPLOAD_DIR / f"{resource_id}{Path(file.filename or '').suffix.lower()}"
@@ -92,12 +99,13 @@ async def ingest_file(
 
     if source_type == "video":
         work = lambda: ingest_media(
-            target, course_id=course_id, resource_id=resource_id
+            target, course_id=course_id, resource_id=resource_id,
+            title=original_name,
         )
     else:
         work = lambda: ingest_document(
             target, course_id=course_id, resource_id=resource_id,
-            source_type=source_type,
+            source_type=source_type, title=original_name,
         )
     schedule(job, work)
     return job_payload(job)

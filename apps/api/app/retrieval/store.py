@@ -70,6 +70,8 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.retrieval.recency import apply_recency_preference
+
 log = logging.getLogger(__name__)
 
 #: Source types subject to the strict-T gate. Must stay a superset of
@@ -93,6 +95,12 @@ STARVATION_OVERFETCH = 20
 #: Hard ceiling on the over-fetch, so a large k cannot ask for 10k vectors.
 MAX_CANDIDATES = 2000
 
+#: Over-fetch multiplier for present-tense questions. Higher than
+#: :data:`STARVATION_OVERFETCH` because the query text ("what is on screen?")
+#: is semantically distant from almost every chunk, so plain ANN ranking is
+#: least likely to surface exactly the passages the recency re-rank needs.
+RECENCY_OVERFETCH = 60
+
 
 @dataclass
 class RetrievedPassage:
@@ -108,6 +116,12 @@ class RetrievedPassage:
     course_id: str
     source_type: str
     text: str
+    #: How the evidence was produced: "transcript" (spoken audio) or
+    #: "visual" (a sampled frame). Stored verbatim from chunk metadata, so
+    #: "" means the producer did not record it -- never "transcript".
+    #: Mirrors ``metadata["kind"]``; this is the typed handle the chat layer
+    #: reads so it never has to reach into the raw dict.
+    kind: str | None = None
     start_ms: int | None = None
     end_ms: int | None = None
     video_id: str | None = None
@@ -308,6 +322,7 @@ class ChromaVectorStore:
         current_time_ms: int,
         k: int = 8,
         focus_resource_id: str | None = None,
+        prefer_recent: bool = False,
     ) -> list[RetrievedPassage]:
         """Vector search under the scope + strict-T predicate.
 
@@ -315,6 +330,12 @@ class ChromaVectorStore:
         applies the per-family coverage guarantee and re-asserts strict-T in
         Python. See the module docstring on low-T starvation for why both
         steps are needed.
+
+        ``prefer_recent`` re-ranks the ALREADY-GATED eligible pool toward the
+        playhead for present-tense questions ("what is on screen right now?").
+        It runs after :meth:`_passes_strict_t` and can only narrow or reorder
+        that pool -- it cannot admit a passage the gate excluded. See
+        ``app/retrieval/recency.py``.
         """
         where = build_where(
             course_id=course_id,
@@ -323,6 +344,15 @@ class ChromaVectorStore:
             focus_resource_id=focus_resource_id,
         )
         candidates = min(max(k * STARVATION_OVERFETCH, k), MAX_CANDIDATES)
+        if prefer_recent:
+            # A present-tense query ("what is on screen?") is lexically close to
+            # almost nothing, so ANN alone may not surface the chunks at the
+            # playhead at all -- a preference cannot rescue a chunk that was
+            # never returned. Over-fetching more for these queries keeps the
+            # recent passages inside the pool that the re-rank can choose from.
+            # This is recall only: the same ``where`` clause, and therefore the
+            # same strict-T gate, applies unchanged.
+            candidates = min(max(k * RECENCY_OVERFETCH, k), MAX_CANDIDATES)
         embedding = self._embedder.embed_query(query_text)
         got = self._collection.query(
             query_embeddings=[embedding],
@@ -349,6 +379,21 @@ class ChromaVectorStore:
                 log.warning("post-filter dropped %s (strict-T)", passage.chunk_id)
                 continue
             eligible.append(passage)
+
+        if prefer_recent:
+            # STRICTLY DOWNSTREAM of the gate. `eligible` contains only
+            # passages that already passed `where` + `_passes_strict_t`, so
+            # this can only drop stale ones or reorder -- never admit a future
+            # one. An empty result here is the honest "nothing is happening at
+            # the playhead" case and surfaces as the ordinary refusal.
+            eligible = apply_recency_preference(eligible, current_time_ms)
+            if not eligible:
+                log.info(
+                    "recency: no passage within the recency floor of T=%s; "
+                    "refusing rather than answering from stale material",
+                    current_time_ms,
+                )
+
         return self._select_with_coverage(eligible, k)
 
     @staticmethod
@@ -426,6 +471,9 @@ class ChromaVectorStore:
             course_id=meta.get("course_id", ""),
             source_type=meta.get("source_type", ""),
             text=doc or "",
+            # "" in Chroma means "not recorded"; normalise to None so the
+            # chat layer can tell "unknown" apart from an empty string.
+            kind=meta.get("kind") or None,
             start_ms=start_ms,
             end_ms=end_ms,
             video_id=meta.get("video_id") or None,

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -79,6 +80,44 @@ def update_job(job_id: str, **fields) -> None:
 def clear_jobs() -> None:
     with _LOCK:
         _JOBS.clear()
+
+
+#: Titles are display labels, not storage keys: an absurdly long name is a
+#: denial of the sources panel, never of information. Capped so a hostile
+#: filename cannot bloat every chunk's metadata.
+MAX_TITLE_LENGTH = 200
+
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def sanitize_filename(raw: str | None) -> str | None:
+    """Reduce an attacker-controlled upload filename to a safe display title.
+
+    A browser can send a full local path (``C:\\Users\\x\\lecture.mp4`` or a
+    POSIX equivalent), so the directory component is stripped for both
+    separators before anything else. Control characters are removed, the
+    result is trimmed and capped at :data:`MAX_TITLE_LENGTH` with the
+    extension preserved.
+
+    Returns ``None`` when nothing usable survives. A title is never invented:
+    an honest empty state lets the UI fall back to the resource id, whereas a
+    fabricated one is indistinguishable from a real one.
+    """
+    if not raw:
+        return None
+    name = _CONTROL_CHARS.sub("", str(raw))
+    # Strip both separators explicitly: the server's own separator is not
+    # necessarily the one the client used.
+    name = name.replace("\\", "/").rsplit("/", 1)[-1].strip()
+    if not name or set(name) <= {"."}:
+        return None
+    if len(name) > MAX_TITLE_LENGTH:
+        suffix = Path(name).suffix
+        if 0 < len(suffix) <= 20:
+            name = name[: MAX_TITLE_LENGTH - len(suffix)] + suffix
+        else:
+            name = name[:MAX_TITLE_LENGTH]
+    return name or None
 
 
 def source_type_for(filename: str) -> str:
@@ -185,6 +224,18 @@ def _clamp_to_duration(chunks: list[Chunk], duration_ms: int) -> list[Chunk]:
     return out
 
 
+#: Distinguishes "caller did not say" (fall back to the file's own name, which
+#: is correct for a direct on-disk ingest) from "caller said there is no usable
+#: filename" (record no title at all -- never the staged name).
+_UNSET = object()
+
+
+def _resolve_title(path: Path, title: str | None | object) -> str | None:
+    if title is _UNSET:
+        return sanitize_filename(path.name)
+    return sanitize_filename(title)  # type: ignore[arg-type]
+
+
 def ingest_media(
     path: str | Path,
     *,
@@ -193,11 +244,18 @@ def ingest_media(
     video_id: str | None = None,
     with_visual: bool = True,
     max_visual_frames: int | None = 40,
+    title: str | None | object = _UNSET,
 ) -> dict:
     """Audio + visual ingest for a video. Raises when duration is unknown.
 
     Refusing to index without a duration is deliberate: strict-T compares
     ``end_ms <= T`` and an unknown timeline makes that comparison meaningless.
+
+    ``title`` is the name the learner uploaded. Upload callers pass the
+    sanitised original filename explicitly, because ``path`` is the staged
+    ``{resource_id}.{ext}`` asset and its name says nothing about the file the
+    learner picked. Passing ``None`` records no title rather than falling back
+    to the staged name.
     """
     path = Path(path)
     duration_ms = media_duration_ms(path)
@@ -225,8 +283,9 @@ def ingest_media(
         visual=visual,
         video_id=video_id,
         # The real uploaded/downloaded filename, so the catalogue shows the
-        # learner their own file name and not the extractor label.
-        title=path.name,
+        # learner their own file name and not the staged asset name or an
+        # extractor label.
+        title=_resolve_title(path, title),
     )
     chunks = _clamp_to_duration(chunks, duration_ms)
     written = _store().add(chunks)
@@ -247,9 +306,19 @@ def ingest_media(
 
 
 def ingest_document(
-    path: str | Path, *, course_id: str, resource_id: str, source_type: str
+    path: str | Path,
+    *,
+    course_id: str,
+    resource_id: str,
+    source_type: str,
+    title: str | None | object = _UNSET,
 ) -> dict:
-    """Document ingest. Never time-gated, so no duration lookup happens."""
+    """Document ingest. Never time-gated, so no duration lookup happens.
+
+    ``title`` follows the same rule as :func:`ingest_media`: it is the name the
+    learner uploaded, passed explicitly by upload callers because ``path`` is
+    the staged ``{resource_id}.{ext}`` asset.
+    """
     path = Path(path)
     segments = extract(path, source_type)
     chunks = build_chunks(
@@ -257,7 +326,7 @@ def ingest_document(
         course_id=course_id,
         source_type=source_type,
         text_segments=segments,
-        title=path.name,
+        title=_resolve_title(path, title),
     )
     written = _store().add(chunks)
     return {"document_chunks": written, "total_chunks": written}

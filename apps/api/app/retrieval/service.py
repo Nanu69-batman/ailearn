@@ -54,6 +54,7 @@ class RetrievalService:
         current_time_ms: int,
         k: int = 8,
         focus_resource_id: str | None = None,
+        prefer_recent: bool = False,
     ) -> list[RetrievedPassage]:
         passages = await asyncio.to_thread(
             self._store.query,
@@ -63,8 +64,11 @@ class RetrievalService:
             current_time_ms=current_time_ms,
             k=k,
             focus_resource_id=focus_resource_id,
+            prefer_recent=prefer_recent,
         )
-        # Loud on a leak, silent on success. Never repairs.
+        # Loud on a leak, silent on success. Never repairs. This runs even when
+        # `prefer_recent` narrowed the pool, so the recency path gets the same
+        # independent strict-T assertion as every other path.
         assert_no_leakage(
             passages,
             resource_scope=resource_scope,

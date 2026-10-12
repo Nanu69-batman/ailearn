@@ -14,8 +14,9 @@ from app.chat.prompts import (
     rewrite_query,
     strip_citation_markers,
 )
-from app.chat.schemas import ChatResponse, Citation
+from app.chat.schemas import ChatResponse, Citation, normalize_modality
 from app.chat.sessions import InMemoryMessageStore, InMemorySessionStore
+from app.retrieval.recency import is_recency_seeking
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +32,9 @@ def _passage_to_citation(passage) -> Citation:
     return Citation(
         chunk_id=passage.chunk_id,
         source_type=passage.source_type,
+        # Spoken audio vs sampled frame. A chunk with no recorded `kind`
+        # yields None -- never a guessed "transcript".
+        modality=normalize_modality(getattr(passage, "kind", None)),
         video_id=passage.video_id,
         start_ms=passage.start_ms,
         end_ms=passage.end_ms,
@@ -159,6 +163,13 @@ class ChatService:
         history = self._messages.user_texts(session_id, limit=5)
         rewritten = rewrite_query(message, history)
 
+        # Present-tense questions ("what is on screen right now?") ask about the
+        # playhead, not about the course. Retrieval answers them from material
+        # near T instead of the best-matching chunk anywhere in the gated
+        # window. This is a preference INSIDE the already-gated pool, applied by
+        # the store after the strict-T filter -- the gate itself is untouched.
+        prefer_recent = is_recency_seeking(message)
+
         retrieval = self._retrieval()
         passages = await retrieval.retrieve(
             rewritten,
@@ -167,6 +178,7 @@ class ChatService:
             t_ms,
             k=8,
             focus_resource_id=focus_resource_id,
+            prefer_recent=prefer_recent,
         )
         passages = apply_strict_timestamp(passages, t_ms, mode)
 
