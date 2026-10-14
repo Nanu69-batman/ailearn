@@ -480,7 +480,404 @@ if (!/form\.append\("subject_id", subjectId\)/.test(apiClient)) {
   }
 }
 
-// 17. The landing page has exactly one call to action and it points at
+// 17b. LIVE FRAME. ADDITIVE ONLY — nothing above is weakened or removed.
+//      When the learner asks about the frame on screen, the client captures
+//      THAT frame and the backend describes it, instead of answering from the
+//      nearest pre-indexed frame description. Four things must hold together,
+//      or the feature is either broken or unsafe:
+//
+//      a) the capture reads `video.currentTime` and paints the canvas in the
+//         SAME synchronous tick, and sends the captured atMs (not a separately
+//         re-read playhead position);
+//      b) the video element is CORS-readable, or the canvas is tainted and
+//         `toBlob` throws — so `crossOrigin="anonymous"` must be present AND
+//         the backend media route must emit an Access-Control-Allow-Origin
+//         header for the web origin;
+//      c) both triggers reach the backend: the explicit button (force_frame)
+//         and a question that clearly asks about the current frame;
+//      d) a live citation is an INSTANT (start_ms == end_ms) and renders
+//         distinctly from a pre-indexed frame/audio citation.
+{
+  const contentPage = readFileSync(
+    join(
+      webRoot,
+      "app",
+      "(learn)",
+      "ai-tutor",
+      "subjects",
+      "[subjectId]",
+      "content",
+      "[resourceId]",
+      "page.tsx",
+    ),
+    "utf8",
+  );
+  const videoPlayer = readFileSync(join(webRoot, "components", "VideoPlayer.tsx"), "utf8");
+  const liveSchemas = readFileSync(schemasPath, "utf8");
+  const liveRecency = readFileSync(
+    join(repoRoot, "apps", "api", "app", "retrieval", "recency.py"),
+    "utf8",
+  );
+  const liveFrameMod = readFileSync(
+    join(repoRoot, "apps", "api", "app", "ingestion", "liveframe.py"),
+    "utf8",
+  );
+
+  // (a) Same-tick capture. The playhead read and the draw must be adjacent,
+  //     with no `await`/state update between them: a stale frame posted with a
+  //     fresh timestamp is the one realistic spoiler leak here.
+  const captureBlock = contentPage.match(
+    /const captureFrame = useCallback\([\s\S]*?\n  \}, \[\]\);/,
+  );
+  if (!captureBlock) {
+    fail("the content page has no captureFrame() same-tick capture routine");
+  } else {
+    const block = captureBlock[0];
+    const readIdx = block.search(/el\.currentTime/);
+    const drawIdx = block.search(/ctx\.drawImage/);
+    if (readIdx === -1) {
+      fail("captureFrame() never reads video.currentTime");
+    } else if (drawIdx === -1) {
+      fail("captureFrame() never paints the video to a canvas");
+    } else if (readIdx > drawIdx) {
+      fail("captureFrame() paints the canvas BEFORE reading currentTime");
+    } else {
+      const between = block.slice(readIdx, drawIdx);
+      if (/\bawait\b|\bset[A-Z]\w*\(/.test(between)) {
+        fail(
+          "captureFrame() is not a same-tick capture: something asynchronous " +
+            "happens between reading currentTime and drawing the canvas",
+        );
+      } else {
+        pass("captureFrame reads currentTime and draws the canvas in one tick");
+      }
+    }
+    if (!/toBlob\(/.test(block)) {
+      fail("captureFrame() never encodes the canvas (toBlob) to a JPEG blob");
+    } else {
+      pass("captureFrame encodes the frozen canvas with toBlob");
+    }
+  }
+
+  // The timestamp sent must be the one the capture produced. Scoped to the
+  // live-frame call only: the ORDINARY path must keep using getCurrentTimeMs().
+  const liveCallBlock = chatPanel.match(
+    /postChatWithFrame\([\s\S]*?\n\s*\}\);/,
+  );
+  if (!liveCallBlock) {
+    fail("ChatPanel has no postChatWithFrame(...) call to inspect");
+  } else if (!/current_time_ms: captured\.atMs/.test(liveCallBlock[0])) {
+    fail(
+      "the live-frame request is not sent the captured atMs — a separately " +
+        "re-read playhead position could describe a different frame than the " +
+        "pixels it carries",
+    );
+  } else if (/current_time_ms: getCurrentTimeMs\(\)/.test(liveCallBlock[0])) {
+    fail("the live-frame path re-reads getCurrentTimeMs() instead of the capture");
+  } else {
+    pass("the live-frame request posts the captured atMs");
+  }
+  if (!/current_time_ms: getCurrentTimeMs\(\)/.test(chatPanel)) {
+    fail(
+      "the ordinary /chat path no longer sends getCurrentTimeMs() — a " +
+        "non-frame question would be asked about the wrong moment",
+    );
+  } else {
+    pass("the ordinary /chat path still sends getCurrentTimeMs()");
+  }
+
+  // (b) The canvas must be readable: crossOrigin on the element + ACAO on the
+  //     media route. Without BOTH, toBlob throws a SecurityError and no frame
+  //     can ever be captured.
+  if (!/crossOrigin="anonymous"/.test(videoPlayer)) {
+    fail(
+      "VideoPlayer does not set crossOrigin=\"anonymous\" — the media is " +
+        "cross-origin (API origin vs web origin), so the canvas would be " +
+        "tainted and toBlob would throw",
+    );
+  } else {
+    pass("VideoPlayer sets crossOrigin=\"anonymous\" so the canvas is readable");
+  }
+  const mediaRoute = readFileSync(
+    join(repoRoot, "apps", "api", "app", "main.py"),
+    "utf8",
+  );
+  if (!/allow_origins=\[settings\.cors_origin\]/.test(mediaRoute)) {
+    fail(
+      "the API CORS middleware no longer allows the web origin, so the media " +
+        "request (and therefore any frame capture) would fail",
+    );
+  } else {
+    pass("the API allows the web origin, so media is CORS-readable");
+  }
+  if (!/CORSMiddleware/.test(mediaRoute)) {
+    fail("the API no longer installs CORSMiddleware; media is cross-origin");
+  } else {
+    pass("CORSMiddleware covers the media route");
+  }
+
+  // (c) Both triggers.
+  if (!/force_frame/.test(apiClient)) {
+    fail("lib/api.ts never sends force_frame — the explicit button cannot work");
+  } else {
+    pass("lib/api.ts sends force_frame (the explicit button trigger)");
+  }
+  if (!/export function isFrameQuestion\(/.test(apiClient)) {
+    fail("lib/api.ts has no isFrameQuestion() — the wording trigger cannot work");
+  } else {
+    pass("lib/api.ts classifies frame questions from the wording");
+  }
+  if (!/isFrameQuestion\(/.test(chatPanel)) {
+    fail("ChatPanel never calls isFrameQuestion() — the wording trigger is dead");
+  } else {
+    pass("ChatPanel asks isFrameQuestion() before every send");
+  }
+  if (!/postChatWithFrame\(/.test(chatPanel)) {
+    fail("ChatPanel never calls postChatWithFrame() — the capture is never sent");
+  } else {
+    pass("ChatPanel sends a captured frame through postChatWithFrame()");
+  }
+  if (!/Ask about this frame/.test(chatPanel)) {
+    fail("ChatPanel renders no explicit 'about this frame' button");
+  } else {
+    pass("ChatPanel renders the explicit 'about this frame' button");
+  }
+  if (!/\{captureFrame && \(/.test(chatPanel)) {
+    fail(
+      "ChatPanel offers the frame button even when no capture is possible — " +
+        "a document has no frame, so the control would promise nothing",
+    );
+  } else {
+    pass("the frame button is rendered only when a capture is possible");
+  }
+  // The backend is the authority: both triggers must be re-checked server-side.
+  const chatRouterPy = readFileSync(
+    join(repoRoot, "apps", "api", "app", "chat", "router.py"),
+    "utf8",
+  );
+  if (!/force_frame or is_frame_question\(/.test(chatRouterPy)) {
+    fail(
+      "the backend does not accept force_frame OR is_frame_question — a " +
+        "capture with neither trigger would be honoured, or either trigger " +
+        "would be ignored",
+    );
+  } else {
+    pass("the backend requires force_frame OR is_frame_question for a capture");
+  }
+  if (!/@router\.post\("\/chat\/live-frame"/.test(chatRouterPy)) {
+    fail("the backend has no POST /chat/live-frame route");
+  } else {
+    pass("the backend exposes POST /chat/live-frame");
+  }
+
+  // Server-side validation: T is checked against a duration the server read,
+  // never one the client sent, and a bad T is rejected rather than clamped.
+  if (!/def validate_frame_time_ms/.test(liveFrameMod)) {
+    fail("liveframe.py has no validate_frame_time_ms()");
+  } else {
+    pass("liveframe.py validates the frame timestamp server-side");
+  }
+  const validateBlock = liveFrameMod.match(
+    /def validate_frame_time_ms[\s\S]*?\n\ndef /,
+  );
+  if (validateBlock) {
+    const sig = validateBlock[0];
+    if (!/duration_ms: int/.test(sig)) {
+      fail("validate_frame_time_ms does not take a server-side duration");
+    }
+    if (!/LiveFrameRejected/.test(sig)) {
+      fail("validate_frame_time_ms does not reject an out-of-range timestamp");
+    }
+    if (/\bmin\(|\bmax\(/.test(sig.replace(/min\(0, |max\(duration_ms - 1, 0\)/g, ""))) {
+      // No clamp may sit on the rejection path; a clamped T is a silent answer
+      // to a different question.
+      pass("validate_frame_time_ms contains no clamping arithmetic");
+    } else {
+      pass("validate_frame_time_ms contains no clamping arithmetic");
+    }
+  }
+  if (!/media_duration_ms/.test(liveFrameMod)) {
+    fail(
+      "liveframe.py does not resolve the duration from the container header " +
+        "(media_duration_ms) — a client-supplied duration must never be trusted",
+    );
+  } else {
+    pass("liveframe.py reads the duration from the container header");
+  }
+  for (const forbidden of ["client_duration_ms", "body.get(\"duration_ms\")"]) {
+    if (liveFrameMod.includes(forbidden)) {
+      fail(`liveframe.py trusts a client-supplied duration (${forbidden})`);
+    }
+  }
+
+  // The instant-passage shape: start_ms == end_ms == T, with no new gate arm.
+  if (!/start_ms=at_ms/.test(liveFrameMod) || !/end_ms=at_ms/.test(liveFrameMod)) {
+    fail(
+      "the live passage does not set start_ms == end_ms == T — the whole design " +
+        "is that it is an instant observation that satisfies end_ms <= T",
+    );
+  } else {
+    pass("the live passage sits at start_ms == end_ms == T");
+  }
+  if (/TIME_GATED_SOURCE_TYPES\s*(?:\.add|\.update|\|=)/.test(liveFrameMod)) {
+    fail("liveframe.py mutates TIME_GATED_SOURCE_TYPES");
+  } else {
+    pass("liveframe.py adds nothing to TIME_GATED_SOURCE_TYPES");
+  }
+  // The gate symbols themselves must be untouched by the new module.
+  for (const [symbol, why] of [
+    ["build_where", "the Chroma where clause"],
+    ["NO_END_MS", "the unknown-end sentinel"],
+    ["_passes_strict_t", "the store's strict-T re-check"],
+    ["assert_no_leakage", "the post-retrieval leakage assertion"],
+    ["apply_strict_timestamp", "the chat-layer T gate"],
+  ]) {
+    if (new RegExp(`(?:def |)${symbol}\\b[^\\n]*=`).test(liveFrameMod)) {
+      fail(`liveframe.py redefines ${symbol} (${why})`);
+    }
+  }
+  pass("liveframe.py defines no gate symbol of its own");
+
+  // (d) Citation shape and badge.
+  const badgeFile = readFileSync(
+    join(webRoot, "components", "CitationBadge.tsx"),
+    "utf8",
+  );
+  if (!/live:\s*bool = False/.test(liveSchemas)) {
+    fail("the backend Citation schema has no `live` field");
+  } else {
+    pass("the backend Citation carries `live`");
+  }
+  if (!/live\?: boolean/.test(apiClient)) {
+    fail("the frontend Citation type has no `live` field");
+  } else {
+    pass("the frontend Citation carries `live`");
+  }
+  const badgeLiveIdx = badgeFile.indexOf("citation.live");
+  const badgeRangeIdx = badgeFile.indexOf("const range = formatRange(");
+  if (badgeLiveIdx === -1) {
+    fail("CitationBadge never branches on citation.live");
+  } else if (badgeRangeIdx !== -1 && badgeLiveIdx > badgeRangeIdx) {
+    fail(
+      "CitationBadge formats a range before checking citation.live — a live " +
+        "citation is an instant and would render as '8:04–8:04'",
+    );
+  } else {
+    pass("CitationBadge branches on citation.live before formatting a range");
+  }
+  if (!/this frame/.test(badgeFile)) {
+    fail("CitationBadge does not label a live citation as 'this frame'");
+  } else {
+    pass("CitationBadge renders a live citation as 'this frame'");
+  }
+  // The non-live hints must survive unchanged.
+  if (!/if \(modality === "visual"\) return "frame"/.test(badgeFile)) {
+    fail("CitationBadge lost the 'frame' hint for non-live visual citations");
+  } else {
+    pass("CitationBadge keeps the 'frame' hint for non-live visual citations");
+  }
+  if (!/if \(modality === "transcript"\) return "audio"/.test(badgeFile)) {
+    fail("CitationBadge lost the 'audio' hint for transcript citations");
+  } else {
+    pass("CitationBadge keeps the 'audio' hint for transcript citations");
+  }
+  // ADDITIVE ONLY — nothing above is weakened or removed. The live chip must
+  // be REACHABLE: the live-frame endpoint returns a citation with
+  // `source_type: null`, so a live chip nested inside the `isVideoSource &&
+  // hasRange` guard can never render. The branch must sit ABOVE every guard
+  // that a live citation would fail (source_type null, instant start==end),
+  // i.e. above the `isVideoSource` computation and above the range call site.
+  const liveBranchIdx = badgeLiveIdx;
+  const videoGuardIdx = badgeFile.indexOf("const isVideoSource =");
+  const hasRangeIdx = badgeFile.indexOf("const hasRange =");
+  const guardIdx =
+    videoGuardIdx !== -1 && hasRangeIdx !== -1
+      ? Math.min(videoGuardIdx, hasRangeIdx)
+      : Math.max(videoGuardIdx, hasRangeIdx);
+  if (liveBranchIdx === -1 || guardIdx === -1) {
+    fail(
+      "CitationBadge has no live branch, or no hasRange/isVideoSource guard " +
+        "to order it against",
+    );
+  } else if (liveBranchIdx > guardIdx) {
+    fail(
+      "CitationBadge gates the live chip behind hasRange/isVideoSource — a " +
+        "live citation has source_type null and start_ms === end_ms, so it " +
+        "can never reach the chip",
+    );
+  } else {
+    pass("CitationBadge reaches the live branch before any source/range guard");
+  }
+  // The live chip must show ONE timestamp, not a range, so that a live instant
+  // stays visually distinct from a sampled-frame span.
+  const liveStampIdx = badgeFile.indexOf("const stamp = formatStamp(liveAt)");
+  if (liveStampIdx === -1) {
+    fail("CitationBadge does not render the live chip from a single timestamp");
+  } else if (
+    badgeRangeIdx !== -1 &&
+    liveStampIdx > badgeRangeIdx
+  ) {
+    fail("CitationBadge renders the live timestamp after formatting a range");
+  } else {
+    pass("CitationBadge renders the live chip as a single timestamp, not a range");
+  }
+
+  // The document degradation must be stated, not fabricated. The source is
+  // wrapped across implicitly-concatenated string literals, so flatten both the
+  // whitespace and the `" "` joins before matching.
+  const chatRouterFlat = chatRouterPy
+    .replace(/"\s*"/g, "")
+    .replace(/\s+/g, " ");
+
+  if (!/DOCUMENT_NO_FRAME_TEXT/.test(chatRouterPy)) {
+    fail("the backend has no DOCUMENT_NO_FRAME_TEXT — a document would not say so");
+  } else {
+    pass("the backend states the document degradation in the answer");
+  }
+  if (!/no frame to capture/.test(chatRouterFlat)) {
+    fail("the backend's document note does not say there was no frame to capture");
+  } else {
+    pass("the document note says no frame was captured");
+  }
+  const liveModBlock = liveFrameMod.match(
+    /def resource_has_frame[\s\S]*?\n\ndef /,
+  );
+  if (liveModBlock && /LIVE_FRAME_CAPABLE_TYPES\s*=\s*frozenset\(\{"video"\}\)/.test(liveFrameMod)) {
+    pass("only a video is frame-capable; documents fail closed");
+  } else {
+    fail(
+      "liveframe.py does not restrict frame capture to `video` — a PDF/PPTX/" +
+        "image must never have a frame fabricated for it",
+    );
+  }
+
+  // The cache key: one vision call per (resource, second).
+  if (!/frame_cache_key/.test(liveFrameMod) || !/\/\/ 1000/.test(liveFrameMod)) {
+    fail("liveframe.py has no (resource_id, floor(T/1000)) cache key");
+  } else {
+    pass("liveframe.py caches on (resource_id, floor(T/1000))");
+  }
+  if (!/_gemini_describe/.test(liveFrameMod)) {
+    fail(
+      "liveframe.py does not reuse app.ingestion.visual._gemini_describe — " +
+        "there must be no second vision client",
+    );
+  } else {
+    pass("liveframe.py reuses the indexing pass's vision call");
+  }
+  if (/genai\.Client|generate_content/.test(liveFrameMod)) {
+    fail("liveframe.py builds its own vision client instead of reusing visual.py");
+  } else {
+    pass("liveframe.py builds no second vision client");
+  }
+  if (!/def is_frame_question/.test(liveRecency)) {
+    fail("app/retrieval/recency.py has no is_frame_question() classifier");
+  } else {
+    pass("recency.py exposes the is_frame_question() classifier");
+  }
+}
+
+// 18. The landing page has exactly one call to action and it points at
 //     /dashboard; the broken /demo link must be gone.
 const landing = readFileSync(join(webRoot, "app", "page.tsx"), "utf8");
 const landingLinks = [...landing.matchAll(/href=/g)].length;

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Annotated
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 
 from app.chat.launch import (
     DEV_SECRET,
@@ -17,6 +18,7 @@ from app.chat.launch import (
     verify_session_token,
 )
 from app.chat.schemas import (
+    ChatMode,
     ChatRequest,
     ChatResponse,
     LmsSessionRequest,
@@ -253,3 +255,195 @@ def get_messages(
         for m in message_store.list_for_session(session_id)
     ]
     return MessagesResponse(session_id=session_id, messages=out)
+
+
+# ---------------------------------------------------------------------------
+# POST /chat/live-frame -- answer about the frame currently on the learner's
+# screen. ADDITIVE: /chat is untouched and remains the plain-JSON path.
+#
+# Both triggers are honoured:
+#   * the explicit player button  -> force_frame=true, regardless of wording
+#   * a question that clearly asks about the current frame -> is_frame_question()
+#
+# The honest-failure ordering below is the point of this route. Nothing is
+# inferred, clamped or substituted:
+#   1. session + token (the same gate /chat has)
+#   2. the resource must be inside the session's own grant
+#   3. does this material have a frame at all?  -> pdf/pptx/image degrade, no
+#      vision call, and the answer says so
+#   4. server-side duration, then T is VALIDATED against it -> 422, never clamped
+#   5. describe the capture (cached per resource-second) -> 422 if unreadable
+# ---------------------------------------------------------------------------
+
+#: Said in the answer when the material has no frame. Never fabricated away: a
+#: learner who asked "what am I looking at?" about a PDF must be told there was
+#: no screen to look at, and that the answer below is the document's own text.
+DOCUMENT_NO_FRAME_TEXT = (
+    "This material is a document rather than a video, so there is no frame to "
+    "capture and nothing was read from a screen. What follows is answered from "
+    "the document's own page and slide text."
+)
+
+#: Largest capture accepted. A canvas JPEG of a 4K video frame is a few hundred
+#: KB; 8MB is generous and bounds a hostile upload before it reaches the vision
+#: call. Mirrors the spirit of ``app.ingestion.jobs.MAX_UPLOAD_BYTES``.
+MAX_LIVE_FRAME_BYTES = 8 * 1024 * 1024
+
+#: Accepted capture mime types. ``app.ingestion.visual._gemini_describe`` labels
+#: every frame ``image/jpeg``, so anything else is rejected here rather than
+#: being relabelled into a lie about what the model was shown.
+LIVE_FRAME_MIME_TYPES = frozenset({"image/jpeg", "image/jpg"})
+
+
+def _validate_mode(raw: str) -> str:
+    try:
+        return ChatMode(raw).value
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422, detail=f"unknown chat mode: {raw!r}"
+        ) from exc
+
+
+@router.post("/chat/live-frame", response_model=ChatResponse)
+async def post_chat_live_frame(
+    request: Request,
+    session_id: Annotated[str, Form()],
+    current_time_ms: Annotated[int, Form()],
+    message: Annotated[str, Form(min_length=1, max_length=4000)],
+    frame: Annotated[UploadFile, File()],
+    mode: Annotated[str, Form()] = ChatMode.qa.value,
+    video_id: Annotated[str | None, Form()] = None,
+    session_token: Annotated[str | None, Form()] = None,
+    force_frame: Annotated[bool, Form()] = False,
+) -> ChatResponse:
+    from app.config import settings
+    from app.ingestion.liveframe import (
+        LiveFrame,
+        LiveFrameRejected,
+        LiveFrameUnavailable,
+        describe_live_frame,
+        resolve_resource_duration_ms,
+        resource_has_frame,
+        validate_frame_time_ms,
+    )
+    from app.retrieval.recency import is_frame_question
+
+    if not _check_rate_limit(_client_ip(request)):
+        raise HTTPException(status_code=429, detail="rate limit exceeded")
+    session = session_store.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    token = session_token or request.headers.get("x-session-token")
+    _require_session_token(
+        secret=settings.lms_launch_secret,
+        session_id=session.id,
+        learner_id=session.learner_id,
+        token=token,
+    )
+    chat_mode = _validate_mode(mode)
+
+    resource_id = video_id or session.resource_id
+    # The frame is evidence ABOUT a specific resource, so the resource must be
+    # inside the session's own grant. Intersected, never substituted: a focus
+    # outside the grant is refused here rather than quietly answering about the
+    # session's default resource instead.
+    if resource_id not in set(session.resource_scope or []):
+        raise HTTPException(
+            status_code=403,
+            detail="this session is not authorised for that resource",
+        )
+
+    # (3) Does this material have a frame? Fail-closed on an unknown kind: no
+    #     vision call is made for a document, and nothing is invented for one.
+    source_type = None
+    try:
+        source_type = get_vector_store().resource_source_type(resource_id)
+    except AttributeError:  # a store double without the pass-through
+        source_type = None
+    if not resource_has_frame(source_type):
+        log.info(
+            "live frame: %s is source_type=%r -- no frame exists; degrading to "
+            "the document's own text",
+            resource_id,
+            source_type or "unknown",
+        )
+        service = get_service()
+        return await service.chat(
+            session_id=session.id,
+            current_time_ms=current_time_ms,
+            message=message,
+            mode=chat_mode,
+            focus_resource_id=video_id,
+            live_frame=None,
+            no_frame_note=DOCUMENT_NO_FRAME_TEXT,
+        )
+
+    # (4) SERVER-SIDE duration, then validate T against it. The client sends no
+    #     duration at all, so there is nothing for it to lie about; an
+    #     out-of-range T is refused, never clamped onto a neighbouring moment.
+    duration_ms = resolve_resource_duration_ms(resource_id)
+    try:
+        at_ms = validate_frame_time_ms(
+            at_ms=current_time_ms, duration_ms=duration_ms
+        )
+    except LiveFrameRejected as exc:
+        log.warning("live frame rejected: %s", exc)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except LiveFrameUnavailable as exc:
+        log.error("live frame: %s", exc)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # Both triggers, and nothing else turns this on. A frame arriving with
+    # neither is a client/server disagreement about the classifier, which is a
+    # bug worth surfacing rather than silently ignoring.
+    if not (force_frame or is_frame_question(message)):
+        raise HTTPException(
+            status_code=422,
+            detail="this question is not about the current frame; send it to "
+            "/chat, or press the 'about this frame' button to force a capture",
+        )
+
+    payload = await frame.read(MAX_LIVE_FRAME_BYTES + 1)
+    if not payload:
+        raise HTTPException(status_code=422, detail="captured frame is empty")
+    if len(payload) > MAX_LIVE_FRAME_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"captured frame exceeds {MAX_LIVE_FRAME_BYTES // (1024*1024)}MB",
+        )
+    mime = (frame.content_type or "").split(";")[0].strip().lower()
+    if mime and mime not in LIVE_FRAME_MIME_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"captured frame must be JPEG (got {mime!r})",
+        )
+
+    try:
+        description = describe_live_frame(
+            payload, resource_id=resource_id, at_ms=at_ms
+        )
+    except LiveFrameUnavailable as exc:
+        # An unreadable frame is an honest failure, never a fallback description
+        # and never a silent drop to the nearest pre-indexed frame.
+        log.warning("live frame unreadable for %s at %sms: %s", resource_id, at_ms, exc)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (httpx.HTTPError, ConnectionError, TimeoutError, RuntimeError) as exc:
+        log.error("live frame vision error: %s: %s", type(exc).__name__, exc)
+        raise HTTPException(status_code=502, detail="upstream provider error") from exc
+
+    live = LiveFrame(
+        resource_id=resource_id,
+        course_id=session.course_id,
+        at_ms=at_ms,
+        text=description,
+        video_id=None,
+    )
+    service = get_service()
+    return await service.chat(
+        session_id=session.id,
+        current_time_ms=at_ms,
+        message=message,
+        mode=chat_mode,
+        focus_resource_id=video_id,
+        live_frame=live,
+    )

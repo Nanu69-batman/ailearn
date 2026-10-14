@@ -242,12 +242,50 @@ export interface Citation {
    * time formatting, or the badge degrades to `0:00–0:00` / `null`.
    */
   image_no?: number | null;
+  /**
+   * True ONLY for a live capture: the exact frame the player's video element
+   * was showing at `current_time_ms`, captured on demand and described by the
+   * backend (`POST /chat/live-frame`).
+   *
+   * A live citation is an INSTANT, not a span: `start_ms === end_ms === T`.
+   * That is what lets it satisfy the backend's strict-T gate (`end_ms <= T`)
+   * with equality. Every pre-indexed citation — including a sampled visual
+   * frame — has `live` absent/false, so an older payload reads as "not live".
+   */
+  live?: boolean;
 }
 
 export interface ChatResponse {
   answer: string;
   citations: Citation[];
   refused: boolean;
+  /**
+   * What the live-frame path did, or absent when no frame was involved.
+   *
+   * "live" — the learner's captured frame was described and injected as
+   * high-priority evidence alongside the retrieved passages.
+   * "document" — a frame was asked for but this material has none (pdf/pptx/
+   * image): nothing was captured and nothing invented; the answer says so and
+   * falls back to the document's own page/slide text.
+   */
+  live_frame?: LiveFrameState | null;
+  /** Read defensively; older backends omit it. See scope_empty in ChatPanel. */
+  scope_empty?: boolean;
+}
+
+export type LiveFrameState = "live" | "document";
+
+/**
+ * One captured frame, frozen at the playhead position it was painted from.
+ *
+ * `atMs` and `blob` are produced together, in one synchronous tick, by the
+ * player's capture routine. They must travel together: a frame blob paired with
+ * a timestamp read at a different moment is a stale frame described as current.
+ */
+export interface LiveFrameCapture {
+  blob: Blob;
+  /** The `video.currentTime` this blob was painted from, in ms. */
+  atMs: number;
 }
 
 export type MessageRole = "user" | "assistant";
@@ -379,6 +417,123 @@ export async function getMessages(
     token ? { headers: { "X-Session-Token": token } } : undefined,
   );
   return envelope.messages.map((m, i) => ({ ...m, id: `${sessionId}#${i}` }));
+}
+
+// ---------------------------------------------------------------------------
+// Live frame capture.
+//
+//   POST /chat/live-frame (multipart/form-data)
+//     frame            image/jpeg  — the captured frame (Blob)
+//     session_id       string
+//     session_token    string?
+//     current_time_ms  number      — read from video.currentTime in the SAME
+//                                    synchronous tick as the canvas draw
+//     message          string
+//     mode             ChatMode?
+//     video_id         string?
+//     force_frame      boolean     — the explicit player button, which turns a
+//                                    capture on regardless of the wording
+//     -> ChatResponse (live_frame: "live" | "document")
+//
+// `atMs` is taken by the CALLER at capture time and sent verbatim; the backend
+// validates it against its own container-header duration and rejects anything
+// outside [0, duration] rather than clamping. Deliberately multipart rather
+// than JSON, and deliberately NOT routed through `apiFetch`: that helper pins
+// `Content-Type: application/json`, which strips the multipart boundary (the
+// exact defect `ingestFile` documents for file upload).
+// ---------------------------------------------------------------------------
+
+export interface LiveFrameRequest {
+  session_id: string;
+  session_token?: string;
+  video_id?: string;
+  /** The playhead position the frame was captured at, in ms. */
+  current_time_ms: number;
+  message: string;
+  mode?: ChatMode;
+  /** True when the learner pressed "about this frame", overriding the wording. */
+  force_frame?: boolean;
+}
+
+export async function postChatWithFrame(
+  frame: Blob,
+  req: LiveFrameRequest,
+): Promise<ChatResponse> {
+  const base = baseUrl();
+  if (!base) {
+    throw new ApiError(0, "NEXT_PUBLIC_API_URL is not configured", "n/a");
+  }
+  const requestId = newRequestId();
+  const token = req.session_token ?? getStoredSessionToken() ?? undefined;
+  const form = new FormData();
+  form.append("frame", frame, "frame.jpg");
+  form.append("session_id", req.session_id);
+  form.append("current_time_ms", String(Math.max(0, Math.floor(req.current_time_ms))));
+  form.append("message", req.message);
+  if (req.mode) form.append("mode", req.mode);
+  if (req.video_id) form.append("video_id", req.video_id);
+  if (token) form.append("session_token", token);
+  form.append("force_frame", req.force_frame ? "true" : "false");
+
+  let res: Response;
+  try {
+    res = await fetch(`${base}/chat/live-frame`, {
+      method: "POST",
+      body: form,
+      headers: {
+        "X-Session-Token": token ?? "",
+        "x-request-id": requestId,
+      },
+    });
+  } catch (err) {
+    throw new ApiError(
+      0,
+      err instanceof Error ? `Network error: ${err.message}` : "Network error",
+      requestId,
+    );
+  }
+  if (!res.ok) {
+    throw await apiErrorFromResponse(res, requestId);
+  }
+  return (await res.json()) as ChatResponse;
+}
+
+/**
+ * Phrases that mean "answer about the frame on my screen right now".
+ *
+ * A deliberate MIRROR of the backend's `app.retrieval.recency.is_frame_question`
+ * — same intent, same job. The backend is the authority: it re-runs its own
+ * classifier and refuses a capture that matches neither trigger, so a drift
+ * between these two lists surfaces as a loud 422 instead of a silently ignored
+ * frame. This copy exists only so the question trigger costs a capture without
+ * the learner pressing anything.
+ *
+ * Kept shorter than the backend list on purpose: a false positive here spends a
+ * vision call, and the backend's check is the backstop.
+ */
+const FRAME_QUESTION_PATTERNS: readonly RegExp[] = [
+  /\bwhat am i looking at\b/i,
+  /\bwhat'?s (?:on|at|in) (?:my |this |the )?(?:screen|frame|slide|page)\b/i,
+  /\b(?:describe|explain) (?:this|the|current) (?:frame|screen|slide|scene|still|page)\b/i,
+  /\bthis (?:frame|screen|slide|still)\b/i,
+  /\bcurrent(?:ly)? (?:shown|on screen|displayed) (?:frame|slide)\b/i,
+  /\b(?:what|which) (?:does|do|is|are)? ?(?:it|this|the (?:screen|frame|slide|board)) (?:say|says|read|reads|show|shows|contain|contains|display|displays)\b/i,
+  /\bread (?:the|this) (?:screen|frame|slide|board|display)\b/i,
+  /\b(?:what|which) (?:text|equation|formula|word|words|title|label|heading)(?:s)? (?:is|are)? ?(?:on|in) (?:the|this) (?:screen|frame|slide|board)\b/i,
+  /\bon[- ]screen\b/i,
+  /\b(?:on|in) (?:the|this) (?:screen|frame|slide)\b/i,
+  // A reference to a DIFFERENT moment wins, exactly as on the backend.
+  /\b(?:in|at|during) the (?:first|second|third|last|final|opening|beginning|start|end)\b/i,
+  /\b(?:earlier|previously|before|at the start|at the beginning|already)\b/i,
+];
+
+const PAST_SCOPE_PATTERNS: readonly RegExp[] = FRAME_QUESTION_PATTERNS.slice(-2);
+
+/** True when this question is about the frame currently on screen. */
+export function isFrameQuestion(message: string): boolean {
+  if (!message) return false;
+  if (PAST_SCOPE_PATTERNS.some((re) => re.test(message))) return false;
+  return FRAME_QUESTION_PATTERNS.slice(0, -2).some((re) => re.test(message));
 }
 
 export function formatApiError(err: unknown): string {

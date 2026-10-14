@@ -10,7 +10,7 @@ import YouTubePlayer, {
 import ChatPanel from "@/components/ChatPanel";
 import { useLearnSession } from "@/components/LearnSessionProvider";
 import { useCourseResources } from "@/components/useCourseResources";
-import { isApiConfigured, getSubjectResources } from "@/lib/api";
+import { isApiConfigured, getSubjectResources, type LiveFrameCapture } from "@/lib/api";
 import {
   CHAT_LAYOUT_OPTIONS,
   SAMPLE_CLIP_ID,
@@ -151,6 +151,49 @@ export default function ContentPage() {
     },
     [selected],
   );
+
+  /**
+   * Capture the frame the learner is looking at RIGHT NOW.
+   *
+   * The two lines that matter are `currentTime` and `drawImage`, and they are
+   * adjacent on purpose: reading the playhead and painting the pixels happen in
+   * ONE synchronous tick, with no `await`, no state update and no reflow
+   * between them. A stale frame posted with a fresh timestamp is the one
+   * realistic spoiler leak this feature could introduce — the pixels and the
+   * number that describes them must be the same instant, and only synchronous
+   * adjacency guarantees that.
+   *
+   * `canvas.toBlob` is asynchronous, but it encodes the ALREADY-FROZEN canvas
+   * bitmap, not the video element, so the async encode cannot go stale.
+   *
+   * Returns `null` when there is nothing honest to send — no video element, or
+   * a video with no decoded frame yet (videoWidth/videoHeight are 0). The
+   * caller must then fall back to an ordinary question, never to a substitute
+   * frame.
+   */
+  const captureFrame = useCallback(async (): Promise<LiveFrameCapture | null> => {
+    const el = videoRef.current;
+    if (!el) return null;
+    const width = el.videoWidth;
+    const height = el.videoHeight;
+    if (!width || !height) return null;  // nothing decoded yet -> no frame exists
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+
+    // ---- SAME SYNCHRONOUS TICK: playhead read, then pixels painted. ----
+    const atMs = Math.max(0, Math.floor(el.currentTime * 1000));
+    ctx.drawImage(el, 0, 0, width, height);
+    // ---------------------------------------------------------------------
+
+    const blob = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob((b) => resolve(b), "image/jpeg", 0.8);
+    });
+    if (!blob) return null;
+    return { blob, atMs };
+  }, []);
 
   const activeResourceId = selected ? selected.resourceId : null;
 
@@ -375,6 +418,7 @@ export default function ContentPage() {
             sessionToken={session.session_token}
             videoId={selected.resourceId}
             getCurrentTimeMs={getCurrentTimeMs}
+            captureFrame={captureFrame}
             onSeek={handleSeek}
             offline={offline}
             onRejoin={reset}
@@ -391,6 +435,7 @@ export default function ContentPage() {
               sessionToken={session.session_token}
               videoId={selected.resourceId}
               getCurrentTimeMs={getCurrentTimeMs}
+              captureFrame={captureFrame}
               onSeek={handleSeek}
               offline={offline}
               onRejoin={reset}

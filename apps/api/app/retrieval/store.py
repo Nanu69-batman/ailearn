@@ -292,6 +292,35 @@ class ChromaVectorStore:
     def count(self) -> int:
         return self._collection.count()
 
+    def resource_source_type(self, resource_id: str) -> str | None:
+        """The ``source_type`` this resource's chunks were indexed under.
+
+        Additive pass-through used by the live-frame path to decide whether a
+        resource has a timeline at all: ``video`` does, ``pdf``/``pptx``/``image``
+        do not, and an unrecognised resource must not be guessed into one.
+        Reads one chunk's metadata by an exact ``resource_id`` equality filter
+        (never by course or prefix -- see the deletion rule above) and returns
+        ``None`` when the resource is unknown or carries no metadata.
+
+        Touches nothing in the strict-T gate: this is a catalog lookup, not a
+        query, and no timestamp is compared.
+        """
+        if not resource_id:
+            return None
+        try:
+            got = self._collection.get(
+                where={"resource_id": {"$eq": resource_id}},
+                limit=1,
+                include=["metadatas"],
+            )
+        except Exception as exc:  # noqa: BLE001 - a catalog miss must not 500
+            log.warning("resource_source_type failed for %s: %s", resource_id, exc)
+            return None
+        for meta in got.get("metadatas") or []:
+            if meta and meta.get("resource_id") == resource_id:
+                return meta.get("source_type") or None
+        return None
+
     def resources(self, course_id: str) -> list[dict]:
         """Distinct resources in a course, for ``GET /courses/{id}/resources``.
 

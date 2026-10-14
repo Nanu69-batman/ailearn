@@ -21,14 +21,15 @@ function modalityHint(modality: Citation["modality"]): string | null {
   return null;
 }
 
+function formatStamp(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m}:${r.toString().padStart(2, "0")}`;
+}
+
 function formatRange(startMs: number, endMs: number): string {
-  const fmt = (ms: number): string => {
-    const s = Math.floor(ms / 1000);
-    const m = Math.floor(s / 60);
-    const r = s % 60;
-    return `${m}:${r.toString().padStart(2, "0")}`;
-  };
-  return `${fmt(startMs)}–${fmt(endMs)}`;
+  return `${formatStamp(startMs)}–${formatStamp(endMs)}`;
 }
 
 export default function CitationBadge({ citation, onSeek }: CitationBadgeProps) {
@@ -48,6 +49,40 @@ export default function CitationBadge({ citation, onSeek }: CitationBadgeProps) 
       </span>
     );
   }
+  // LIVE NEXT, AND BEFORE ANY RANGE FORMATTING — and deliberately NOT inside
+  // the `isVideoSource && hasRange` guard below. The live-frame endpoint
+  // returns a citation with `source_type: null` (the backend Citation schema
+  // defaults `live` to false but leaves every other field, source_type
+  // included, nullable), so a live citation fails `isVideoSource` and walks
+  // straight past the live chip to the empty grey fallback. `live` is the one
+  // field that must never be gated on anything else.
+  //
+  // A live capture is an INSTANT at T, so `formatRange` would print
+  // "8:04–8:04" — visually identical to a one-second sampled frame and,
+  // worse, indistinguishable from an ordinary span. The chip drops the range
+  // entirely and says so in words. Every non-live citation below is untouched.
+  //
+  // Only a citation that actually carries a finite timestamp takes this
+  // branch; a malformed live citation still falls through to the existing
+  // paths rather than rendering "NaN".
+  const liveAt = citation.live
+    ? (citation.start_ms ?? citation.end_ms)
+    : null;
+  if (liveAt != null && Number.isFinite(liveAt)) {
+    const stamp = formatStamp(liveAt);
+    return (
+      <button
+        type="button"
+        className="rounded-full border border-violet-300 bg-violet-50 px-2.5 py-0.5 text-xs font-medium text-violet-700 transition hover:bg-violet-100"
+        onClick={() => onSeek(liveAt)}
+        title={`This exact frame, captured from your screen at ${stamp} · ${citation.chunk_id}`}
+        aria-label={`Live frame citation at ${stamp}, seek to ${stamp}`}
+      >
+        ▶ {stamp}
+        <span className="ml-1.5 font-normal text-violet-600/80">this frame</span>
+      </button>
+    );
+  }
   // Video badge only when we have a real timestamp range; otherwise fall
   // back to a doc-style badge so we never seek to NaN (backend start_ms /
   // end_ms are nullable — see apps/api/app/chat/schemas.py Citation).
@@ -64,6 +99,8 @@ export default function CitationBadge({ citation, onSeek }: CitationBadgeProps) 
   if (isVideoSource && hasRange) {
     const startMs = citation.start_ms as number;
     const endMs = citation.end_ms as number;
+    // Live citations were already handled above — a citation reaching this
+    // point has `live` falsy, so the range below is always a real span.
     const range = formatRange(startMs, endMs);
     const spoken = hint === "frame" ? "Video frame" : "Audio";
     return (

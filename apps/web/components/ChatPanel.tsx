@@ -1,13 +1,15 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { ChatMessage, ChatMode } from "../lib/api";
+import type { ChatMessage, ChatMode, LiveFrameCapture } from "../lib/api";
 import {
   ApiError,
   formatApiError,
   getMessages,
+  isFrameQuestion,
   isSessionExpiredError,
   postChat,
+  postChatWithFrame,
 } from "../lib/api";
 import { mockChatAnswer, mockHistory } from "../lib/fixtures";
 import MessageList from "./MessageList";
@@ -18,6 +20,13 @@ interface ChatPanelProps {
   sessionToken: string;
   videoId: string;
   getCurrentTimeMs: () => number;
+  /**
+   * Freezes the frame currently on screen and the playhead position it was
+   * painted from, in one synchronous tick. Supplied by the player page; a panel
+   * without one (or a document, which has no video element) simply never
+   * captures, and every question falls back to the ordinary path.
+   */
+  captureFrame?: () => Promise<LiveFrameCapture | null>;
   onSeek: (startMs: number) => void;
   offline: boolean;
   onRejoin?: () => void;
@@ -53,6 +62,7 @@ export default function ChatPanel({
   sessionToken,
   videoId,
   getCurrentTimeMs,
+  captureFrame,
   onSeek,
   offline,
   onRejoin,
@@ -70,6 +80,17 @@ export default function ChatPanel({
   // Persistent banner state: once we fall back to mock data (offline prop or
   // a live-API failure), the panel stays visibly marked until remount.
   const [backendUnreachable, setBackendUnreachable] = useState(offline);
+  // The explicit player button, latched until the next send. This is trigger
+  // #1 of the live-frame feature and it forces a capture on REGARDLESS of the
+  // wording: "explain this" with the button pressed is still a question about
+  // the frame on screen.
+  const [frameLatched, setFrameLatched] = useState(false);
+  // True only while a capture is in flight, so the button can report it.
+  const [capturing, setCapturing] = useState(false);
+  // A frame question that could NOT be answered from a live capture. Kept apart
+  // from `sendError` because it is never answered from a mock: a rejected frame
+  // is reported and nothing is substituted in its place.
+  const [frameError, setFrameError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -117,7 +138,6 @@ export default function ChatPanel({
     e.preventDefault();
     const text = input.trim();
     if (!text || sending) return;
-    const atMs = getCurrentTimeMs();
     const userMsg: ChatMessage = {
       id: newId(),
       role: "user",
@@ -129,23 +149,67 @@ export default function ChatPanel({
     setInput("");
     setSending(true);
     setSendError(null);
+    setFrameError(null);
+
+    // BOTH triggers for the live frame, decided before anything is sent:
+    //   1. the explicit button, latched — it forces a capture REGARDLESS of
+    //      the wording ("explain this" + button is still about the frame);
+    //   2. a question that clearly asks about the current frame.
+    // `forced` is read once here: setFrameLatched below re-renders, and the
+    // value posted as force_frame must be the one the learner actually set.
+    const forced = frameLatched;
+    const wantFrame =
+      !offline && Boolean(captureFrame) && (forced || isFrameQuestion(text));
+    setFrameLatched(false);
+
     try {
-      const res = offline
-        ? mockChatAnswer(mode, text)
-        : await postChat({
+      let res: Awaited<ReturnType<typeof postChat>> | null = null;
+
+      if (wantFrame && captureFrame) {
+        // Capture AFTER the submit, not before: captureFrame reads the playhead
+        // and paints the pixels in one synchronous tick, so the two always
+        // describe the same instant.
+        setCapturing(true);
+        let captured: LiveFrameCapture | null = null;
+        try {
+          captured = await captureFrame();
+        } finally {
+          setCapturing(false);
+        }
+        if (captured) {
+          // atMs comes from the capture, NOT from getCurrentTimeMs(): only the
+          // capture knows which instant the pixels belong to.
+          res = await postChatWithFrame(captured.blob, {
             session_id: sessionId,
             session_token: sessionToken,
             video_id: videoId,
-            current_time_ms: atMs,
+            current_time_ms: captured.atMs,
             message: text,
             mode,
+            force_frame: forced,
           });
+        }
+      }
+
+      if (!res) {
+        // No frame was captured, or none was asked for. The ordinary path is
+        // unchanged — this is what every pre-existing question still takes.
+        res = offline
+          ? mockChatAnswer(mode, text)
+          : await postChat({
+              session_id: sessionId,
+              session_token: sessionToken,
+              video_id: videoId,
+              current_time_ms: getCurrentTimeMs(),
+              message: text,
+              mode,
+            });
+      }
+
       // Refusal kinds are not interchangeable. `scope_empty` means the session
       // grant does not cover this material (stale grant) — the backend copy for
       // that is already honest and correct, so prepending "watched content yet"
       // would contradict it. Only low-evidence refusals get that prefix.
-      // Read defensively so this compiles whether or not ChatResponse declares
-      // `scope_empty` yet.
       const scopeEmpty = (res as { scope_empty?: boolean }).scope_empty === true;
       const assistantMsg: ChatMessage = {
         id: newId(),
@@ -172,6 +236,17 @@ export default function ChatPanel({
         );
         return;
       }
+      // A rejected live frame (out-of-range T, unreadable capture, a material
+      // with no frame) lands here too. It is surfaced verbatim and NEVER
+      // retried against a different timestamp or silently answered from the
+      // nearest pre-indexed frame: a fallback would answer a question the
+      // learner did not ask, from a moment they were not looking at.
+      if (err instanceof ApiError && wantFrame) {
+        setFrameError(
+          `Frame question could not be answered from a live capture — ${formatApiError(err)}. No frame was read and nothing was substituted.`,
+        );
+        return;
+      }
       // Graceful fallback: still answer from fixtures so the demo works
       // without a live backend, but surface the error.
       const fallback = mockChatAnswer(mode, text);
@@ -187,6 +262,7 @@ export default function ChatPanel({
       setBackendUnreachable(true);
     } finally {
       setSending(false);
+      setCapturing(false);
     }
   }
 
@@ -237,29 +313,66 @@ export default function ChatPanel({
           Live API error (answered from mock): {sendError}
         </div>
       )}
+      {frameError && (
+        <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700" role="alert">
+          {frameError}
+        </div>
+      )}
       {sendError && sessionExpired && (
         <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-600" role="alert">
           {sendError}
         </div>
       )}
 
-      <form className="mt-3 flex gap-2" onSubmit={(e) => void handleSend(e)}>
-        <label className="sr-only" htmlFor="chat-input">
-          Ask a question about the video
-        </label>
-        <input
-          id="chat-input"
-          className="flex-1 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-800 placeholder-gray-400 outline-none transition focus:border-violet-400 focus:bg-white focus:ring-2 focus:ring-violet-200"
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Pause, then ask… e.g. what did that term mean?"
-          disabled={sending}
-          autoComplete="off"
-        />
-        <button type="submit" className="rounded-xl bg-violet-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-violet-700 disabled:opacity-40" disabled={sending || input.trim().length === 0}>
-          {sending ? "…" : "Send"}
-        </button>
+      <form className="mt-3 flex flex-col gap-2" onSubmit={(e) => void handleSend(e)}>
+        <div className="flex gap-2">
+          <label className="sr-only" htmlFor="chat-input">
+            Ask a question about the video
+          </label>
+          <input
+            id="chat-input"
+            className="flex-1 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-800 placeholder-gray-400 outline-none transition focus:border-violet-400 focus:bg-white focus:ring-2 focus:ring-violet-200"
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Pause, then ask… e.g. what did that term mean?"
+            disabled={sending}
+            autoComplete="off"
+          />
+          <button type="submit" className="rounded-xl bg-violet-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-violet-700 disabled:opacity-40" disabled={sending || input.trim().length === 0}>
+            {sending ? "…" : "Send"}
+          </button>
+        </div>
+
+        {/* Trigger #1 of the live frame: the explicit button. It LATCHES (it
+            does not send by itself) so the learner can still type the question,
+            and it forces a capture regardless of the wording. Trigger #2 is
+            `isFrameQuestion` inside handleSend. Rendered only when a capture is
+            actually possible: a document has no video element, and offering a
+            frame button there would promise something that does not exist. */}
+        {captureFrame && (
+          <div className="flex items-center justify-between gap-2">
+            <button
+              type="button"
+              aria-pressed={frameLatched}
+              onClick={() => setFrameLatched((v) => !v)}
+              disabled={sending || capturing}
+              title="Send the exact frame on screen with your next question, whatever you type"
+              className={
+                frameLatched
+                  ? "rounded-xl border border-violet-400 bg-violet-100 px-3 py-1.5 text-xs font-medium text-violet-700 transition hover:bg-violet-200 disabled:opacity-40"
+                  : "rounded-xl border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-600 transition hover:border-violet-300 hover:bg-violet-50 disabled:opacity-40"
+              }
+            >
+              {capturing ? "Reading frame…" : frameLatched ? "✓ This frame" : "Ask about this frame"}
+            </button>
+            <p className="text-[11px] leading-snug text-gray-400">
+              {frameLatched
+                ? "Your next question will be answered from the frame on screen."
+                : "Or just ask “what am I looking at?”."}
+            </p>
+          </div>
+        )}
       </form>
       <div ref={bottomRef} />
     </section>

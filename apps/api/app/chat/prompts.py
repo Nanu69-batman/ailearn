@@ -259,6 +259,17 @@ def system_for_mode(mode: str) -> str:
     return SYSTEM_PROMPTS.get(mode, SYSTEM_PROMPTS["qa"])
 
 
+def _is_live(passage) -> bool:
+    """True for a passage built from a live capture (``app.ingestion.liveframe``).
+
+    Provenance lives in ``metadata["live"]`` and nowhere else: a live passage is
+    never written to Chroma, so it must not be distinguishable by anything a
+    stored chunk could also carry.
+    """
+    meta = getattr(passage, "metadata", None)
+    return bool(isinstance(meta, dict) and meta.get("live"))
+
+
 def _passage_attrs(passage) -> str:
     parts = [f'chunk_id="{passage.chunk_id}"', f'source_type="{passage.source_type}"']
     if passage.video_id is not None:
@@ -271,6 +282,8 @@ def _passage_attrs(passage) -> str:
         parts.append(f'page_no="{passage.page_no}"')
     if passage.slide_no is not None:
         parts.append(f'slide_no="{passage.slide_no}"')
+    if _is_live(passage):
+        parts.append('live="true"')
     return " ".join(parts)
 
 
@@ -288,6 +301,21 @@ def build_grounded_prompt(
         lines.append(p.text)
         lines.append("</passage>")
     lines.append("</context>")
+    if any(_is_live(p) for p in passages):
+        lines.append(
+            "One passage above is tagged live=\"true\": it is a description of "
+            "the EXACT frame the learner's player is showing at their current "
+            "timestamp, captured at the moment they asked (its start_ms and "
+            "end_ms are both that timestamp). For a question about what is on "
+            "screen, describe THAT passage first and cite it -- it is the only "
+            "evidence of what is on the screen right now. Then use the other "
+            "passages to supply the explanation, definition, or derivation the "
+            "frame itself does not contain; a frame shows what is displayed, "
+            "and the spoken audio supplies why. Keep both kinds of citation. "
+            "Never substitute a different frame or an earlier moment for the "
+            "live one, and never claim the live frame shows something it does "
+            "not describe."
+        )
     if history:
         lines.append("Conversation history (for coreference only, NOT evidence):")
         for i, h in enumerate(history[-5:], start=1):

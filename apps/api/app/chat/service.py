@@ -16,7 +16,8 @@ from app.chat.prompts import (
 )
 from app.chat.schemas import ChatResponse, Citation, normalize_modality
 from app.chat.sessions import InMemoryMessageStore, InMemorySessionStore
-from app.retrieval.recency import is_recency_seeking
+from app.ingestion.liveframe import assert_live_frame_at, live_frame_passage
+from app.retrieval.recency import is_frame_question, is_recency_seeking
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ class SessionNotFoundError(LookupError):
 
 
 def _passage_to_citation(passage) -> Citation:
+    meta = getattr(passage, "metadata", None)
     return Citation(
         chunk_id=passage.chunk_id,
         source_type=passage.source_type,
@@ -45,6 +47,10 @@ def _passage_to_citation(passage) -> Citation:
         # the role page_no plays for a pdf. `getattr` because a caller may hand
         # in a passage object predating the field.
         image_no=getattr(passage, "image_no", None),
+        # A live capture (app.ingestion.liveframe). Provenance lives only in
+        # `metadata["live"]`, so a pre-indexed chunk can never set this, and an
+        # absent/foreign metadata dict reads as "not live".
+        live=bool(isinstance(meta, dict) and meta.get("live")),
     )
 
 
@@ -142,7 +148,25 @@ class ChatService:
         message: str,
         mode: str = "qa",
         focus_resource_id: str | None = None,
+        live_frame=None,
+        no_frame_note: str | None = None,
     ) -> ChatResponse:
+        """Answer one learner question.
+
+        ``live_frame`` (:class:`app.ingestion.liveframe.LiveFrame`, or ``None``)
+        is the frame the learner actually captured, already described and already
+        validated against the server-side duration by the route. It is injected
+        as HIGH-PRIORITY context **alongside** the retrieved strict-T passages,
+        never instead of them: a frame shows what is displayed, retrieval
+        supplies the explanation from earlier audio, and the learner asked about
+        both. Dropping retrieval would make "what does this say and what does it
+        mean" unanswerable; dropping the frame would make "what am I looking at"
+        answerable only up to the nearest 4-second sample.
+
+        ``no_frame_note`` is prepended to the answer when a frame was asked for
+        but the material has none (pdf/pptx/image). It is how that path stays
+        honest without ever fabricating a frame.
+        """
         from app.chat.launch import clamp_current_time_ms
 
         session = self._sessions.get(session_id)
@@ -173,7 +197,12 @@ class ChatService:
         # near T instead of the best-matching chunk anywhere in the gated
         # window. This is a preference INSIDE the already-gated pool, applied by
         # the store after the strict-T filter -- the gate itself is untouched.
-        prefer_recent = is_recency_seeking(message)
+        #
+        # A frame question ("what am I looking at") is also present-tense even
+        # when it names no recency marker, and its *explanation* comes from the
+        # audio nearest the playhead. Adding it here is additive: every question
+        # `is_recency_seeking` already claimed behaves exactly as before.
+        prefer_recent = is_recency_seeking(message) or is_frame_question(message)
 
         retrieval = self._retrieval()
         passages = await retrieval.retrieve(
@@ -187,9 +216,24 @@ class ChatService:
         )
         passages = apply_strict_timestamp(passages, t_ms, mode)
 
+        live_passage = None
+        if live_frame is not None:
+            # The live frame is a passage at EXACTLY T: start_ms == end_ms == T.
+            # `assert_live_frame_at` re-states the arithmetic that lets it pass
+            # `end_ms <= T` with equality, so no gate needs a special case for
+            # it. It goes FIRST because a captured frame is perfect evidence of
+            # what is displayed right now, and retrieval stays behind it.
+            live_passage = live_frame_passage(live_frame)
+            assert_live_frame_at(live_passage, t_ms)
+            passages = [live_passage, *passages]
+
+        prefix = f"{no_frame_note}\n\n" if no_frame_note else ""
+
         if not passages:
-            self._persist(session_id, message, REFUSAL_TEXT, [])
-            return ChatResponse(answer=REFUSAL_TEXT, citations=[], refused=True)
+            self._persist(session_id, message, prefix + REFUSAL_TEXT, [])
+            return ChatResponse(
+                answer=prefix + REFUSAL_TEXT, citations=[], refused=True
+            )
 
         system, user_prompt = build_grounded_prompt(
             rewritten, passages, mode=mode, history=history
@@ -198,10 +242,18 @@ class ChatService:
             system=system, user_prompt=user_prompt, passages=passages, mode=mode
         )
 
+        state = "live" if live_passage is not None else ("document" if no_frame_note else None)
+
+        def refuse() -> ChatResponse:
+            text = prefix + REFUSAL_TEXT
+            self._persist(session_id, message, text, [])
+            return ChatResponse(
+                answer=text, citations=[], refused=True, live_frame=state
+            )
+
         # A refusal answer carries no citations by design.
         if result.text == REFUSAL_TEXT:
-            self._persist(session_id, message, REFUSAL_TEXT, [])
-            return ChatResponse(answer=REFUSAL_TEXT, citations=[], refused=True)
+            return refuse()
 
         cited_ids = list(result.cited_ids) or extract_cited_ids(result.text)
         # Parse answer text too so hand-written providers cannot smuggle IDs
@@ -214,8 +266,7 @@ class ChatService:
         unknown = [c for c in cited_ids if c not in allowed_ids]
         if unknown:
             log.warning("unknown citation(s) rejected: %s", unknown)
-            self._persist(session_id, message, REFUSAL_TEXT, [])
-            return ChatResponse(answer=REFUSAL_TEXT, citations=[], refused=True)
+            return refuse()
 
         if not cited_ids:
             # H5: a substantive answer that cites nothing is ungrounded.
@@ -235,8 +286,7 @@ class ChatService:
                 mode=mode,
             )
             if result.text == REFUSAL_TEXT:
-                self._persist(session_id, message, REFUSAL_TEXT, [])
-                return ChatResponse(answer=REFUSAL_TEXT, citations=[], refused=True)
+                return refuse()
             cited_ids = list(result.cited_ids) or extract_cited_ids(result.text)
             for cid in extract_cited_ids(result.text):
                 if cid not in cited_ids:
@@ -244,15 +294,13 @@ class ChatService:
             unknown = [c for c in cited_ids if c not in allowed_ids]
             if unknown:
                 log.warning("unknown citation(s) rejected after repair: %s", unknown)
-                self._persist(session_id, message, REFUSAL_TEXT, [])
-                return ChatResponse(answer=REFUSAL_TEXT, citations=[], refused=True)
+                return refuse()
 
         if not cited_ids:
             log.warning(
                 "uncited_answer: non-refusal answer with empty cited_ids refused"
             )
-            self._persist(session_id, message, REFUSAL_TEXT, [])
-            return ChatResponse(answer=REFUSAL_TEXT, citations=[], refused=True)
+            return refuse()
 
         by_id = {p.chunk_id: p for p in passages}
         # Validation above already ran against every distinct cited id.
@@ -263,9 +311,11 @@ class ChatService:
         citations = [_passage_to_citation(p) for p in cited_passages]
         # Validation above ran against the raw text, so it is now safe to drop
         # the transport markers: the UI renders badges from `citations[]`.
-        answer = strip_citation_markers(result.text)
+        answer = prefix + strip_citation_markers(result.text)
         self._persist(session_id, message, answer, [c.model_dump() for c in citations])
-        return ChatResponse(answer=answer, citations=citations, refused=False)
+        return ChatResponse(
+            answer=answer, citations=citations, refused=False, live_frame=state
+        )
 
     def _persist(
         self, session_id: str, user_text: str, answer: str, citations: list[dict]

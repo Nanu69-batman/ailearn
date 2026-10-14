@@ -107,6 +107,16 @@ class Citation(BaseModel):
     #: ``end_ms``: an uploaded image is ungated and has no moment in time, so
     #: a timestamp here would be a fabricated reference point.
     image_no: int | None = None
+    #: True ONLY for a live capture -- the exact frame the learner's player was
+    #: showing at ``current_time_ms``, described on demand (see
+    #: ``app.ingestion.liveframe``). Every pre-indexed citation is ``False``,
+    #: including sampled visual frames, so an older/absent value is read as
+    #: "not live" rather than as "unknown provenance".
+    #:
+    #: A live citation has ``start_ms == end_ms``: the frame is an instant
+    #: observation at T, not a span. That is what lets it satisfy the strict-T
+    #: gate (``end_ms <= T``) with equality and carry no special-casing in it.
+    live: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -120,6 +130,13 @@ class ChatResponse(BaseModel):
     #: low-evidence refusal. Defaults to False so every existing response
     #: shape and assertion is unchanged.
     scope_empty: bool = False
+    #: What the live-frame path did for this turn, or ``None`` when no frame was
+    #: involved. ``"live"``: the learner's captured frame was described and
+    #: injected as high-priority evidence. ``"document"``: a frame was asked for
+    #: but this material has none (pdf/pptx/image) -- the answer falls back to
+    #: the document's own page/slide text and says so. Absent means "no frame
+    #: question", so every pre-existing response shape is unchanged.
+    live_frame: Literal["live", "document"] | None = None
 
 
 class MessageOut(BaseModel):

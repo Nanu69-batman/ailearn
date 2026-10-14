@@ -13,6 +13,10 @@ This module is deliberately tiny and mechanical:
 * :func:`is_recency_seeking` -- phrase/regex match, no LLM call. A classifier
   that costs a network round-trip and can disagree with itself is not worth
   it for a fixed, closed-class set of markers.
+* :func:`is_frame_question` -- a SIBLING classifier for the narrower question
+  "is this about the frame on the screen *right now*?". It only decides whether
+  to spend a vision call on a live capture; it never gates, filters or re-ranks
+  anything, and it leaves :func:`is_recency_seeking` behaviour untouched.
 * :func:`apply_recency_preference` -- reorders passages that are ALREADY
   proven eligible by the store's ``where`` filter and ``_passes_strict_t``.
 
@@ -132,6 +136,89 @@ PAST_SCOPE_MARKERS: tuple[str, ...] = (
 )
 
 _PAST_SCOPE_RE = re.compile("|".join(PAST_SCOPE_MARKERS), re.IGNORECASE)
+
+
+#: Questions that ask about *the frame currently on the learner's screen* --
+#: the class that must be answered from a live capture rather than from the
+#: nearest pre-indexed frame description.
+#:
+#: This is a SIBLING of :func:`is_recency_seeking`, not a replacement, and it is
+#: deliberately independent of it: recency re-ranks already-gated passages
+#: toward the playhead, whereas this decides whether to spend a vision call on
+#: the learner's actual screen. A question can be one, both, or neither
+#: ("what is on screen right now?" is both; "what colour is the curve" is
+#: neither; "what am I looking at" is only this one).
+#:
+#: Same style as the markers above -- literal phrases a learner would actually
+#: type, word-bounded, no LLM call. A classifier that costs a network round-trip
+#: and can disagree with itself is not worth it for a closed class of markers.
+#:
+#: Deliberately NOT matched here (they name a *property*, not the current
+#: instant, so capturing a frame would answer the wrong question):
+#: ``what colour is the curve in the diagram``, ``what does it say`` as a
+#: pronoun phrase with no on-screen referent, ``what is on the board`` where
+#: "board" is the physical whiteboard rather than the frame. The attribute
+#: phrases in :data:`NON_RECENCY_ATTRIBUTE_PHRASES` are handled the same way
+#: here: by simply not appearing below.
+FRAME_QUESTION_MARKERS: tuple[str, ...] = (
+    r"\bwhat am i looking at\b",
+    r"\bwhat'?s (?:on|at|in) (?:my |this |the )?(?:screen|frame|slide|page)\b",
+    (
+        r"\b(?:describe|explain) (?:this|the|current) "
+        r"(?:frame|screen|slide|scene|still|page)\b"
+    ),
+    r"\bthis (?:frame|screen|slide|still)\b",
+    r"\bcurrent(?:ly)? (?:shown|on screen|displayed) (?:frame|slide)\b",
+    (
+        r"\b(?:what|which) (?:does|do|is|are)? ?"
+        r"(?:it|this|the (?:screen|frame|slide|board)) "
+        r"(?:say|says|read|reads|show|shows|contain|contains|display|displays)\b"
+    ),
+    r"\bread (?:the|this) (?:screen|frame|slide|board|display)\b",
+    (
+        r"\b(?:what|which) (?:text|equation|formula|word|words|title|label|heading)"
+        r"(?:s)? (?:is|are)? ?(?:on|in) (?:the|this) "
+        r"(?:screen|frame|slide|board)\b"
+    ),
+    # Bare "on screen" / "on-screen", matching RECENCY_MARKERS' own spelling so
+    # the two classifiers agree on the same surface. "what equation is on
+    # screen" is the single most common way a learner asks this and it carries no
+    # determiner at all.
+    r"\bon[- ]screen\b",
+    r"\b(?:on|in) (?:the|this) (?:screen|frame|slide)\b",
+)
+
+_FRAME_QUESTION_RE = re.compile("|".join(FRAME_QUESTION_MARKERS), re.IGNORECASE)
+
+
+def is_frame_question(text: str) -> bool:
+    """True when the question is about the frame currently on screen.
+
+    Pure phrase matching -- no LLM call, no network, no state. Deliberately
+    conservative in both directions, same contract as
+    :func:`is_recency_seeking`:
+
+    * A miss costs one capture opportunity; the question is answered by ordinary
+      retrieval, which is exactly the previous behaviour.
+    * A false positive costs one vision call and a high-priority live-frame
+      passage in the prompt. It cannot widen the gate: the live passage is at
+      exactly ``T``, so it is always legal evidence and never a spoiler.
+
+    An explicit reference to a DIFFERENT moment ("in the first minute",
+    "earlier") overrides a positive marker, exactly as in
+    :func:`is_recency_seeking` -- such a question is deliberately NOT about the
+    current screen, and capturing a frame for it would answer a different
+    question than the one asked.
+
+    The explicit player button forces this on regardless of wording; that
+    override is applied by the caller (``app.chat.router``), not here, so this
+    function stays a pure function of the text.
+    """
+    if not text:
+        return False
+    if _PAST_SCOPE_RE.search(text):
+        return False
+    return bool(_FRAME_QUESTION_RE.search(text))
 
 
 def is_recency_seeking(text: str) -> bool:
