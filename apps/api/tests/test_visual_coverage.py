@@ -20,6 +20,7 @@ never sleeps. Nothing here touches ``apps/api/data/``.
 
 from __future__ import annotations
 
+import itertools
 import logging
 
 import pytest
@@ -29,6 +30,11 @@ from app.ingestion import backoff as backoff_mod
 from app.ingestion import embedder as embedder_mod
 from app.ingestion import jobs as jobs_mod
 from app.ingestion import visual as visual_mod
+from app.ingestion.chunking import (
+    CHUNK_CHARS,
+    TextSegment,
+    split_segment,
+)
 from app.ingestion.visual import (
     FRAME_INTERVAL_S,
     VisualPassReport,
@@ -744,6 +750,167 @@ def test_build_visual_segments_drops_an_unsampled_index():
 
     assert [s.frame_index for s in segments] == [0, 5]
     assert all(s.end_ms <= DURATION_MS for s in segments)
+
+
+# ---------------------------------------------------------------------------
+# 7. A frame is an INSTANT: splitting its text must not split its window.
+#
+# `res_2e629d682a3d`, frame 112, window 448000-452000ms, split into:
+#   448000-451865ms  "The top left of the blackboard displays the title
+#                     'Partial derivatives' and the function definition..."
+#   451865-452000ms  "with respect to $y$: \frac{\partial f}{\partial y}(1,2)"
+# That 135ms tail is the trailing 3.4% of ONE description, cut mid-sentence,
+# cited as though content appeared at 451865ms. Nothing appeared there. It is
+# the same defect class as the model-supplied frame index fixed in 4b: an
+# invented timestamp that corresponds to no observed content.
+#
+# Transcript segments are unaffected and must stay that way -- 3s of speech
+# split in two really did happen in the first half and then the second.
+# ---------------------------------------------------------------------------
+
+LONG_VISUAL = (
+    "The top left of the blackboard displays the title 'Partial derivatives' "
+    "and the function definition f(x,y) = x^2 + y^2, evaluated at (1,2) with "
+    "respect to y giving the second partial derivative. "
+) * 40
+
+
+def _visual_chunks_for(descriptions: dict[int, str], duration_ms: int = DURATION_MS):
+    """Run real frame descriptions through the real chunking path.
+
+    ``build_visual_segments`` derives the windows from frame indices and
+    ``build_chunks`` is what the ingest pipeline calls, so these are the exact
+    chunks a store would receive -- no hand-built stand-ins for either stage.
+    """
+    segments = visual_mod.build_visual_segments(
+        descriptions, duration_ms=duration_ms
+    )
+    return visual_mod, jobs_mod, segments, jobs_mod.build_chunks(
+        resource_id="res_probe",
+        course_id="coverageprobe",
+        source_type="video",
+        transcript=[],
+        visual=segments,
+    )
+
+
+def test_visual_segment_is_not_time_split():
+    """A 2000-char frame description still carries the frame's one window.
+
+    Two chunks come out -- the text genuinely must be split for size -- and
+    both carry ``[448000, 452000]`` verbatim. Neither is a sub-window.
+    """
+    chunks = _visual_chunks_for({112: LONG_VISUAL})[3]
+    visual = [c for c in chunks if c.metadata.get("kind") == "visual"]
+
+    assert len(visual) > 1, "a 2000-char description must still split for size"
+    for chunk in visual:
+        assert (chunk.start_ms, chunk.end_ms) == (448_000, 452_000), (
+            f"piece of frame 112 carries {chunk.start_ms}..{chunk.end_ms}; a "
+            "frame describes one instant, so its pieces keep its whole window"
+        )
+
+
+def test_visual_chunks_never_invent_a_sub_timestamp():
+    """Every visual chunk window is a WHOLE frame interval, start to finish.
+
+    The concrete form of "no invented timestamp": no visual chunk's window may
+    be shorter than the frame interval it came from. A proportional split of a
+    4000ms frame yields windows of 3865ms and 135ms; a 135ms window claims a
+    moment 96% of the way through a frame that was described as one picture.
+    """
+    _, _, segments, chunks = _visual_chunks_for(
+        {i: LONG_VISUAL for i in (112, 113, 114, 163)}
+    )
+    visual = [c for c in chunks if c.metadata.get("kind") == "visual"]
+    assert len(visual) > 4, "four long frames must produce several pieces each"
+
+    parents = {s.start_ms: (s.start_ms, s.end_ms) for s in segments}
+    for chunk in visual:
+        assert (chunk.start_ms, chunk.end_ms) == parents[chunk.start_ms], (
+            f"chunk window {chunk.start_ms}..{chunk.end_ms} is not a whole "
+            f"frame interval ({parents[chunk.start_ms]})"
+        )
+        interval = chunk.end_ms - chunk.start_ms
+        assert interval == frame_bounds(
+            chunk.start_ms // INTERVAL_MS, duration_ms=DURATION_MS
+        )[1] - chunk.start_ms
+        assert interval >= INTERVAL_MS - 500, (
+            f"a {interval}ms visual window is a sub-window of a "
+            f"{INTERVAL_MS}ms frame: a fabricated split point"
+        )
+
+
+def test_transcript_segments_still_split_by_proportional_time():
+    """Spoken content still maps onto real time -- requirement 3, unchanged.
+
+    The fix must be scoped to visual segments. 3s of speech split in two did
+    happen in the first half and then the second, so each piece must get its
+    own sub-window, the pieces must tile the segment in order, and together
+    they must cover it exactly.
+    """
+    segment = TextSegment(
+        text="the chain rule for composite functions " * 120,
+        start_ms=58_000,
+        end_ms=61_000,
+        kind="transcript",
+    )
+    pieces = split_segment(segment)
+
+    assert len(pieces) > 1
+    starts = [p.start_ms for p in pieces]
+    ends = [p.end_ms for p in pieces]
+    assert starts == sorted(starts), "audio pieces must stay in timeline order"
+    assert len(set(starts)) == len(pieces), (
+        "a transcript split must give each piece its OWN window -- collapsing "
+        "them onto the segment would lose the real speech boundaries"
+    )
+    assert starts[0] == 58_000 and ends[-1] == 61_000
+    assert all(p.start_ms < p.end_ms for p in pieces), "every piece has extent"
+    assert all(0 <= b - a <= 2 for a, b in zip(ends, starts[1:])), (
+        "proportional audio pieces must advance along the segment with no seam "
+        "but the splitter's own rounding"
+    )
+    assert all(
+        segment.start_ms <= p.start_ms < p.end_ms <= segment.end_ms
+        for p in pieces
+    )
+    assert pieces[0].end_ms < segment.end_ms, (
+        "a split segment must not hand one piece the entire window -- that is "
+        "the visual behaviour this test exists to keep away from audio"
+    )
+
+
+def test_no_visual_chunk_starts_mid_sentence():
+    """A size-split description yields overlapping pieces, not bare fragments.
+
+    The shipped 135ms piece began "with respect to $y$:" -- a clause with no
+    subject and no timestamp of its own to blame. Two properties rule that
+    shape out. The splitter's overlap is kept, so every piece after the first
+    opens with >100 chars of its predecessor (context, not a scrap), and
+    splitting is at word boundaries rather than inside a token.
+    """
+    chunks = _visual_chunks_for({112: LONG_VISUAL})[3]
+    pieces = [c.text for c in chunks if c.metadata.get("kind") == "visual"]
+
+    assert len(pieces) > 1
+    for prev, piece in itertools.pairwise(pieces):
+        shared = max(
+            (k for k in range(120, 40, -1) if piece[:k] in prev), default=0
+        )
+        assert shared >= 40, (
+            f"piece {piece[:60]!r} opens without the overlap context its "
+            "predecessor carried -- it would be cited as a standalone fragment"
+        )
+    for piece in pieces:
+        at = LONG_VISUAL.find(piece[:24])
+        assert at >= 0
+        assert at == 0 or LONG_VISUAL[at - 1].isspace(), (
+            "a visual piece must not begin inside a token"
+        )
+
+    # Balanced, not one full piece plus a 3.4% scrap.
+    assert min(len(p) for p in pieces) >= CHUNK_CHARS // 2
 
 
 # ---------------------------------------------------------------------------

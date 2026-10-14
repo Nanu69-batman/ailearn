@@ -40,6 +40,11 @@ def _passage_to_citation(passage) -> Citation:
         end_ms=passage.end_ms,
         page_no=passage.page_no,
         slide_no=passage.slide_no,
+        # Images are ungated (absent from TIME_GATED_SOURCE_TYPES) and carry
+        # no timeline, so their citation handle is an image number -- exactly
+        # the role page_no plays for a pdf. `getattr` because a caller may hand
+        # in a passage object predating the field.
+        image_no=getattr(passage, "image_no", None),
     )
 
 

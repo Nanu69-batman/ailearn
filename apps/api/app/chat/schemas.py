@@ -101,6 +101,12 @@ class Citation(BaseModel):
     end_ms: int | None = None
     page_no: int | None = None
     slide_no: int | None = None
+    #: 1-based position of an image within its resource, for
+    #: ``source_type == "image"`` citations. ``None`` for every other source
+    #: type. An image citation deliberately carries no ``start_ms``/
+    #: ``end_ms``: an uploaded image is ungated and has no moment in time, so
+    #: a timestamp here would be a fabricated reference point.
+    image_no: int | None = None
 
 
 class ChatResponse(BaseModel):

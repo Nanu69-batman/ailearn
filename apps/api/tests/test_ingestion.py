@@ -962,3 +962,395 @@ def test_title_is_length_capped(client, wired, monkeypatch):
     _fake_ingest_recording_title(wired, monkeypatch)
     entry = _upload_and_read_resource(client, long_name)
     assert len(entry["title"]) <= MAX_TITLE_LENGTH
+
+
+
+# ---------------------------------------------------------------------------
+# Image upload (PNG/JPG/WEBP) and subject-scoped file upload
+# ---------------------------------------------------------------------------
+
+def make_png(tmp_path, name="diagram.png", size=(48, 32)):
+    """A tiny real PNG on disk. No user file is ever read by a test."""
+    from PIL import Image
+
+    path = Path(tmp_path) / name
+    Image.new("RGB", size, (12, 90, 200)).save(path, format="PNG")
+    return path
+
+
+@pytest.fixture
+def stub_vision(monkeypatch):
+    """Replace the Gemini describe call with a fixed reply.
+
+    Patches the *vision capability itself* -- the one video frames already
+    use -- so no test reaches the network and the assertion is against the
+    contract of the reused code rather than of a private copy of it.
+    """
+    from app.ingestion import visual as visual_mod
+
+    calls: list[int] = []
+
+    def _fake_describe(frames):
+        calls.append(len(frames))
+        return {
+            index: (
+                "A slide titled 'Chain Rule': a flowchart with two boxes, an "
+                "arrow, and the label 'outer * inner'."
+            )
+            for index, _ in frames
+        }
+
+    monkeypatch.setattr(visual_mod, "_gemini_describe", _fake_describe)
+    return calls
+
+
+def test_image_upload_is_indexed_with_image_source_type(
+    wired, tmp_path, stub_vision
+):
+    """source_type == "image", an image number, no fabricated timestamps."""
+    png = make_png(tmp_path)
+
+    report = jobs_mod.ingest_image(
+        png, course_id="course_1", resource_id="res_img", title="diagram.png"
+    )
+    assert report["image_chunks"] > 0
+    assert stub_vision == [1], "described by the reused vision path, one frame"
+
+    got = wired.query(
+        "chain rule diagram",
+        course_id="course_1",
+        resource_scope=["res_img"],
+        current_time_ms=0,
+        k=5,
+    )
+    assert got, "an image must be retrievable"
+    for passage in got:
+        assert passage.source_type == "image"
+        # The image number is the citation handle...
+        assert passage.image_no == 1
+        # ...and there is deliberately no timeline fiction whatsoever.
+        assert passage.start_ms is None
+        assert passage.end_ms is None
+        assert passage.page_no is None
+        assert passage.slide_no is None
+        assert passage.video_id is None
+
+    entry = wired.resources("course_1")[0]
+    assert entry["type"] == "image"
+    assert entry["provider"] == "file"
+
+
+def test_image_title_is_the_original_filename(client, wired, tmp_path, monkeypatch, stub_vision):
+    """The upload path reuses sanitize_filename, so the extension is kept."""
+    _inline_schedule(monkeypatch)
+    png = make_png(tmp_path, name="diagram.png")
+
+    resp = client.post(
+        "/courses/course_1/ingest",
+        files={"file": ("diagram.png", png.read_bytes(), "image/png")},
+    )
+    assert resp.status_code == 200
+    resource_id = resp.json()["resource_id"]
+
+    listing = client.get("/courses/course_1/resources")
+    entry = next(r for r in listing.json()["resources"] if r["id"] == resource_id)
+    assert entry["title"] == "diagram.png"
+
+
+def test_image_is_not_time_gated(wired, tmp_path, stub_vision):
+    """Retrievable at ANY T, exactly like a pdf. Asserted against the gate set."""
+    png = make_png(tmp_path)
+    jobs_mod.ingest_image(
+        png, course_id="course_1", resource_id="res_img", title="diagram.png"
+    )
+
+    for t_ms in (0, 1, 30_000, 10**9):
+        got = wired.query(
+            "chain rule",
+            course_id="course_1",
+            resource_scope=["res_img"],
+            current_time_ms=t_ms,
+            k=5,
+        )
+        assert got, f"an image must be retrievable at T={t_ms}"
+        assert all(p.source_type == "image" for p in got)
+
+    from app.retrieval.store import TIME_GATED_SOURCE_TYPES
+
+    # The gate set is unchanged AND image is absent from it.
+    assert TIME_GATED_SOURCE_TYPES == frozenset(
+        {"video", "video_transcript", "visual", "visual_frame"}
+    )
+    assert "image" not in TIME_GATED_SOURCE_TYPES
+
+    # Every independent gate layer agrees an image is ungated.
+    from app.chat.service import apply_strict_timestamp
+    from app.retrieval.store import ChromaVectorStore, assert_no_leakage
+
+    passages = wired.query(
+        "chain rule",
+        course_id="course_1",
+        resource_scope=["res_img"],
+        current_time_ms=0,
+        k=5,
+    )
+    assert passages[0].end_ms is None
+    assert ChromaVectorStore._passes_strict_t(passages[0], 0) is True
+    assert apply_strict_timestamp(passages, 0, "summarize") == list(passages)
+    assert_no_leakage(passages, resource_scope=["res_img"], current_time_ms=0)
+
+
+def test_video_pdf_pptx_still_work_after_image_support(client, wired, tmp_path, monkeypatch):
+    """Regression guard: pre-existing types are untouched by image support."""
+    assert source_type_for("lecture.mp4") == "video"
+    assert source_type_for("UNIT-1-001.PDF") == "pdf"
+    assert source_type_for("deck.pptx") == "pptx"
+    with pytest.raises(ValueError):
+        source_type_for("notes.txt")
+    # A suffix that resolves always wins over a contradictory mime type.
+    assert source_type_for("lecture.mp4", content_type="image/png") == "video"
+    # An extension-less image is still accepted from its mime type.
+    assert source_type_for("clipboard", content_type="image/png") == "image"
+    with pytest.raises(ValueError):
+        source_type_for("clipboard", content_type="text/plain")
+
+    # video: still ingests under source_type "video"
+    fake = tmp_path / "lecture.mp4"
+    fake.write_bytes(b"\x00" * 64)
+    from app.ingestion import audio as audio_mod
+
+    seg = audio_mod.TranscriptSegment(0.0, 5.0, "welcome to the lecture")
+    monkeypatch.setattr(jobs_mod, "media_duration_ms", lambda path, **kw: 10_000)
+    monkeypatch.setattr(
+        audio_mod, "transcribe", lambda path, **kw: ([seg], {"engine": "stub"})
+    )
+    monkeypatch.setattr(
+        jobs_mod.visual_mod, "extract_visual_pass", lambda *a, **kw: (
+            jobs_mod.visual_mod.VisualPassReport(duration_ms=10_000)
+        )
+    )
+    report = jobs_mod.ingest_media(
+        fake, course_id="course_1", resource_id="res_vid", title="lecture.mp4"
+    )
+    assert report["audio_chunks"] > 0
+    assert report["total_chunks"] > 0
+
+    vid = wired.query(
+        "welcome", course_id="course_1", resource_scope=["res_vid"],
+        current_time_ms=10_000, k=5,
+    )
+    assert vid and all(p.source_type == "video" for p in vid)
+    assert all(p.end_ms is not None for p in vid), "video keeps its timestamps"
+
+    # pdf: unchanged, still ungated, still carrying a page number
+    pdf = (
+        Path(__file__).resolve().parent.parent.parent.parent
+        / "test-data"
+        / "UNIT-1-001.pdf"
+    )
+    if pdf.exists():
+        jobs_mod.ingest_document(
+            pdf, course_id="course_1", resource_id="res_pdf", source_type="pdf"
+        )
+        docs = wired.query(
+            "partial derivative", course_id="course_1",
+            resource_scope=["res_pdf"], current_time_ms=0, k=5,
+        )
+        assert docs and all(p.source_type == "pdf" for p in docs)
+
+    # pptx: rejects a non-document through the documents path, as before
+    with pytest.raises(ValueError, match="documents only"):
+        jobs_mod.ingest_document(
+            "x.txt", course_id="c", resource_id="r", source_type="txt"
+        )
+
+    # unsupported upload still 422 through the route
+    resp = client.post(
+        "/courses/course_1/ingest",
+        files={"file": ("notes.txt", b"hello", "text/plain")},
+    )
+    assert resp.status_code == 422
+
+
+# -- Part B: subject-scoped file upload -------------------------------------
+
+
+def test_upload_with_subject_id_derives_course_and_attaches(
+    client, wired, tmp_path, isolated_subject_store, monkeypatch, stub_vision
+):
+    """subject_id -> ingest under the subject's course, then auto-attach."""
+    _inline_schedule(monkeypatch)
+    subject = isolated_subject_store.subject_store.create(
+        name="Week 1", course_id="course_real"
+    )
+    png = make_png(tmp_path, name="diagram.png")
+
+    resp = client.post(
+        "/courses/ignored-route-course/ingest",
+        files={"file": ("diagram.png", png.read_bytes(), "image/png")},
+        data={"subject_id": subject.id},
+    )
+    assert resp.status_code == 200
+    resource_id = resp.json()["resource_id"]
+
+    # Indexed under the SUBJECT's course, not the path course.
+    got = wired.query(
+        "chain rule", course_id="course_real",
+        resource_scope=[resource_id], current_time_ms=0, k=5,
+    )
+    assert got, "the resource must be indexed under the subject's course"
+    assert got[0].course_id == "course_real"
+    assert not wired.query(
+        "chain rule", course_id="ignored-route-course",
+        resource_scope=[resource_id], current_time_ms=0, k=5,
+    )
+
+    # Auto-attached, so it shows up in the subject listing immediately.
+    listing = client.get(f"/subjects/{subject.id}/resources")
+    assert listing.status_code == 200
+    entry = next(r for r in listing.json()["resources"] if r["id"] == resource_id)
+    assert entry["type"] == "image"
+    assert entry["title"] == "diagram.png"
+
+
+def test_upload_without_subject_id_is_unchanged(
+    client, wired, tmp_path, isolated_subject_store, monkeypatch, stub_vision
+):
+    """No subject_id -> path course_id used, nothing attached anywhere."""
+    _inline_schedule(monkeypatch)
+    other = isolated_subject_store.subject_store.create(
+        name="Elsewhere", course_id="course_elsewhere"
+    )
+    png = make_png(tmp_path, name="diagram.png")
+
+    resp = client.post(
+        "/courses/course_1/ingest",
+        files={"file": ("diagram.png", png.read_bytes(), "image/png")},
+    )
+    assert resp.status_code == 200
+    resource_id = resp.json()["resource_id"]
+
+    assert isolated_subject_store.subject_store.resource_ids(other.id) == []
+    got = wired.query(
+        "chain rule", course_id="course_1",
+        resource_scope=[resource_id], current_time_ms=0, k=5,
+    )
+    assert got and got[0].course_id == "course_1"
+    # The response shape is unchanged: exactly the three frozen keys.
+    assert set(resp.json()) == {"job_id", "resource_id", "status"}
+
+
+def test_upload_with_unknown_subject_id_is_404(
+    client, wired, tmp_path, isolated_subject_store, monkeypatch, stub_vision
+):
+    """Same status code the YouTube route returns for an unknown subject."""
+    _inline_schedule(monkeypatch)
+    png = make_png(tmp_path)
+    resp = client.post(
+        "/courses/course_1/ingest",
+        files={"file": ("diagram.png", png.read_bytes(), "image/png")},
+        data={"subject_id": "sub_does_not_exist"},
+    )
+    assert resp.status_code == 404
+    assert "sub_does_not_exist" in resp.json()["detail"]
+
+
+def test_upload_with_course_less_subject_id_is_422(
+    client, wired, tmp_path, isolated_subject_store, monkeypatch, stub_vision
+):
+    """Same 422 the YouTube route returns for a subject with no course."""
+    _inline_schedule(monkeypatch)
+    subject = isolated_subject_store.subject_store.create(name="Orphan")
+    png = make_png(tmp_path)
+    resp = client.post(
+        "/courses/course_1/ingest",
+        files={"file": ("diagram.png", png.read_bytes(), "image/png")},
+        data={"subject_id": subject.id},
+    )
+    assert resp.status_code == 422
+
+
+# -- citation shape ---------------------------------------------------------
+
+
+def test_pdf_citation_carries_a_page_number(wired, tmp_path):
+    """The reference shape an image citation is modelled on."""
+    from app.chat.service import _passage_to_citation
+
+    pdf = (
+        Path(__file__).resolve().parent.parent.parent.parent
+        / "test-data"
+        / "UNIT-1-001.pdf"
+    )
+    if not pdf.exists():
+        pytest.skip("test pdf not present")
+    jobs_mod.ingest_document(
+        pdf, course_id="course_1", resource_id="res_pdf", source_type="pdf"
+    )
+    got = wired.query(
+        "partial derivative", course_id="course_1",
+        resource_scope=["res_pdf"], current_time_ms=0, k=5,
+    )
+    assert got
+    cite = _passage_to_citation(got[0])
+    assert cite.source_type == "pdf"
+    assert cite.page_no is not None
+    assert cite.image_no is None
+    assert cite.start_ms is None and cite.end_ms is None
+
+
+def test_image_citation_carries_an_image_number_not_a_timestamp(
+    wired, tmp_path, stub_vision
+):
+    """An image citation points at an image, never at a fabricated moment."""
+    from app.chat.service import _passage_to_citation
+
+    png = make_png(tmp_path)
+    jobs_mod.ingest_image(
+        png, course_id="course_1", resource_id="res_img", title="diagram.png"
+    )
+    got = wired.query(
+        "chain rule", course_id="course_1",
+        resource_scope=["res_img"], current_time_ms=0, k=5,
+    )
+    cite = _passage_to_citation(got[0])
+    assert cite.source_type == "image"
+    assert cite.image_no == 1
+    # No timestamp fiction, and no pdf/slide fields borrowed from a page model.
+    assert cite.start_ms is None
+    assert cite.end_ms is None
+    assert cite.page_no is None
+    assert cite.slide_no is None
+    assert cite.video_id is None
+    # The evidence came from the vision model, same as a sampled video frame.
+    assert cite.modality == "visual"
+
+
+def test_undescribable_image_fails_the_job_instead_of_fabricating(
+    wired, tmp_path, monkeypatch
+):
+    """An undescribable image indexes nothing -- no invented description."""
+    from app.ingestion import images as images_mod
+    from app.ingestion import visual as visual_mod
+
+    monkeypatch.setattr(visual_mod, "_gemini_describe", lambda frames: {})
+    png = make_png(tmp_path)
+
+    with pytest.raises(images_mod.ImageDescriptionError):
+        jobs_mod.ingest_image(
+            png, course_id="course_1", resource_id="res_bad", title="diagram.png"
+        )
+    assert (
+        wired.query(
+            "anything", course_id="course_1",
+            resource_scope=["res_bad"], current_time_ms=0, k=5,
+        )
+        == []
+    )
+
+
+def test_image_mime_types_are_all_accepted():
+    for mime in ("image/png", "image/jpeg", "image/jpg", "image/webp"):
+        assert source_type_for("clipboard", content_type=mime) == "image"
+    for suffix in (".png", ".PNG", ".jpg", ".jpeg", ".webp"):
+        assert source_type_for(f"pic{suffix}") == "image"

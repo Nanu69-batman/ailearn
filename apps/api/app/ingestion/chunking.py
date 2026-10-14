@@ -14,6 +14,24 @@ Concretely: a transcript segment at ``[58s, 61s]`` split in two yields
 ``[58s, 59.5s]`` and ``[59.5s, 61s]``. A split that would run past the segment
 is dropped rather than extended.
 
+The other rule: a bound may only come from an observation
+---------------------------------------------------------
+Proportional mapping is sound for a transcript because 3s of speech split in
+two really did happen in the first half and then the second. It is *unsound*
+for a sampled frame. A frame is an **instant**; its description describes one
+picture held across the whole window, so mapping character offsets onto that
+window fabricates moments at which nothing changed. Measured on
+``res_2e629d682a3d``: a frame at ``448000-452000ms`` split into
+``448000-451865ms`` plus a 135ms tail that was the trailing 3.4% of the same
+sentence, cut at "with respect to $y$:" and cited as though content appeared at
+451865ms.
+
+So :data:`INSTANT_KINDS` segments are never time-split at all. If the text is
+too long to embed whole it is still split for *size*, and **every piece carries
+the frame's own window** -- the full, real interval. A sub-window would be an
+invented timestamp, which is the same defect class as the model-supplied frame
+index: a boundary that corresponds to no observed content.
+
 Splitters are the LangChain library ones (``RecursiveCharacterTextSplitter``);
 no hand-rolled sliding windows.
 """
@@ -36,6 +54,12 @@ CHUNK_CHARS = 900
 #: Overlap in characters between adjacent splits. Overlap is applied *within*
 #: a source segment and never across a timestamp boundary.
 CHUNK_OVERLAP_CHARS = 120
+
+#: Segment kinds whose window describes an **instant** rather than a span of
+#: elapsed content. A sampled frame is one picture shown across its whole
+#: interval, so its text cannot be mapped proportionally onto time: every
+#: piece of a visual segment inherits the frame's real window verbatim.
+INSTANT_KINDS = frozenset({"visual"})
 
 
 @dataclass
@@ -101,6 +125,10 @@ def split_segment(
     segment's real timeline by character proportion, then **clamped** to the
     segment's own bounds. Clamping is what makes widening impossible: even if
     the proportional arithmetic rounds past ``end_ms``, the result cannot.
+
+    The one exception is :data:`INSTANT_KINDS`. A sampled frame is an instant,
+    not a span of elapsed time, so proportional mapping would invent moments
+    where nothing changed; its pieces each carry the frame's full window.
     """
     text = (segment.text or "").strip()
     if not text:
@@ -133,6 +161,18 @@ def split_segment(
     pieces = [p for p in _splitter().split_text(text) if p.strip()]
     if not pieces:
         return []
+    if segment.kind in INSTANT_KINDS and segment.end_ms > segment.start_ms:
+        # An instant. Split for size only; every piece keeps the frame's own
+        # window, so no piece can claim a moment the frame did not cover.
+        return [
+            TextSegment(
+                text=piece,
+                start_ms=segment.start_ms,
+                end_ms=segment.end_ms,
+                kind=segment.kind,
+            )
+            for piece in pieces
+        ]
     span = max(segment.end_ms - segment.start_ms, 1)
     total = max(len(text), 1)
     out: list[TextSegment] = []

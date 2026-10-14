@@ -127,8 +127,30 @@ class RetrievedPassage:
     video_id: str | None = None
     page_no: int | None = None
     slide_no: int | None = None
+    #: 1-based position of an image within its resource. The image analogue
+    #: of ``page_no``: an image has no timeline, so this is the only handle a
+    #: citation has. ``None`` for every non-image source type.
+    image_no: int | None = None
     score: float = 1.0
     metadata: dict = field(default_factory=dict)
+
+
+def _image_no_of(chunk) -> int:
+    """``chunk``'s image number, or the same ``-1`` sentinel the other
+    positional fields use when the chunk is not an image.
+
+    Read from metadata rather than a ``Chunk`` attribute: image ingest stamps
+    it there so ``app.ingestion.chunking`` -- owned by another change -- is
+    untouched. A non-image chunk therefore always yields ``-1`` and is
+    indistinguishable in the filter from one that never had an image number.
+    """
+    if chunk.source_type != "image":
+        return -1
+    raw = (chunk.metadata or {}).get("image_no")
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return -1
 
 
 def chroma_metadata(chunk) -> dict:
@@ -148,6 +170,10 @@ def chroma_metadata(chunk) -> dict:
         "end_ms": int(end_ms),
         "page_no": -1 if chunk.page_no is None else int(chunk.page_no),
         "slide_no": -1 if chunk.slide_no is None else int(chunk.slide_no),
+        # Same sentinel convention as page_no/slide_no. An image is ungated
+        # (deliberately absent from TIME_GATED_SOURCE_TYPES), so this is a
+        # citation handle, never a filter input.
+        "image_no": _image_no_of(chunk),
         "video_id": chunk.video_id or "",
         "kind": str(chunk.metadata.get("kind", "")),
         # Original uploaded file name. Carried per chunk so a re-ingest
@@ -465,6 +491,7 @@ class ChromaVectorStore:
         start_ms = None if raw_start in (None, -1) else int(raw_start)
         raw_page = meta.get("page_no")
         raw_slide = meta.get("slide_no")
+        raw_image = meta.get("image_no")
         return RetrievedPassage(
             chunk_id=chunk_id,
             resource_id=meta.get("resource_id", ""),
@@ -479,6 +506,7 @@ class ChromaVectorStore:
             video_id=meta.get("video_id") or None,
             page_no=None if raw_page in (None, -1) else int(raw_page),
             slide_no=None if raw_slide in (None, -1) else int(raw_slide),
+            image_no=None if raw_image in (None, -1) else int(raw_image),
             # Cosine distance -> similarity, for callers that rank by score.
             score=1.0 - distance,
             metadata={"kind": meta.get("kind", "")},

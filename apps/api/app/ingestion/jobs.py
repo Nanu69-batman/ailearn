@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.ingestion import audio as audio_mod
+from app.ingestion import images as images_mod
 from app.ingestion import visual as visual_mod
 from app.ingestion import youtube as yt_mod
 from app.ingestion.chunking import Chunk, TextSegment, chunk_segment
@@ -120,7 +121,14 @@ def sanitize_filename(raw: str | None) -> str | None:
     return name or None
 
 
-def source_type_for(filename: str) -> str:
+def source_type_for(filename: str, *, content_type: str | None = None) -> str:
+    """Map an upload to its source type.
+
+    ``content_type`` is a *fallback* for the one case a suffix cannot cover:
+    an image uploaded with no (or a mangled) filename suffix. It is never
+    used to override a suffix that resolves, so a ``.pdf`` claiming
+    ``image/png`` still ingests as a pdf.
+    """
     suffix = Path(filename).suffix.lower()
     if suffix == ".pdf":
         return "pdf"
@@ -128,7 +136,32 @@ def source_type_for(filename: str) -> str:
         return "pptx"
     if suffix in VIDEO_SUFFIXES:
         return "video"
+    if suffix in images_mod.IMAGE_SUFFIXES:
+        return "image"
+    mime = (content_type or "").split(";")[0].strip().lower()
+    if mime in images_mod.IMAGE_MIME_TYPES:
+        return "image"
     raise ValueError(f"unsupported file type {suffix or filename!r}")
+
+
+def upload_suffix_for(
+    filename: str | None, *, source_type: str, content_type: str | None = None
+) -> str:
+    """The staging extension for an upload.
+
+    Normally the upload's own suffix, unchanged -- a video staged as ``.mp4``
+    and a pdf staged as ``.pdf`` behave exactly as before. Only an image
+    whose filename carries no suffix is given one, and it is taken from the
+    declared mime type rather than guessed. An image with neither ends up
+    staged extension-less, which every decoder handles by content sniffing.
+    """
+    suffix = Path(filename or "").suffix.lower()
+    if suffix:
+        return suffix
+    if source_type == "image":
+        mime = (content_type or "").split(";")[0].strip().lower()
+        return images_mod.MIME_SUFFIX.get(mime, "")
+    return suffix
 
 
 def _store():
@@ -373,6 +406,66 @@ def ingest_document(
     return {"document_chunks": written, "total_chunks": written}
 
 
+def ingest_image(
+    path: str | Path,
+    *,
+    course_id: str,
+    resource_id: str,
+    image_no: int = images_mod.DEFAULT_IMAGE_NO,
+    title: str | None | object = _UNSET,
+) -> dict:
+    """Describe an image with the video visual pass's vision call and index it.
+
+    Images are ungated, exactly like pdf/pptx: an uploaded diagram is visible
+    to the learner at every T, and there is no timeline to compute a bound
+    from. So the chunk carries ``image_no`` -- a stable 1-based identity a
+    citation can point at -- and **no** ``start_ms``/``end_ms``. Adding it to
+    ``TIME_GATED_SOURCE_TYPES`` would be the bug here, not the omission.
+
+    ``title`` follows the same rule as :func:`ingest_media`: the learner's
+    original filename, passed explicitly because ``path`` is the staged asset.
+
+    Raises ``images_mod.ImageDescriptionError`` when the image cannot be
+    described. That propagates to ``run_ingest``, which records
+    ``status: "failed"`` -- the resource indexes nothing rather than carrying
+    invented text.
+    """
+    path = Path(path)
+    described = images_mod.describe_image(path, image_no=image_no)
+    chunks = build_chunks(
+        resource_id=resource_id,
+        course_id=course_id,
+        source_type="image",
+        # No start_ms/end_ms: an image is ungated (see the docstring), so it
+        # takes exactly the document branch of the splitter and is split for
+        # size only. ``kind="visual"`` records that the evidence came from the
+        # vision model, which is what ``normalize_modality`` maps to
+        # "visual" -- the same value a sampled video frame carries.
+        text_segments=[TextSegment(text=described.text, kind="visual")],
+        title=_resolve_title(path, title),
+    )
+    for chunk in chunks:
+        # Belt and braces. An image has no timeline, so a non-null bound here
+        # would be a fabricated citation target. Asserted rather than trusted.
+        assert chunk.start_ms is None and chunk.end_ms is None, (
+            f"image chunk {chunk.chunk_id} carries a timestamp; an image is "
+            "ungated and has no moment in time to point at"
+        )
+        # Stamped post-chunking on purpose: ``app.ingestion.chunking`` is owned
+        # by another change, so the image number rides in metadata rather than
+        # in a new ``Chunk`` field. It does not feed ``chunk_id_for``, so id
+        # stability is unaffected.
+        chunk.metadata["image_no"] = described.image_no
+    written = _store().add(chunks)
+    return {
+        "image_chunks": written,
+        "total_chunks": written,
+        "image_no": described.image_no,
+        "source": "vision",
+        "warnings": list(described.warnings),
+    }
+
+
 def ingest_youtube(
     url: str, *, course_id: str, resource_id: str, with_visual: bool = True
 ) -> dict:
@@ -466,7 +559,7 @@ def job_payload(job: IngestJob) -> dict:
     if job.error:
         payload["error"] = job.error
     detail = job.detail or {}
-    for key in ("visual_status", "visual_coverage_pct", "visual_span_pct"):
+    for key in ("visual_status", "visual_coverage_pct", "visual_span_pct", "image_no"):
         if key in detail:
             payload[key] = detail[key]
     if detail.get("warnings"):
