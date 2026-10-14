@@ -25,7 +25,7 @@
  * Run: `npm run contract-check` (from apps/web) or
  * `node scripts/contract-check.mjs`.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -889,6 +889,213 @@ if (landingLinks !== 1) {
   fail("landing page still links to the broken /demo route");
 } else {
   pass("landing page = one button -> /dashboard, no /demo link");
+}
+
+// 19. MARKDOWN + KATEX IN CHAT. ADDITIVE ONLY — nothing above is weakened or
+//     removed. Assistant answers already contain LaTeX and it rendered as raw
+//     source. The renderer must be the standard stack (react-markdown +
+//     remark-math + rehype-katex), NOT a hand-rolled split('$') parser, and it
+//     must not reopen XSS while doing so.
+{
+  const mdPath = join(webRoot, "components", "MarkdownBody.tsx");
+  const listPath = join(webRoot, "components", "MessageList.tsx");
+  const md = readFileSync(mdPath, "utf8");
+  const list = readFileSync(listPath, "utf8");
+  const layoutSrc = readFileSync(join(webRoot, "app", "layout.tsx"), "utf8");
+  const globalCss = readFileSync(join(webRoot, "app", "globals.css"), "utf8");
+  // Negative scans run against code with comments stripped: a prose comment
+  // that merely NAMES a forbidden API must not read as a use of it.
+  const stripComments = (src) =>
+    src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+  const mdCode = stripComments(md);
+  const listCode = stripComments(list);
+  const pkg = JSON.parse(
+    readFileSync(join(webRoot, "package.json"), "utf8"),
+  );
+  const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+
+  // (a) Standard stack, pinned as real dependencies.
+  for (const dep of [
+    "react-markdown",
+    "remark-math",
+    "rehype-katex",
+    "katex",
+  ]) {
+    if (!deps[dep]) {
+      fail(`package.json does not depend on ${dep}`);
+    } else if (!/^[\^~]?\d+\.\d+\.\d+/.test(deps[dep])) {
+      fail(
+        `package.json pins ${dep} as "${deps[dep]}" — the repo pins every other ` +
+          `dependency with a semver range`,
+      );
+    }
+  }
+  if (
+    ["react-markdown", "remark-math", "rehype-katex", "katex"].every(
+      (d) => deps[d],
+    )
+  ) {
+    pass("react-markdown / remark-math / rehype-katex / katex are all pinned deps");
+  }
+
+  // (b) No hand-rolled LaTeX extraction. A regex or split('$') parser is
+  //     exactly what this feature was told not to build.
+  if (/split\(\s*["'`]\\?\$/.test(mdCode) || /\$[^"'\n]*\$/.test(mdCode)) {
+    fail(
+      "MarkdownBody.tsx appears to hand-parse LaTeX delimiters — the standard " +
+        "stack (remark-math + rehype-katex) must do this instead",
+    );
+  } else {
+    pass("MarkdownBody does no hand-rolled $ splitting or LaTeX regex");
+  }
+
+  // (c) The plugins are actually wired.
+  for (const [needle, label] of [
+    ["remarkPlugins={[remarkMath]}", "remark-math is enabled"],
+    ["rehypePlugins={[[rehypeKatex,", "rehype-katex is enabled"],
+  ]) {
+    if (!md.includes(needle)) {
+      fail(`MarkdownBody.tsx does not enable ${label}`);
+    } else {
+      pass(label);
+    }
+  }
+
+  // (c2) remark-math must keep its DEFAULT options. Setting
+  //      `singleDollarTextMath: false` looks like it would enable display
+  //      math; it actually DISABLES inline $...$ (mdast-util-math: "If you
+  //      turn this off, you can still use two or more dollars for text math"),
+  //      which would silently break every inline fraction in every answer.
+  if (/singleDollarTextMath/.test(mdCode)) {
+    fail(
+      "MarkdownBody overrides singleDollarTextMath — setting it false " +
+        "disables inline $...$ math entirely",
+    );
+  } else {
+    pass("remark-math keeps default options, so inline $...$ stays enabled");
+  }
+
+  // (d) XSS GUARDS. Message content is LLM output; rehype-raw would let it
+  //     emit live HTML. KaTeX trust:true would enable \href / \url /
+  //     \includegraphics and command execution.
+  if (/rehype-raw/.test(mdCode)) {
+    fail(
+      "MarkdownBody.tsx references rehype-raw — raw HTML from an LLM would be " +
+        "live HTML again (<script>, <img onerror>)",
+    );
+  } else {
+    pass("MarkdownBody does not use rehype-raw (raw HTML stays escaped)");
+  }
+  // Repo-wide: rehype-raw must not reappear anywhere in the web app.
+  {
+    const offenders = [];
+    const walk = (dir) => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        if (e.name === "node_modules" || e.name === ".next") continue;
+        const full = join(dir, e.name);
+        if (e.isDirectory()) walk(full);
+        else if (/\.(ts|tsx|js|mjs)$/.test(e.name)) {
+          if (/from\s+["']rehype-raw["']|require\(["']rehype-raw["']\)/.test(
+            readFileSync(full, "utf8"),
+          )) {
+            offenders.push(full.replace(webRoot, "apps/web"));
+          }
+        }
+      }
+    };
+    for (const sub of ["app", "components", "lib"]) {
+      walk(join(webRoot, sub));
+    }
+    if (offenders.length > 0) {
+      fail(`rehype-raw is imported in: ${offenders.join(", ")}`);
+    } else {
+      pass("no file in apps/web imports rehype-raw");
+    }
+  }
+  if (
+    /dangerouslySetInnerHTML/.test(mdCode) ||
+    /dangerouslySetInnerHTML/.test(listCode)
+  ) {
+    fail(
+      "the markdown render path uses dangerouslySetInnerHTML — LLM output " +
+        "would be injected as live HTML",
+    );
+  } else {
+    pass("no dangerouslySetInnerHTML in the markdown render path");
+  }
+  if (/trust:\s*true/.test(mdCode) || /"trust"\s*:\s*true/.test(mdCode)) {
+    fail(
+      "MarkdownBody sets KaTeX trust: true — that enables \\href, \\url, " +
+        "\\includegraphics and command execution",
+    );
+  } else {
+    pass("KaTeX trust is not enabled");
+  }
+  if (!/throwOnError:\s*false/.test(md)) {
+    fail(
+      "MarkdownBody does not pin throwOnError: false — a malformed span from " +
+        "the model would throw instead of degrading",
+    );
+  } else {
+    pass("KaTeX throwOnError is false, so malformed LaTeX degrades");
+  }
+
+  // (e) A thrown render must never blank the transcript.
+  if (!/getDerivedStateFromError/.test(md) || !/whitespace-pre-wrap/.test(md)) {
+    fail(
+      "MarkdownBody has no error boundary that falls back to the raw text — a " +
+        "bad parse could blank the chat",
+    );
+  } else {
+    pass("MarkdownBody falls back to plain text if rendering throws");
+  }
+
+  // (f) Both roles render markdown, not just the assistant.
+  const bodyIdx = list.indexOf("<MarkdownBody text={m.content} />");
+  if (bodyIdx === -1) {
+    fail(
+      "MessageList does not render message bodies through MarkdownBody — " +
+        "LaTeX would still show as raw source",
+    );
+  } else {
+    pass("MessageList renders both user and assistant bodies via MarkdownBody");
+  }
+
+  // (g) Citation chips must stay OUTSIDE the markdown tree or they lose their
+  //     seek-on-click handlers.
+  const citesIdx = list.indexOf("<Citations cites={m.citations} onSeek={onSeek} />");
+  if (citesIdx === -1) {
+    fail("MessageList no longer renders <Citations> — citation chips are gone");
+  } else if (bodyIdx !== -1 && citesIdx < bodyIdx) {
+    fail("MessageList renders citations BEFORE the message body");
+  } else {
+    pass("Citations render as a sibling of the markdown body, not inside it");
+  }
+
+  // (h) KaTeX CSS must be imported so the bundle includes it.
+  if (!/katex\/dist\/katex\.min\.css/.test(layoutSrc)) {
+    fail(
+      "app/layout.tsx does not import katex CSS — KaTeX markup would render " +
+        "unstyled",
+    );
+  } else {
+    pass("katex CSS is imported by the root layout (bundled by next dev/build)");
+  }
+  if (!/\.katex-display\s*\{/.test(globalCss)) {
+    fail("globals.css has no .katex-display rule — display math clips in the bubble");
+  } else {
+    pass("globals.css styles .katex-display for the chat bubble");
+  }
+
+  // (i) Mock fixtures must still go through the same renderer.
+  if (/whitespace-pre-wrap">\{m\.content\}/.test(list)) {
+    fail(
+      "MessageList still renders m.content as raw pre-wrapped text — the mock " +
+        "fixtures' LaTeX would be unrendered",
+    );
+  } else {
+    pass("no raw-text message path bypasses the renderer");
+  }
 }
 
 if (failures > 0) {

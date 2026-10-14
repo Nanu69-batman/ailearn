@@ -22,3 +22,19 @@ body {
   color: #e4e4e7;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
+
+/* KaTeX inside a narrow chat bubble: display math must scroll, not clip. */
+.katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.125rem 0;
+}
+
+.katex {
+  font-size: 1.02em;
+}
+
+/* The error colour rehype-katex applies when a span fails to parse. */
+.katex-error {
+  color: #dc2626;
+}

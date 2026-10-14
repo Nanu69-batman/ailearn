@@ -1,5 +1,8 @@
 import type { Metadata } from "next";
 import "./globals.css";
+// KaTeX stylesheet. Imported here (not linked by hand) so `next dev` and
+// `next build` both bundle it and Next fingerprints the font assets.
+import "katex/dist/katex.min.css";
 
 export const metadata: Metadata = {
   title: "AI Learning Assistant",

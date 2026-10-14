@@ -2,6 +2,7 @@
 
 import type { ChatMessage, Citation } from "../lib/api";
 import CitationBadge from "./CitationBadge";
+import MarkdownBody from "./MarkdownBody";
 
 interface MessageListProps {
   messages: ChatMessage[];
@@ -46,7 +47,11 @@ export default function MessageList({ messages, loading, onSeek }: MessageListPr
           <div className={`mb-1 text-[10px] font-semibold uppercase tracking-wider ${m.role === "user" ? "text-violet-200" : "text-gray-400"}`}>
             {m.role === "user" ? "You" : "Assistant"}
           </div>
-          <div className="whitespace-pre-wrap">{m.content}</div>
+          {/* Both roles render as markdown: assistant answers carry the LaTeX,
+              and a user can type it too. */}
+          <MarkdownBody text={m.content} />
+          {/* Citations stay a SIBLING of the markdown tree, never inside it, so
+              the seek-on-click handlers survive markdown rendering. */}
           {m.role === "assistant" && <Citations cites={m.citations} onSeek={onSeek} />}
         </div>
       ))}
