@@ -1,11 +1,14 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import YouTubeIngestForm, {
   type IngestedVideo,
 } from "@/components/YouTubeIngestForm";
+import FileIngestForm, {
+  type IngestedFile,
+} from "@/components/FileIngestForm";
 import { useLearnSession } from "@/components/LearnSessionProvider";
 import { useCourseResources } from "@/components/useCourseResources";
 import { isApiConfigured, getSubjectResources } from "@/lib/api";
@@ -63,6 +66,19 @@ export default function SubjectPage() {
     [open],
   );
 
+  /**
+   * A completed file ingest is reported, not navigated to. The player route
+   * renders video/pdf, so pushing an image or a PPTX there would drop the
+   * learner on a route that cannot show it. The resource list below is the
+   * honest home for the new item, and it is re-read from the server when the
+   * learner asks for it — we never claim it appeared before it did.
+   */
+  const [uploaded, setUploaded] = useState<IngestedFile | null>(null);
+
+  const handleFileIngested = useCallback((file: IngestedFile): void => {
+    setUploaded(file);
+  }, []);
+
   const openSampleClip = useCallback((): void => {
     // Sanity: the synthetic selection must be reachable at its own URL, so the
     // sample clip navigates exactly like any other resource.
@@ -97,10 +113,49 @@ export default function SubjectPage() {
         onReady={handleIngested}
         disabled={!apiLive}
       />
+      <FileIngestForm
+        courseId={subjectId}
+        subjectId={subjectId}
+        onReady={handleFileIngested}
+        disabled={!apiLive}
+      />
+
+      {uploaded && (
+        <div
+          className="rounded-xl border border-emerald-200 bg-emerald-50 p-4"
+          role="status"
+        >
+          <p className="font-semibold text-emerald-700">
+            Added “{uploaded.fileName}” to this subject.
+          </p>
+          <p className="mt-1 text-sm text-gray-600">
+            It is indexed and askable now
+            {uploaded.imageNo != null ? ` as image ${uploaded.imageNo}` : ""}.
+            Reload this page to see it in the list below.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-3">
+            <button
+              type="button"
+              className="rounded-xl bg-violet-600 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-violet-700"
+              onClick={() => window.location.reload()}
+            >
+              Refresh the list
+            </button>
+            <button
+              type="button"
+              className="rounded-xl border border-gray-200 bg-white px-4 py-1.5 text-sm text-gray-600 transition hover:bg-gray-50"
+              onClick={() => open(uploaded.resourceId)}
+            >
+              Open it
+            </button>
+          </div>
+        </div>
+      )}
+
       {!apiLive && (
         <p className="text-sm text-amber-600" role="note">
-          YouTube ingest needs the live API — offline mode can still open the
-          sample clip below.
+          Ingesting needs the live API — offline mode can still open the sample
+          clip below.
         </p>
       )}
 
@@ -129,8 +184,8 @@ export default function SubjectPage() {
             className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-500 shadow-sm"
             role="status"
           >
-            No videos in this subject yet — paste a YouTube link above to add
-            the first one.
+            No videos in this subject yet — paste a YouTube link above, or
+            upload a file, to add the first one.
           </div>
         )}
         {resources.length > 0 && (
@@ -167,7 +222,13 @@ export default function SubjectPage() {
                       className="rounded-lg bg-violet-600 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-violet-700"
                       onClick={() => open(r.id)}
                     >
-                      {r.type === "pdf" ? "Study" : "Watch"}
+                      {r.type === "pdf"
+                        ? "Study"
+                        : r.type === "image"
+                          ? "View"
+                          : r.type === "pptx"
+                            ? "Open"
+                            : "Watch"}
                     </button>
                   </div>
                 </li>

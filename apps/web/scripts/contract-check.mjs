@@ -374,6 +374,112 @@ if (!/subject_id: subjectId/.test(apiClient)) {
   }
 }
 
+// 16c. File upload on a subject page. ADDITIVE ONLY — nothing above is
+//      weakened. The multipart POST must hit the real backend route
+//      (`/courses/{id}/ingest`, not a bare `/courses/{id}/`), must NOT set a
+//      Content-Type (that would strip the multipart boundary), and must carry
+//      subject_id so the server derives the real course and auto-attaches.
+{
+  const fileForm = readFileSync(
+    join(webRoot, "components", "FileIngestForm.tsx"),
+    "utf8",
+  );
+  for (const [needle, why, label] of [
+    [
+      "ingestFile(",
+      "FileIngestForm does not call the file-ingest API",
+      "FileIngestForm calls the file-ingest API",
+    ],
+    [
+      'type="file"',
+      "FileIngestForm renders no file picker",
+      "FileIngestForm renders a file picker",
+    ],
+    [
+      ".pdf,.pptx,.png,.jpg,.jpeg,.webp",
+      "file picker does not accept the backend's file types",
+      "file picker accepts video, PDF, PPTX and image types",
+    ],
+    [
+      "getIngestJob(",
+      "FileIngestForm does not poll the ingest job",
+      "FileIngestForm polls the ingest job",
+    ],
+    [
+      'status === "failed"',
+      "FileIngestForm never surfaces a failed ingest",
+      "FileIngestForm surfaces a failed ingest",
+    ],
+  ]) {
+    if (!fileForm.includes(needle)) {
+      fail(`FileIngestForm: ${why}`);
+    } else {
+      pass(label);
+    }
+  }
+  if (!/subjectId=\{subjectId\}/.test(subjectPage)) {
+    fail("the subject page does not pass subjectId to FileIngestForm");
+  } else {
+    pass("subject page scopes file uploads by subjectId");
+  }
+  if (!/<FileIngestForm/.test(subjectPage)) {
+    fail("the subject page does not render FileIngestForm");
+  } else {
+    pass("subject page renders the file upload control");
+  }
+}
+if (!/form\.append\("file", file, file\.name\)/.test(apiClient)) {
+  fail("ingestFile() does not append the binary under the `file` field");
+} else {
+  pass("ingestFile() posts multipart with a `file` part");
+}
+if (!/form\.append\("subject_id", subjectId\)/.test(apiClient)) {
+  fail("ingestFile() does not append subject_id to the multipart body");
+} else {
+  pass("ingestFile() posts subject_id as a multipart part");
+}
+{
+  const ingestFileBlock = apiClient.match(
+    /export async function ingestFile\([\s\S]*?\n\}/,
+  );
+  if (!ingestFileBlock) {
+    fail("lib/api.ts has no ingestFile() implementation");
+  } else if (!/\/courses\/\$\{encodeURIComponent\(courseId\)\}\/ingest`/.test(ingestFileBlock[0])) {
+    fail("ingestFile() does not POST to /courses/{id}/ingest");
+  } else {
+    pass("ingestFile() POSTs to the backend's /courses/{id}/ingest route");
+  }
+  if (ingestFileBlock && /"Content-Type":\s*"application\/json"/.test(ingestFileBlock[0])) {
+    fail("ingestFile() sets Content-Type: application/json on a FormData body");
+  } else {
+    pass("ingestFile() leaves Content-Type to the multipart boundary");
+  }
+}
+
+// 16d. An image citation must never be rendered as a time range. The backend
+//      sends image_no with start_ms/end_ms/page_no/slide_no all null, so the
+//      badge has to branch on image_no BEFORE any formatting.
+{
+  const badge = readFileSync(join(webRoot, "components", "CitationBadge.tsx"), "utf8");
+  const imageBranch = badge.indexOf("citation.image_no != null");
+  // The CALL SITE inside the component, not the `formatRange` definition
+  // above it — comparing against the definition would compare two unrelated
+  // positions in the file.
+  const timeBranch = badge.indexOf("const range = formatRange(");
+  if (imageBranch === -1) {
+    fail("CitationBadge does not handle image_no");
+  } else if (timeBranch === -1 || imageBranch > timeBranch) {
+    fail("CitationBadge formats a time range before checking image_no");
+  } else {
+    pass("CitationBadge checks image_no before any timestamp formatting");
+  }
+  if (!/Image \$\{citation\.image_no\}/.test(badge)) {
+    fail("CitationBadge does not render an 'Image N' label for image_no");
+  } else {
+    pass("CitationBadge renders image citations as 'Image N'");
+  }
+}
+
 // 17. The landing page has exactly one call to action and it points at
 //     /dashboard; the broken /demo link must be gone.
 const landing = readFileSync(join(webRoot, "app", "page.tsx"), "utf8");

@@ -32,6 +32,22 @@ function formatRange(startMs: number, endMs: number): string {
 }
 
 export default function CitationBadge({ citation, onSeek }: CitationBadgeProps) {
+  // IMAGES FIRST, ALWAYS. An image citation carries no time range at all —
+  // the backend sets start_ms/end_ms/page_no/slide_no/video_id to null and
+  // marks modality "visual". Reaching the time formatter first would print
+  // "0:00–0:00" (or a literal null) on every image citation, so this branch
+  // must stay above every other one.
+  if (citation.image_no != null) {
+    const label = `Image ${citation.image_no}`;
+    return (
+      <span
+        className="rounded-full border border-gray-200 bg-gray-50 px-2.5 py-0.5 text-xs text-gray-500"
+        title={`${label} · ${citation.chunk_id}`}
+      >
+        {label}
+      </span>
+    );
+  }
   // Video badge only when we have a real timestamp range; otherwise fall
   // back to a doc-style badge so we never seek to NaN (backend start_ms /
   // end_ms are nullable — see apps/api/app/chat/schemas.py Citation).

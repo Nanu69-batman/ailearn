@@ -209,6 +209,7 @@ export type CitationSourceType =
   | "video_transcript"
   | "pdf"
   | "pptx"
+  | "image"
   | "note"
   | "code";
 
@@ -232,6 +233,15 @@ export interface Citation {
   end_ms?: number | null;
   page_no?: number | null;
   slide_no?: number | null;
+  /**
+   * 1-based page/image number for image citations.
+   *
+   * An image citation carries NO timestamp: the backend sets `start_ms`,
+   * `end_ms`, `page_no`, `slide_no` and `video_id` all to null and marks
+   * `modality: "visual"`. Renderers must branch on `image_no` BEFORE any
+   * time formatting, or the badge degrades to `0:00–0:00` / `null`.
+   */
+  image_no?: number | null;
 }
 
 export interface ChatResponse {
@@ -277,6 +287,28 @@ function newRequestId(): string {
   return `req-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 }
 
+/** Raise the typed error the API layer already uses, decoding `detail`. */
+async function apiErrorFromResponse(
+  res: Response,
+  requestId: string,
+): Promise<ApiError> {
+  let detail = res.statusText;
+  try {
+    const body: unknown = await res.json();
+    if (
+      typeof body === "object" &&
+      body !== null &&
+      "detail" in body &&
+      typeof (body as { detail: unknown }).detail === "string"
+    ) {
+      detail = (body as { detail: string }).detail;
+    }
+  } catch {
+    // Keep statusText when body is not JSON.
+  }
+  return new ApiError(res.status, detail, requestId);
+}
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const base = baseUrl();
   if (!base) {
@@ -301,21 +333,7 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     );
   }
   if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      const body: unknown = await res.json();
-      if (
-        typeof body === "object" &&
-        body !== null &&
-        "detail" in body &&
-        typeof (body as { detail: unknown }).detail === "string"
-      ) {
-        detail = (body as { detail: string }).detail;
-      }
-    } catch {
-      // Keep statusText when body is not JSON.
-    }
-    throw new ApiError(res.status, detail, requestId);
+    throw await apiErrorFromResponse(res, requestId);
   }
   return (await res.json()) as T;
 }
@@ -373,7 +391,7 @@ export function formatApiError(err: unknown): string {
 }
 
 // ---------------------------------------------------------------------------
-// YouTube ingestion (frozen contract — backend built in parallel).
+// YouTube ingestion (frozen contract - backend built in parallel).
 //   POST /courses/{courseId}/ingest-youtube {url}
 //     -> { job_id, resource_id, status }
 //   GET  /ingestion/jobs/{jobId}
@@ -381,6 +399,13 @@ export function formatApiError(err: unknown): string {
 //   GET  /courses/{courseId}/resources
 //     -> { resources: [{ id, type, provider: "youtube"|"file",
 //                        youtube_id?, title?, status }] }
+//
+// File ingestion (multipart; same job envelope):
+//   POST /courses/{courseId}/ingest   multipart/form-data
+//     file: <binary>  video|pdf|pptx|png|jpg|jpeg|webp
+//     subject_id?: string  — when present the server derives the real course
+//                            from the subject and auto-attaches on success.
+//     -> { job_id, resource_id, status }
 // ---------------------------------------------------------------------------
 
 export interface IngestYouTubeResponse {
@@ -389,6 +414,9 @@ export interface IngestYouTubeResponse {
   status: string;
 }
 
+/** File ingest returns the identical envelope; kept as a named alias. */
+export type IngestFileResponse = IngestYouTubeResponse;
+
 export type IngestJobStatus = "pending" | "processing" | "done" | "failed";
 
 export interface IngestJob {
@@ -396,6 +424,8 @@ export interface IngestJob {
   resource_id: string;
   status: IngestJobStatus;
   error?: string | null;
+  /** Present once an image ingest completes (1-based). */
+  image_no?: number | null;
 }
 
 export type ResourceProvider = "youtube" | "file";
@@ -435,6 +465,50 @@ export function ingestYouTube(
       ),
     },
   );
+}
+
+/**
+ * Upload a video / PDF / PPTX / image into a course, optionally scoped to a
+ * subject.
+ *
+ * Deliberately NOT routed through `apiFetch`: that helper hardcodes
+ * `Content-Type: application/json`, which on a FormData body strips the
+ * multipart boundary and the backend then parses an empty form. Here the
+ * Content-Type is left unset so the browser generates
+ * `multipart/form-data; boundary=...` itself.
+ */
+export async function ingestFile(
+  courseId: string,
+  file: File,
+  subjectId?: string,
+): Promise<IngestFileResponse> {
+  const base = baseUrl();
+  if (!base) {
+    throw new ApiError(0, "NEXT_PUBLIC_API_URL is not configured", "n/a");
+  }
+  const form = new FormData();
+  form.append("file", file, file.name);
+  if (subjectId) form.append("subject_id", subjectId);
+
+  const requestId = newRequestId();
+  let res: Response;
+  try {
+    res = await fetch(`${base}/courses/${encodeURIComponent(courseId)}/ingest`, {
+      method: "POST",
+      body: form,
+      headers: { "x-request-id": requestId },
+    });
+  } catch (err) {
+    throw new ApiError(
+      0,
+      err instanceof Error ? `Network error: ${err.message}` : "Network error",
+      requestId,
+    );
+  }
+  if (!res.ok) {
+    throw await apiErrorFromResponse(res, requestId);
+  }
+  return (await res.json()) as IngestFileResponse;
 }
 
 export function getIngestJob(jobId: string): Promise<IngestJob> {
@@ -503,10 +577,14 @@ export function getSubjectResources(
  * Friendly copy for ingest failures. Surfaces the backend `detail`
  * (quota / 422 validation messages) instead of a bare status code.
  */
-export function formatIngestError(err: unknown): string {
+export function formatIngestError(err: unknown, label = "Video"): string {
   if (err instanceof ApiError) {
     if (err.status === 422) {
-      return `Video rejected (422): ${err.message}. Check the link is a public, watchable video.`;
+      const hint =
+        label === "Video"
+          ? "Check the link is a public, watchable video."
+          : "Check the file is a video, PDF, PPTX, or an image.";
+      return `${label} rejected (422): ${err.message}. ${hint}`;
     }
     if (err.status === 429) {
       return `Ingest quota exceeded (429): ${err.message}. Try again later.`;

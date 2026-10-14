@@ -87,6 +87,7 @@ export function resourceKindLabel(resource: CourseResource): string {
 
 export function resourceIcon(resource: CourseResource): string {
   if (resource.provider === "youtube") return "📺";
+  if (resource.type === "image") return "🖼️";
   return resource.type === "pdf" ? "📄" : "▶";
 }
 
