@@ -123,40 +123,48 @@ flowchart LR
 
 ## SLIDE 3 / 6 — System Workflow & Implementation
 
-### End-to-end workflow diagram
+### End-to-end workflow
 
-```mermaid
-flowchart TD
-  L["Learner pauses at T and asks a question"] --> P["POST /chat with the session token and current_time_ms"]
-  P --> V{"Session found and token valid"}
-  V -->|"no"| X1["Refused at the edge"]
-  V -->|"yes"| SC["effective_resource_scope, the granted resource_scope INTERSECTED with the focused resource"]
-  SC --> SE{"Is the intersection empty"}
-  SE -->|"yes"| X2["Refusal, mode grounded, grounded false, zero citations. The grant does not cover this"]
-  SE -->|"no"| LF{"Is the question about the frame on screen right now"}
-  LF -->|"yes"| CAP["POST /chat/live-frame with the client canvas capture"]
-  CAP --> VAL["Server validates T against the container-header duration, out of range returns 422"]
-  VAL --> DESC["Gemini describes the frame"]
-  DESC --> LP["Injected as a passage with start_ms equal to end_ms equal to T, live true, placed first"]
-  LF -->|"no"| Q["Vector query, structurally restricted to the effective scope"]
-  LP --> Q
-  Q --> GATE["Strict-T gate. Keep only when end_ms is not null and end_ms is at or before T"]
-  GATE --> SURV["Surviving passages only"]
-  SURV --> REC{"Present-tense or frame question"}
-  REC -->|"yes"| RR["Recency reordering, applied to the gated pool only"]
-  REC -->|"no"| DEC{"Explicit supplemental request"}
-  RR --> DEC
-  DEC -->|"yes"| SUP["Supplemental answer, zero citations, labelled not from the video"]
-  DEC -->|"no"| PR["Grounded prompt built from survivors, with modality per passage"]
-  PR --> LLM["Gemini answers from those passages only"]
-  LLM --> REF{"Did the model return the refusal verdict"}
-  REF -->|"yes"| COV{"Gated passages exist but do not cover the question"}
-  COV -->|"yes"| SUP
-  COV -->|"no"| X3["Refusal, mode grounded, grounded false, zero citations"]
-  REF -->|"no"| CV{"Every cited id is in the retrieved set and at least one citation exists"}
-  CV -->|"no"| X3
-  CV -->|"yes"| OK["Answer with validated citations, mode grounded, grounded true"]
 ```
+ 1  Learner pauses at T, asks a question
+       POST /chat with session token + current_time_ms
+
+ 2  Authorise and scope
+       session verified; the granted resource_scope is INTERSECTED
+       with the focused resource, never replaced
+
+ 3  Acquire evidence
+       frame question  ->  capture that exact frame, describe it, and
+                           inject it as a passage at start_ms = end_ms = T
+       otherwise       ->  vector query, structurally restricted to
+                           the effective scope
+
+ 4  Strict-T gate
+       keep only passages where end_ms is not null AND end_ms <= T
+
+ 5  Order, do not filter
+       present-tense questions prefer passages near T, applied to the
+       already-gated pool; the gate itself is never widened
+
+ 6  Answer policy
+       grounded     ->  prompt built from survivors only
+       supplemental ->  reached only on an explicit request or when the
+                         grounded pass finds no coverage; carries ZERO
+                         citations and is labelled "Not from the video"
+
+ 7  Validate and return
+       every cited id must exist in the retrieved set and at least one
+       citation must be present, otherwise refuse
+```
+
+**Two exits, both honest.** A refusal always states the real cause: the
+material does not cover the question, or the session grant does not cover
+this resource. It never invents an answer in order to avoid refusing.
+
+**Why the order matters.** The gate is step 4, before recency, before the
+grounded-versus-supplemental decision, and before any model call. A spoiler
+cannot reach the model because the passage is removed from the pool first,
+not filtered out of the answer afterwards.
 
 ### IMPLEMENTATION DETAILS
 
@@ -250,27 +258,6 @@ flowchart TD
 
 ### Grounded versus supplemental
 
-```mermaid
-flowchart TD
-  Q["Learner question"] --> CL{"Explicit supplemental phrasing, and not a present-tense or frame question"}
-  CL -->|"yes"| S0["Supplemental path taken immediately, the grounded attempt is skipped"]
-  CL -->|"no"| G0["Grounded attempt over the already gated passages"]
-  S0 --> S1
-  G0 --> G1{"Is the gated pool empty"}
-  G1 -->|"yes"| G2{"Is the mode allowed to fall back"}
-  G1 -->|"no"| G3{"Did Gemini return the refusal verdict"}
-  G2 -->|"no"| R["Refusal, mode grounded, grounded false, zero citations"]
-  G2 -->|"yes"| S1{"Does the supplemental provider answer"}
-  G3 -->|"yes"| S1
-  G3 -->|"no"| G4["Grounded prompt built from the gated passages, with modality per passage"]
-  S1 -->|"no"| R
-  S1 -->|"yes"| S2["Taught from first principles and labelled not from the video"]
-  G4 --> G5{"Do the citations validate against the retrieved set"}
-  G5 -->|"no"| R
-  G5 -->|"yes"| GA["Grounded answer with millisecond citations, mode grounded, grounded true"]
-  S2 --> S3["Zero citations, and every citation marker is stripped from the text"]
-  S3 --> S4["No retrieval runs here and no filter is widened. The gated set is used only for orientation"]
-```
 
 ### Recorded live probe evidence
 
@@ -289,22 +276,6 @@ Read the refusals first. A refusal cannot be wrong in the direction that matters
 
 ### Anti-spoiler suppression, and where we deliberately refuse to suppress
 
-```mermaid
-flowchart TD
-  Q["Result-seeking phrasing, for example what is the final answer, what will happen later"] --> FL["Phrase classifier is_forward_looking_result. Pure regex, no LLM call"]
-  FL --> R{"Is the question a definition or a notation lookup"}
-  R -->|"yes"| FULL["No suppression. Answered in full from the gated passages"]
-  R -->|"no"| S["Suppression clause injected into the grounded prompt"]
-  S --> A["The model is told the lesson has not got to this yet, and is instructed to give the groundwork without stating the conclusion"]
-  A --> B{"Present-tense or frame question, what am I looking at right now"}
-  B -->|"yes"| CL{"Does an outside-help phrase also appear"}
-  CL -->|"yes"| G["Supplemental fallback is refused. The classifier returns false regardless"]
-  CL -->|"no"| G2["Stays on the grounded path"]
-  B -->|"no"| G2
-  G2 --> G3{"Did the learner explicitly ask for outside help"}
-  G3 -->|"yes"| SP["Supplemental answer, zero citations, labelled not from the video"]
-  G3 -->|"no"| GA["Grounded answer from gated passages only"]
-```
 
 The gate removes future passages, so the only spoiler risk left is the model inferring a conclusion from earlier material. That is prompt-level mitigation, deliberately narrow, because a learner asking what a partial derivative is at 0:30 must be answered rather than refused. It is mitigation, not proof.
 
