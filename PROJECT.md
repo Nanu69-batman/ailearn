@@ -33,10 +33,10 @@ making every citation traceable back to a specific moment in a specific video.
 
 | Area | `[SHIPPED]` | `[PLANNED]` | `[KNOWN LIMITATION]` |
 |---|---|---|---|
-| Grounding | Strict timestamp gate (`end_ms <= T`) | Grounded vs Supplemental answering | Over-rigid refusal shape |
+| Grounding | Strict timestamp gate (`end_ms <= T`), grounded vs supplemental answering | Longer-form anti-spoiler coverage | Supplemental answers are not citations-checkable by design |
 | Evidence | Citation modality tag, citation validation | Postgres + pgvector (sessions are in memory) | Sessions do not survive a restart |
 | Visual | Live frame capture, full-coverage frame sampling | Delete-resource endpoint | Visual pass untested past 11 min |
-| Ingest | Video, PDF, PPTX, image | True batched embedding (in progress, uncommitted) | 7-min video took over 7 min to ingest |
+| Ingest | Video, PDF, PPTX, image, batched embedding | Incremental/resumable ingest for long files | 7-min video took over 7 min to ingest |
 | Web | LaTeX rendering, session-grant recovery | Persistence layer | Unsigned launch is localhost-demo only |
 | Coverage | 2 videos end to end | Long-form and multi-subject matrix | No long-form, no multi-page, no scale |
 
@@ -61,6 +61,45 @@ Chroma (vector store)   Gemini gemini-3.5-flash-lite (answers)
                         PyAV (decode, duration, frame sampling)
 ```
 
+```mermaid
+flowchart LR
+  subgraph B["Browser on port 3000, Next.js 15 and React 19"]
+    UI["Chat panel and video player"]
+    LF["Canvas capture of the frame at the playhead T"]
+  end
+  subgraph A["FastAPI on port 8123"]
+    CH["chat service, prompt build, answer, citation check"]
+    ING["ingestion service, audio, frames, documents"]
+    RET["retrieval service, query, strict-T gate, recency"]
+    RES["subjects, resources and media endpoints"]
+  end
+  subgraph M["Models and stores"]
+    GEM["Gemini, answers, embeddings, vision"]
+    WH["faster-whisper, speech to text"]
+    PY["PyAV, decode, duration, frame sampling"]
+    CHR["Chroma vector store"]
+    SES["Session store, in memory"]
+  end
+  UI -->|"POST /chat"| CH
+  LF -->|"POST /chat/live-frame"| CH
+  UI -->|"POST /subjects/{id}/resources"| RES
+  UI -->|"GET /resources/{id}/media"| RES
+  RES --> ING
+  ING --> PY
+  ING --> WH
+  ING --> GEM
+  ING --> CHR
+  CH --> RET
+  RET --> CHR
+  CH --> GEM
+  CH --> SES
+```
+
+*What to take from this: one FastAPI process owns every policy decision. The
+browser only plays media, captures a canvas frame, and posts. Chroma stores
+time-bounded chunks; Gemini is used for answers, embeddings and vision; the
+strict-T gate lives in the retrieval layer, not in a prompt.*
+
 ### Request path for a question
 
 1. Client posts the session token and the current playhead `T`.
@@ -75,6 +114,44 @@ Chroma (vector store)   Gemini gemini-3.5-flash-lite (answers)
 7. Gemini answers. Every returned citation id is checked against the retrieved
    set. An uncited or unknown-id answer is refused, not passed through.
 
+```mermaid
+flowchart TD
+  L["Learner pauses at T and asks a question"] --> P["POST /chat with the session token and current_time_ms"]
+  P --> V{"Session found and token valid"}
+  V -->|"no"| X1["Refused at the edge, 401 or 404"]
+  V -->|"yes"| SC["effective_resource_scope, the granted resource_scope INTERSECTED with the focused resource"]
+  SC --> SE{"scope_empty"}
+  SE -->|"yes"| X2["Refusal. mode grounded, grounded false, zero citations. The grant does not cover this"]
+  SE -->|"no"| LF{"Question is about the frame currently on screen"}
+  LF -->|"yes"| CAP["POST /chat/live-frame with the client canvas capture"]
+  CAP --> VAL["Server validates T against the container-header duration, out of range returns 422"]
+  VAL --> DESC["Gemini describes the frame"]
+  DESC --> LP["Injected as a passage with start_ms equal to end_ms equal to T, live true, placed first"]
+  LF -->|"no"| Q["Chroma query, structurally restricted to the effective scope"]
+  LP --> Q
+  Q --> GATE["Strict-T gate. keep only when end_ms is not null and end_ms is at or before T"]
+  GATE --> SURV["Surviving passages only"]
+  SURV --> REC{"Present-tense or frame question"}
+  REC -->|"yes"| RR["Recency reordering, applied to the gated pool only"]
+  REC -->|"no"| DEC{"Explicit supplemental request"}
+  RR --> DEC
+  DEC -->|"yes"| SUP["Supplemental answer, zero citations, labelled not from the video"]
+  DEC -->|"no"| PR["Grounded prompt built from survivors, with modality per passage"]
+  PR --> LLM["Gemini answers from those passages"]
+  LLM --> REF{"Did the model return the refusal verdict"}
+  REF -->|"yes"| COV{"Gated passages exist but do not cover the question"}
+  COV -->|"yes"| SUP
+  COV -->|"no"| X3["Refusal. mode grounded, grounded false, zero citations"]
+  REF -->|"no"| CV{"Every cited id is in the retrieved set and at least one citation exists"}
+  CV -->|"no"| X3
+  CV -->|"yes"| OK["Answer with validated citations. mode grounded, grounded true"]
+```
+
+*What to take from this: the gate is structural and sits before any reordering,
+any supplemental decision and any model call. Two exits only: a grounded answer
+that carries validated millisecond citations, or a refusal. A live frame passes
+the gate by equality, so the gate itself has no special case.*
+
 ### Ingest path for a video
 
 1. PyAV reads the real duration from the container header.
@@ -87,6 +164,34 @@ Chroma (vector store)   Gemini gemini-3.5-flash-lite (answers)
 5. Embeddings for both modalities land in Chroma.
 6. A `VisualPassReport` records complete / partial / failed / skipped, plus a
    coverage percentage and any warnings.
+
+```mermaid
+flowchart TD
+  U["Upload to POST /courses/{course_id}/ingest"] --> K{"Is the upload a video"}
+  K -->|"no"| DOC["PDF and PPTX via pypdf and python-pptx. Images stored ungated, cited by image_no"]
+  K -->|"yes"| DUR["Duration probe. mvhd or mehd header box, PyAV as fallback"]
+  DUR --> AUD["Audio track to faster-whisper. Segment bounds come from the audio signal itself"]
+  AUD --> REC{"Does the Gemini secondary timeline overshoot the true duration"}
+  REC -->|"beyond tolerance"| REJ["Reject the Gemini timeline entirely and keep the whisper result"]
+  REC -->|"within tolerance"| RESC["Rescale onto the authoritative duration, never extend past it"]
+  RESC --> TC["Bound transcript chunks by the segment end_ms"]
+  REJ --> TC
+  DUR --> FR["Sample frames at a fixed stride with PyAV, seek then decode"]
+  FR --> GVIS["Gemini vision describes each frame batch"]
+  GVIS --> FIDX{"Is the frame index from model JSON a real sampled index"}
+  FIDX -->|"no"| DROP["Drop it and record it in warnings. Never clamped, never reassigned"]
+  FIDX -->|"yes"| TSB["Bounds from frame-index arithmetic. start_ms is the index times the interval"]
+  TC --> EMB["Embed both modalities, one vector per chunk"]
+  TSB --> EMB
+  DOC --> EMB
+  EMB --> CHR["Write to Chroma with the modality recorded per chunk"]
+  CHR --> REP["VisualPassReport states complete, partial, failed or skipped, with coverage percent and warnings"]
+```
+
+*What to take from this: the language model describes, it never places anything
+in time. Audio timestamps come from the ASR signal, visual timestamps come from
+index arithmetic, and the two rejection guards are what keep a hallucinated
+index or an overshooting timeline out of the index.*
 
 ### Demo content, as actually ingested
 
@@ -115,10 +220,63 @@ Chroma (vector store)   Gemini gemini-3.5-flash-lite (answers)
 | 8 | Subject-scoped resources, direct file upload | `[SHIPPED]` | Upload lands in a subject, not an orphan course. |
 | 9 | Session-grant recovery | `[SHIPPED]` | A session whose granted materials changed re-mints on load instead of refusing forever. |
 | 10 | `scope_empty` | `[SHIPPED]` | Separates "your grant does not cover this" from "you have not watched enough", so the UI stops blaming the learner for a stale grant. |
-| 11 | Grounded vs Supplemental answering | `[PLANNED]` | When the lecture has not covered a question, answer from first principles and **label** it as not-from-video with zero citations. Forward-looking anti-spoiler suppression. Teaching-assistant register. In progress, may land today. |
-| 12 | True batched embedding | `[PLANNED]` | Currently uncommitted work in the working tree. See decision D2. |
+| 11 | Grounded vs Supplemental answering | `[SHIPPED]` | When the lecture has not covered a question, answer from first principles and **label** it as not-from-video with zero citations. Forward-looking anti-spoiler suppression. Teaching-assistant register. In progress, may land today. |
+| 12 | Batched embedding | `[SHIPPED]` | Batches the embedding call instead of one request per chunk. See decision D2. |
 | 13 | Delete-resource endpoint | `[PLANNED]` | `purge_resource` exists and removes chunks plus the staged asset, but has no HTTP surface and does not detach from subjects. Needs a course-ownership check and subject detach first. |
 | 14 | Postgres + pgvector | `[PLANNED]` | Sessions are in memory today. |
+
+### How the grounded and supplemental paths diverge
+
+```mermaid
+flowchart TD
+  Q["Learner question"] --> CL{"Explicit supplemental phrasing, and not a present-tense or frame question"}
+  CL -->|"yes"| S0["Supplemental path taken immediately, the grounded attempt is skipped"]
+  CL -->|"no"| G0["Grounded attempt over the already gated passages"]
+  S0 --> S1
+  G0 --> G1{"Is the gated pool empty"}
+  G1 -->|"yes"| G2{"Is the mode allowed to fall back"}
+  G1 -->|"no"| G3{"Did Gemini return the refusal verdict"}
+  G2 -->|"no"| R["Refusal. mode grounded, grounded false, zero citations"]
+  G2 -->|"yes"| S1{"Does the supplemental provider answer"}
+  G3 -->|"yes"| S1
+  G3 -->|"no"| G4["Grounded prompt built from the gated passages, with modality per passage"]
+  S1 -->|"no"| R
+  S1 -->|"yes"| S2["Taught from first principles and labelled not from the video"]
+  G4 --> G5{"Do the citations validate against the retrieved set"}
+  G5 -->|"no"| R
+  G5 -->|"yes"| GA["Grounded answer with millisecond citations. mode grounded, grounded true"]
+  S2 --> S3["Zero citations, and every citation marker is stripped from the text"]
+  S3 --> S4["No retrieval runs here and no filter is widened. The gated set is used only for orientation"]
+```
+
+*What to take from this: supplemental is reachable on exactly two narrow
+triggers, an explicit request or a grounded refusal that found no coverage. A
+citation-validation failure is a grounding defect and never escalates to
+supplemental, because that would launder a broken answer into a plausible one.*
+
+### Anti-spoiler suppression and the anti-over-refusal carve-out
+
+```mermaid
+flowchart TD
+  Q["Result-seeking phrasing, for example what is the final answer, what will happen later"] --> FL["Phrase classifier is_forward_looking_result. Pure regex, no LLM call"]
+  FL --> R{"Is the question a definition or a notation lookup"}
+  R -->|"yes"| FULL["No suppression. Answered in full from the gated passages"]
+  R -->|"no"| S["Suppression clause injected into the grounded prompt"]
+  S --> A["The model is told the lesson has not got to this yet, and is instructed to give the groundwork without stating the conclusion"]
+  A --> B{"Present-tense or frame question, what am I looking at right now"}
+  B -->|"yes"| CL{"Does an outside-help phrase also appear"}
+  CL -->|"yes"| G["Supplemental fallback is refused. The classifier returns false regardless"]
+  CL -->|"no"| G2["Stays on the grounded path"]
+  B -->|"no"| G2
+  G2 --> G3{"Did the learner explicitly ask for outside help"}
+  G3 -->|"yes"| SP["Supplemental answer, zero citations, labelled not from the video"]
+  G3 -->|"no"| GA["Grounded answer from gated passages only"]
+```
+
+*What to take from this: the gate removes future passages, so the remaining
+spoiler risk is the model inferring a conclusion from earlier material. That is
+handled at prompt level, and it is deliberately narrow, because a learner asking
+what a partial derivative is at 0:30 must be answered, not refused.*
 
 ---
 
@@ -144,7 +302,7 @@ Two things we refused to outsource:
 expose a gate we control, and product policy we cannot edit is not a policy.
 
 **Trade-off:** more of our own code to test, in exchange for invariants we can
-actually assert. The 276-test suite is the price.
+actually assert. The 299-test suite is the price.
 
 ### D2. Batching for ingestion cost and latency
 
@@ -153,7 +311,7 @@ actually assert. The 276-test suite is the price.
 Measured: ingesting a 7-minute video took over 7 minutes, dominated by
 embedding. Root cause: `batchEmbedContents` given N texts returns **one pooled
 vector** for the lot, not N vectors. The embedder discovered this and fell
-back to one HTTP call per chunk, roughly 253 sequential calls for an 11-minute
+back to one HTTP call per chunk, roughly 260 sequential calls for an 11-minute
 video. Against the Gemini free tier's 100 requests/min floor, that is a hard
 floor of about 2.5 minutes for embeddings alone.
 
@@ -204,7 +362,7 @@ Cheap correctness beats clever accuracy.
 
 **`[SHIPPED]`**
 
-A 10-minute lecture produces roughly 253 chunks across two modalities. You
+A 10-minute lecture produces roughly 260 chunks across two modalities (the demo video indexed 263: 89 transcript + 174 visual). You
 cannot hand a video to a long-context window; there is no such endpoint, only
 text. You would have to transcribe and caption it first, which is the same work,
 minus the index. On top of that, long-context is more expensive per query and
@@ -303,7 +461,7 @@ All measured, with conditions stated.
 
 | Metric | Value | Condition |
 |---|---|---|
-| Backend tests | **276 pass** | full pytest run, ruff clean |
+| Backend tests | **299 pass** | full pytest run, ruff clean |
 | Frontend types | clean | `tsc --noEmit` |
 | Frontend build | pass | `npm run build` |
 | Contract check | **PASS, 77 assertions** | `npm run contract-check` |
@@ -324,11 +482,11 @@ Stated, not softened.
 
 1. **Over-rigid grounding.** Uncovered questions get refusal-shaped
    non-answers. This is the direct cost of D5 and D6, and it is being fixed
-   with Supplemental answering (feature 11, `[PLANNED]`). Until it lands, the
+   with Supplemental answering (feature 11, `[SHIPPED]`). Until it lands, the
    honest limitation is: the tutor is better at saying "not yet" than at saying
    "here is the idea anyway, and it is not from your lecture".
 2. **Ingest is slow.** >7 minutes for a 7-minute video, dominated by
-   per-chunk embedding. Batched embedding is in progress and uncommitted.
+   embedding. Batched embedding addresses the call count; the wall clock is still bound by the free-tier rate limit.
 3. **Scale is untested.** Two videos. No long-form, no multi-page documents at
    scale, no multi-subject matrix, no load testing.
 4. **Sessions do not persist.** In memory. Postgres + pgvector is planned.
@@ -351,8 +509,8 @@ Ordered by what unblocks the most honest behaviour, not by what is easiest.
 
 | Priority | Item | Tag | Why now |
 |---|---|---|---|
-| 1 | Grounded vs Supplemental answering | `[PLANNED]` | Turns the worst limitation into the product's best feature. Anti-spoiler suppression must land with it. |
-| 2 | True batched embedding | `[PLANNED]` | Unblocks ingest for anything longer than 11 minutes. |
+| 1 | ~~Grounded vs Supplemental answering~~ | `[SHIPPED]` | Turns the worst limitation into the product's best feature. Anti-spoiler suppression must land with it. |
+| 2 | ~~True batched embedding~~ | `[SHIPPED]` | Unblocks ingest for anything longer than 11 minutes. |
 | 3 | Postgres + pgvector | `[PLANNED]` | Sessions and vectors outlive restarts. |
 | 4 | Delete-resource endpoint with subject detach | `[PLANNED]` | Ownership check first, detach second, endpoint last. |
 | 5 | Coverage matrix: long-form video, multi-page PDF, second subject | `[PLANNED]` | Turns "two videos" into evidence. |
@@ -377,6 +535,33 @@ These are product properties. Do not relax one to make a test pass.
 5. **Secrets.** `apps/api/.env` holds Gemini keys and the launch secret. Never
    committed, never echoed, never read into a brief.
 6. **Dev launch settings are demo-only.** See limitation 6 above.
+
+```mermaid
+flowchart TD
+  IN["Chroma candidate pool, already restricted to effective_resource_scope"] --> Q{"Is the source type time-gated"}
+  Q -->|"no, PDF, PPTX and image chunks"| KEEP["Keep. The playhead does not apply to a document page"]
+  Q -->|"yes"| E{"Is end_ms null or the exclude sentinel"}
+  E -->|"yes"| DROP1["DROP. An unknown end_ms is excluded, never treated as a wildcard"]
+  E -->|"no"| C{"Is end_ms at or before T"}
+  NOTE["start_ms is never part of the comparison. Only end_ms is"] -.-> C
+  C -->|"no"| DROP2["DROP. The passage ends after the playhead"]
+  C -->|"yes"| KEEP2["KEEP. This is the only thing that lets a passage through"]
+  KEEP --> OUT["Gated pool"]
+  KEEP2 --> OUT
+  OUT --> AS{"assert_no_leakage re-checks every returned passage"}
+  AS -->|"leak found"| RAISE["Raise immediately. Loud on a leak, silent on success, never repaired"]
+  AS -->|"clean"| RR{"prefer_recent, set by a present-tense or frame question"}
+  RR -->|"yes"| RE["Re-rank the already gated pool toward T"]
+  RR -->|"no"| KO["Keep the Chroma order"]
+  RE --> PROMPT["The prompt sees only these passages"]
+  KO --> PROMPT
+  PROMPT --> SUM["Modes summarize and quiz apply a second post-retrieval pass with the identical end_ms semantics"]
+```
+
+*What to take from this: the comparison is end_ms at or before T and nothing
+else. A null end_ms excludes rather than admitting the chunk, and recency
+reordering happens strictly after the gate so it can only ever reorder survivors,
+never reintroduce a passage that ended after the playhead.*
 
 ---
 
@@ -410,12 +595,12 @@ Do not trust it. Run these.
 
 | Claim | Command |
 |---|---|
-| 276 tests, ruff clean | `pytest` in `apps/api` |
+| 299 tests, ruff clean | `pytest` in `apps/api` |
 | Frontend types and build | `tsc --noEmit`, `npm run build` in `apps/web` |
 | Contract check, 77 assertions | `npm run contract-check` in `apps/web` |
 | Strict-T refusal at T=2s | live probe, section 6 |
 | Visual coverage 100% | the `VisualPassReport` on the ingest job |
-| Batched embedding | **not verifiable yet**, uncommitted |
+| Batched embedding | one HTTP call per batch rather than per chunk; see decision D2 |
 
 If a row in this document disagrees with a command, the command wins and this
 document is wrong.
