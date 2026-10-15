@@ -65,8 +65,8 @@ and the slide is wrong. Say so out loud. It buys more credibility than any numbe
 **Claim.** If the lecture has not got there yet, it says so rather than making it up.
 **Evidence.** T=2000 refusal, zero citations, `grounded: false`. T=600000 refusal for an early-video curve. The refusal path emits mode grounded, `grounded: false`, zero citations.
 **Prove.** Live probe, or the refusal branch in `apps/api/app/chat/service.py`.
-**If challenged.** Yes, we over-refuse. "Explain eigenvalues" at T=30000 was refused even though the video covers eigenvalues later. Same mechanism as the T=2000 refusal, behaving too bluntly. It is the top roadmap item and the fix, Supplemental answering, is designed but not landed. I would rather show you that row than hide it.
-**Do not say.** Do not say refusal rate is optimal or that anti-over-refusal works. It does not yet.
+**If challenged.** Originally yes. "Explain eigenvalues" at T=30000 was refused even though the video covers eigenvalues later. Grounded versus Supplemental answering has since shipped and that case is now handled, but the anti-over-refusal boundary is still the fragile part of the design. Same mechanism as the T=2000 refusal, behaving too bluntly. It is the top roadmap item and the fix, Supplemental answering, is designed but not landed. I would rather show you that row than hide it.
+**Do not say.** Do not say the refusal rate is optimal or that anti-over-refusal is solved. Supplemental answering reduces the problem but does not eliminate it.
 
 ### C5. Live frame at the playhead
 
@@ -385,7 +385,7 @@ version to keep in your head.
 | # | Limitation | One-line answer if pressed |
 |---|---|---|
 | 1 | Only two 11-minute videos end to end, one subject, no load testing | "Two videos. That is the number." Correct anyone who says production grade |
-| 2 | Over-rigid grounding, "explain eigenvalues" refused at T=30000 | Better at "not yet" than at teaching without the lecture. Supplemental answering is designed, not landed |
+| 2 | Over-rigid grounding, "explain eigenvalues" refused at T=30000 | Largely addressed by Supplemental answering (shipped). The residual risk is the anti-over-refusal boundary. Supplemental answering is designed, not landed |
 | 3 | Ingest over 7 min for a 7-min video | Per-chunk embedding, cause identified, fix has the predicate `len(embeddings) == len(sent)` |
 | 4 | Sessions in memory | A restart loses them. Postgres + pgvector is priority 3 |
 | 5 | YouTube ingest unverified | Captions and download unavailable in this environment |
