@@ -221,6 +221,80 @@ def is_frame_question(text: str) -> bool:
     return bool(_FRAME_QUESTION_RE.search(text))
 
 
+#: Explicit opt-in phrases for the SUPPLEMENTAL mode ("answer me from general
+#: knowledge, this is not in the video").
+#:
+#: Deliberately an EXPLICIT, learner-authored request rather than a heuristic.
+#: An automatic guess would fire on ordinary questions the covered material
+#: happens to answer thinly, and a wrong guess silently converts a grounded
+#: answer into an uncited one -- a worse failure than a refusal, because it
+#: removes the learner's ability to check the claim. When the learner asks for
+#: it, the provenance change is exactly what they asked for, and the answer is
+#: visibly labelled as not coming from the lesson.
+#:
+#: Every pattern is a phrase a learner would actually type. No LLM call, same
+#: contract as :func:`is_recency_seeking`.
+SUPPLEMENTAL_MARKERS: tuple[str, ...] = (
+    r"\bbeyond the (?:video|lecture|lesson|slides?|material)\b",
+    r"\boutside (?:the|of) (?:the )?(?:video|lecture|lesson|slides?|syllabus|course)\b",
+    r"\bfrom general knowledge\b",
+    r"\bgeneral knowledge (?:only|anyway|instead)\b",
+    (
+        r"\bif (?:it|the video|the lecture) "
+        r"(?:is |was |does not |doesn'?t |has not |hasn'?t )?"
+        r"(?:not |cover|covered|mention|explain|reach)"
+    ),
+    (
+        r"\b(?:even |please )?(?:answer|explain|tell me|teach me) "
+        r"(?:it |this |that )?(?:anyway|regardless|without the video|"
+        r"without the lecture)\b"
+    ),
+    r"\bnot (?:in|from) the (?:video|lecture|lesson)\b",
+    r"\bwhat does (?:the )?(?:textbook|reference book|book|notes|chapter) say\b",
+    r"\bteach me (?:this|it) from scratch\b",
+)
+
+_SUPPLEMENTAL_RE = re.compile("|".join(SUPPLEMENTAL_MARKERS), re.IGNORECASE)
+
+#: Questions that must NEVER fall back to general knowledge, however thin the
+#: evidence is: they ask what the material itself currently says or shows, and
+#: "not from the video" is not an answer to "what am I looking at right now?".
+#:
+#: Stated as an explicit list rather than derived from
+#: :func:`is_recency_seeking` alone, because a present-tense question can also
+#: contain an outside-help phrase ("what is on screen right now, and explain it
+#: from general knowledge") and the frame half of that still has no
+#: general-knowledge answer.
+_SUPPLEMENTAL_NEVER_MARKERS: tuple[str, ...] = FRAME_QUESTION_MARKERS + (
+    r"\bhappening (?:now|at the moment)\b",
+    r"\bmost recent(?:ly)?\b",
+    r"\bjust played\b",
+)
+
+_SUPPLEMENTAL_NEVER_RE = re.compile(
+    "|".join(_SUPPLEMENTAL_NEVER_MARKERS), re.IGNORECASE
+)
+
+
+def is_supplemental_request(text: str) -> bool:
+    """True when the learner EXPLICITLY asked to go beyond the lesson.
+
+    Pure phrase matching -- no LLM call, no state, no effect on retrieval, no
+    effect on the gate.
+
+    Returns ``False`` for a present-tense / frame question even when an
+    outside-help phrase is also present, because "what am I looking at right
+    now?" has no general-knowledge answer and must refuse rather than invent
+    one. This is the anti-spoiler boundary in classifier form: the fallback
+    never becomes a way to narrate what the video is about to show.
+    """
+    if not text:
+        return False
+    if _SUPPLEMENTAL_NEVER_RE.search(text):
+        return False
+    return bool(_SUPPLEMENTAL_RE.search(text))
+
+
 def is_recency_seeking(text: str) -> bool:
     """True when the question is about the playhead, not the course.
 

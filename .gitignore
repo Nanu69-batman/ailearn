@@ -32,3 +32,5 @@ dist/
 # server logs (dev uvicorn / next output artifacts)
 *.log
 *.tsbuildinfo
+*.out
+*.err

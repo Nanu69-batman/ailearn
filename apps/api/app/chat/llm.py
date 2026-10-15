@@ -11,6 +11,14 @@ from app.chat.prompts import REFUSAL_TEXT, extract_cited_ids
 
 log = logging.getLogger(__name__)
 
+#: Stable first line of ``prompts.SUPPLEMENTAL_SYSTEM``. Providers use it to
+#: recognise a supplemental turn without importing the whole prompt: the
+#: supplemental prompt is the ONLY place this string appears, so it is an
+#: unambiguous marker rather than a heuristic.
+SUPPLEMENTAL_SYSTEM_MARKER = (
+    "You are a teaching assistant helping a learner with a course they are part"
+)
+
 
 @dataclass
 class LLMResult:
@@ -50,6 +58,13 @@ class DeterministicStubLLM:
         self.last_mode = mode
         self.last_passage_ids = [p.chunk_id for p in passages]
         self.calls += 1
+        # The supplemental prompt is identified by its system prompt rather than
+        # by the provider knowing about modes. This stub has no general
+        # knowledge to offer and echoing a passage would manufacture exactly the
+        # un-cited-from-the-video answer the mode forbids, so it declines and the
+        # service falls back to the ordinary grounded refusal.
+        if SUPPLEMENTAL_SYSTEM_MARKER in system:
+            return LLMResult(text=REFUSAL_TEXT, cited_ids=[])
         if not passages:
             return LLMResult(text=REFUSAL_TEXT, cited_ids=[])
         if mode == "quiz":

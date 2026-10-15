@@ -137,6 +137,18 @@ class ChatResponse(BaseModel):
     #: the document's own page/slide text and says so. Absent means "no frame
     #: question", so every pre-existing response shape is unchanged.
     live_frame: Literal["live", "document"] | None = None
+    #: Provenance of this answer. ``"grounded"`` (the default, and what every
+    #: pre-existing response shape reads as) means the answer was built from
+    #: retrieved passages at or before the playhead and validated against them.
+    #: ``"supplemental"`` means the lesson had not covered the question, so the
+    #: assistant taught it from general knowledge instead -- visibly labelled in
+    #: the answer text and carrying ZERO citations, because nothing in it came
+    #: from the video.
+    mode: Literal["grounded", "supplemental"] = "grounded"
+    #: Convenience mirror of ``mode == "grounded"`` for clients that branch on a
+    #: boolean. A refusal is NOT grounded (``False``) -- nothing was served from
+    #: the lesson -- so this is only ``True`` when a cited answer was returned.
+    grounded: bool = True
 
 
 class MessageOut(BaseModel):

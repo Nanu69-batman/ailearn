@@ -10,6 +10,7 @@ from app.chat.prompts import (
     REFUSAL_TEXT,
     SCOPE_REFUSAL_TEXT,
     build_grounded_prompt,
+    build_supplemental_prompt,
     extract_cited_ids,
     rewrite_query,
     strip_citation_markers,
@@ -17,12 +18,23 @@ from app.chat.prompts import (
 from app.chat.schemas import ChatResponse, Citation, normalize_modality
 from app.chat.sessions import InMemoryMessageStore, InMemorySessionStore
 from app.ingestion.liveframe import assert_live_frame_at, live_frame_passage
-from app.retrieval.recency import is_frame_question, is_recency_seeking
+from app.retrieval.recency import (
+    is_frame_question,
+    is_recency_seeking,
+    is_supplemental_request,
+)
 
 log = logging.getLogger(__name__)
 
 STRICT_T_MODES = frozenset({"summarize", "quiz"})
 VIDEO_SOURCE_TYPES = frozenset({"video", "video_transcript"})
+
+#: Modes that may never fall back to un-grounded general knowledge.
+#:
+#: ``summarize`` and ``quiz`` are *about the covered material itself*: there is
+#: nothing for "general knowledge" to contribute to a summary of what has been
+#: watched, so a fallback there would be answering a different question.
+SUPPLEMENTAL_DISABLED_MODES = frozenset({"summarize", "quiz"})
 
 
 class SessionNotFoundError(LookupError):
@@ -186,7 +198,12 @@ class ChatService:
             )
             self._persist(session_id, message, SCOPE_REFUSAL_TEXT, [])
             return ChatResponse(
-                answer=SCOPE_REFUSAL_TEXT, citations=[], refused=True, scope_empty=True
+                answer=SCOPE_REFUSAL_TEXT,
+                citations=[],
+                refused=True,
+                scope_empty=True,
+                mode="grounded",
+                grounded=False,
             )
 
         history = self._messages.user_texts(session_id, limit=5)
@@ -228,12 +245,66 @@ class ChatService:
             passages = [live_passage, *passages]
 
         prefix = f"{no_frame_note}\n\n" if no_frame_note else ""
+        state = "live" if live_passage is not None else ("document" if no_frame_note else None)
+
+        # --- Mode selection (see prompts.SYSTEM_BASE for the register) --------
+        #
+        # GROUNDED is the default and the product promise. SUPPLEMENTAL happens
+        # on exactly two triggers, both narrow:
+        #
+        #   1. the learner EXPLICITLY asked to go beyond the lesson
+        #      (``is_supplemental_request``); the grounded attempt is skipped
+        #      entirely, because the answer they asked for is by definition not
+        #      the one in the video.
+        #   2. the GROUNDED attempt returned the refusal verdict -- the model
+        #      read the passages and concluded they do not cover the question.
+        #      This is the "the video has not got here yet" signal.
+        #
+        # What is deliberately NOT a trigger: a citation-validation failure
+        # (unknown or missing id). That is a grounding *defect*, not evidence of
+        # an uncovered question, and answering it with un-cited general
+        # knowledge would launder a broken answer into a plausible one. It still
+        # refuses.
+        #
+        # Neither trigger touches retrieval. Supplemental mode adds NO passages
+        # and relaxes NO filter; it produces ZERO citations instead.
+        mode_allows_supplemental = mode not in SUPPLEMENTAL_DISABLED_MODES
+        explicit_supplemental = mode_allows_supplemental and is_supplemental_request(message)
 
         if not passages:
+            if mode_allows_supplemental and not (prefer_recent or is_frame_question(message)):
+                resp = await self._supplemental_answer(
+                    session_id=session_id,
+                    message=message,
+                    passages=[],
+                    mode=mode,
+                    history=history,
+                    prefix=prefix,
+                    state=state,
+                )
+                if resp is not None:
+                    return resp
             self._persist(session_id, message, prefix + REFUSAL_TEXT, [])
             return ChatResponse(
-                answer=prefix + REFUSAL_TEXT, citations=[], refused=True
+                answer=prefix + REFUSAL_TEXT,
+                citations=[],
+                refused=True,
+                mode="grounded",
+                grounded=False,
             )
+
+        if explicit_supplemental:
+            resp = await self._supplemental_answer(
+                session_id=session_id,
+                message=message,
+                passages=passages,
+                mode=mode,
+                history=history,
+                prefix=prefix,
+                state=state,
+            )
+            if resp is not None:
+                return resp
 
         system, user_prompt = build_grounded_prompt(
             rewritten, passages, mode=mode, history=history
@@ -242,17 +313,32 @@ class ChatService:
             system=system, user_prompt=user_prompt, passages=passages, mode=mode
         )
 
-        state = "live" if live_passage is not None else ("document" if no_frame_note else None)
-
         def refuse() -> ChatResponse:
             text = prefix + REFUSAL_TEXT
             self._persist(session_id, message, text, [])
             return ChatResponse(
-                answer=text, citations=[], refused=True, live_frame=state
+                answer=text,
+                citations=[],
+                refused=True,
+                live_frame=state,
+                mode="grounded",
+                grounded=False,
             )
 
         # A refusal answer carries no citations by design.
         if result.text == REFUSAL_TEXT:
+            if mode_allows_supplemental and not (prefer_recent or is_frame_question(message)):
+                resp = await self._supplemental_answer(
+                    session_id=session_id,
+                    message=message,
+                    passages=passages,
+                    mode=mode,
+                    history=history,
+                    prefix=prefix,
+                    state=state,
+                )
+                if resp is not None:
+                    return resp
             return refuse()
 
         cited_ids = list(result.cited_ids) or extract_cited_ids(result.text)
@@ -302,6 +388,9 @@ class ChatService:
             )
             return refuse()
 
+        # A citation-validation failure above is a grounding DEFECT, not a
+        # "not covered yet" signal, so it never escalates to supplemental.
+
         by_id = {p.chunk_id: p for p in passages}
         # Validation above already ran against every distinct cited id.
         # Every validated citation is surfaced individually, in cited order:
@@ -314,7 +403,68 @@ class ChatService:
         answer = prefix + strip_citation_markers(result.text)
         self._persist(session_id, message, answer, [c.model_dump() for c in citations])
         return ChatResponse(
-            answer=answer, citations=citations, refused=False, live_frame=state
+            answer=answer,
+            citations=citations,
+            refused=False,
+            live_frame=state,
+            mode="grounded",
+            grounded=True,
+        )
+
+    async def _supplemental_answer(
+        self,
+        *,
+        session_id: str,
+        message: str,
+        passages: Sequence,
+        mode: str,
+        history: Sequence[str],
+        prefix: str,
+        state: str | None,
+    ) -> ChatResponse | None:
+        """Teach an uncovered question from first principles, labelled, uncited.
+
+        Returns ``None`` when the provider declines (or is unavailable), so the
+        caller falls back to the ordinary grounded refusal rather than emitting
+        an empty answer. A refusal is always a better failure than a blank.
+
+        Two invariants hold here by construction, not by prompt instruction
+        alone:
+
+        * **Zero citations.** The answer is built with ``citations=[]`` and every
+          ``[chunk_id=...]`` marker is stripped from the text, so a model that
+          ignores the instruction cannot smuggle a video citation into an answer
+          that is explicitly labelled as not coming from the video.
+        * **The gate is untouched.** ``passages`` are the ALREADY-GATED covered
+          set, used only for orientation ("the lesson has got this far"). No
+          retrieval runs here, no filter is widened, and nothing after T can
+          appear in the prompt even to be summarised.
+        """
+        system, user_prompt = build_supplemental_prompt(
+            message, passages, mode=mode, history=history
+        )
+        # ``passages`` is passed through for provider parity only; no provider
+        # in this repo reads it for content, and the prompt carries everything.
+        result = await self._llm.complete(
+            system=system, user_prompt=user_prompt, passages=list(passages), mode=mode
+        )
+        text = (result.text or "").strip()
+        if not text or text == REFUSAL_TEXT:
+            log.info("supplemental declined; falling back to the grounded refusal")
+            return None
+
+        # Strip markers unconditionally: this answer claims no video provenance,
+        # so a marker would be false however valid the id is.
+        answer = prefix + strip_citation_markers(text)
+        self._persist(session_id, message, answer, [])
+        log.info("supplemental answer served (zero citations, mode=supplemental)")
+        return ChatResponse(
+            answer=answer,
+            citations=[],
+            refused=False,
+            live_frame=state,
+            mode="supplemental",
+            grounded=False,
         )
 
     def _persist(
