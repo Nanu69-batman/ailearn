@@ -271,6 +271,9 @@ export interface ChatResponse {
   live_frame?: LiveFrameState | null;
   /** Read defensively; older backends omit it. See scope_empty in ChatPanel. */
   scope_empty?: boolean;
+  /** True when the question is past the processed part of a stream-mode video. */
+  processing_pending?: boolean;
+  processed_through_ms?: number | null;
 }
 
 export type LiveFrameState = "live" | "document";
@@ -581,7 +584,15 @@ export interface IngestJob {
   error?: string | null;
   /** Present once an image ingest completes (1-based). */
   image_no?: number | null;
+  mode?: "full" | "stream";
+  stage?: string | null;
+  processed_through_ms?: number;
+  duration_ms?: number;
+  windows_done?: number;
+  windows_total?: number;
 }
+
+export type IngestMode = "full" | "stream";
 
 export type ResourceProvider = "youtube" | "file";
 
@@ -592,6 +603,8 @@ export interface CourseResource {
   youtube_id?: string | null;
   title?: string | null;
   status?: string | null;
+  /** Present for partially processed videos (status "partial"). */
+  processed_through_ms?: number | null;
   /** Streamed by the API for this exact resource; null when no file on disk. */
   asset_name?: string | null;
 }
@@ -636,6 +649,7 @@ export async function ingestFile(
   courseId: string,
   file: File,
   subjectId?: string,
+  mode?: IngestMode,
 ): Promise<IngestFileResponse> {
   const base = baseUrl();
   if (!base) {
@@ -644,6 +658,7 @@ export async function ingestFile(
   const form = new FormData();
   form.append("file", file, file.name);
   if (subjectId) form.append("subject_id", subjectId);
+  if (mode) form.append("mode", mode);
 
   const requestId = newRequestId();
   let res: Response;
@@ -668,6 +683,25 @@ export async function ingestFile(
 
 export function getIngestJob(jobId: string): Promise<IngestJob> {
   return apiFetch<IngestJob>(`/ingestion/jobs/${encodeURIComponent(jobId)}`);
+}
+
+export interface PositionResponse {
+  status: "queued" | "running" | "idle" | "ready";
+  job_id?: string;
+  processed_through_ms: number;
+  duration_ms: number;
+}
+
+/** POST /courses/{cid}/resources/{rid}/position; keeps processing ahead of the student. */
+export function reportPosition(
+  courseId: string,
+  resourceId: string,
+  tMs: number,
+): Promise<PositionResponse> {
+  return apiFetch<PositionResponse>(
+    `/courses/${encodeURIComponent(courseId)}/resources/${encodeURIComponent(resourceId)}/position`,
+    { method: "POST", body: JSON.stringify({ t_ms: Math.max(0, Math.floor(tMs)) }) },
+  );
 }
 
 export function getCourseResources(

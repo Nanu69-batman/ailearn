@@ -5,6 +5,8 @@ import {
   formatIngestError,
   getIngestJob,
   ingestFile,
+  type IngestJob,
+  type IngestMode,
 } from "../lib/api";
 
 export interface IngestedFile {
@@ -34,6 +36,29 @@ const POLL_INTERVAL_MS = 2000;
  * not to declare failure early.
  */
 const POLL_TIMEOUT_MS = 30 * 60 * 1000;
+
+function formatMs(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
+}
+
+/** Progress from processed_through_ms/duration_ms, else windows, else null. */
+function jobProgress(j: IngestJob | null): { pct: number; text: string } | null {
+  if (!j) return null;
+  const win =
+    j.windows_total && j.windows_total > 0
+      ? `${j.windows_done ?? 0} of ${j.windows_total} windows, `
+      : "";
+  if (j.duration_ms && j.duration_ms > 0 && j.processed_through_ms !== undefined) {
+    const pct = Math.min(100, Math.round((j.processed_through_ms / j.duration_ms) * 100));
+    return { pct, text: `${win}${pct}% (${formatMs(j.processed_through_ms)} of ${formatMs(j.duration_ms)})` };
+  }
+  if (j.windows_total && j.windows_total > 0) {
+    const pct = Math.min(100, Math.round(((j.windows_done ?? 0) / j.windows_total) * 100));
+    return { pct, text: `${win}${pct}%` };
+  }
+  return null;
+}
 
 const ACCEPT = "video/*,.pdf,.pptx,.png,.jpg,.jpeg,.webp";
 
@@ -103,6 +128,9 @@ export default function FileIngestForm({
   const [jobError, setJobError] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<string | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
+  const [mode, setMode] = useState<IngestMode>("full");
+  const [jobInfo, setJobInfo] = useState<IngestJob | null>(null);
+  const [partialNote, setPartialNote] = useState(false);
   const cancelRef = useRef(false);
   const timersRef = useRef<number[]>([]);
 
@@ -140,9 +168,11 @@ export default function FileIngestForm({
         const job = await getIngestJob(jobId);
         if (cancelRef.current) return;
         setJobStatus(job.status);
+        setJobInfo(job);
         if (job.status === "done") {
           clearTimers();
           setPhase("idle");
+          setPartialNote(job.mode === "stream");
           onReady({
             resourceId: job.resource_id,
             fileName,
@@ -187,11 +217,18 @@ export default function FileIngestForm({
     setClientError(null);
     setJobError(null);
     setJobStatus(null);
+    setJobInfo(null);
+    setPartialNote(false);
     setElapsedMs(0);
     cancelRef.current = false;
     setPhase("uploading");
     try {
-      const res = await ingestFile(courseId, file, subjectId);
+      const res = await ingestFile(
+        courseId,
+        file,
+        subjectId,
+        kind === "video" ? mode : undefined,
+      );
       if (cancelRef.current) return;
       if (!res.job_id) {
         setPhase("error");
@@ -206,6 +243,8 @@ export default function FileIngestForm({
     }
   }
 
+  const isVideo = file !== null && kindOf(file) === "video";
+  const progress = jobProgress(jobInfo);
   const busy = phase === "uploading" || phase === "polling";
 
   return (
@@ -247,6 +286,20 @@ export default function FileIngestForm({
         </button>
       </form>
 
+      {isVideo && (
+        <fieldset className="mt-3 flex flex-col gap-1 text-sm text-gray-700" disabled={busy || disabled}>
+          <legend className="sr-only">Video processing mode</legend>
+          <label className="flex items-center gap-2">
+            <input type="radio" name="ingest-mode" checked={mode === "full"} onChange={() => setMode("full")} />
+            Process everything now
+          </label>
+          <label className="flex items-center gap-2">
+            <input type="radio" name="ingest-mode" checked={mode === "stream"} onChange={() => setMode("stream")} />
+            Stream (process as you watch)
+          </label>
+        </fieldset>
+      )}
+
       {clientError && (
         <div id="file-upload-error" className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-600" role="alert">
           {clientError}
@@ -267,6 +320,12 @@ export default function FileIngestForm({
               elapsed — {processingNote(elapsedMs)}
             </span>
           )}
+          {phase === "polling" && progress && (
+            <span className="flex items-center gap-2">
+              <progress className="h-2 w-32" value={progress.pct} max={100} />
+              {progress.text}
+            </span>
+          )}
           <button
             type="button"
             className="ml-auto rounded-lg border border-gray-200 bg-white px-3 py-1 text-xs text-gray-500 hover:bg-gray-50"
@@ -275,6 +334,12 @@ export default function FileIngestForm({
             Cancel
           </button>
         </div>
+      )}
+
+      {partialNote && phase === "idle" && (
+        <p className="mt-3 text-sm text-gray-600" role="status">
+          First part ready. The rest processes as you watch.
+        </p>
       )}
 
       {phase === "error" && jobError && (

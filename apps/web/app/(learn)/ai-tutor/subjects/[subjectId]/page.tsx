@@ -249,7 +249,11 @@ export default function SubjectPage() {
                   </div>
                   <div className="flex items-center justify-between">
                     {r.status ? (
-                      <span className={statusStyle(r.status)}>{r.status}</span>
+                      <span className={statusStyle(r.status)}>
+                        {r.status === "partial" && typeof r.processed_through_ms === "number"
+                          ? `Partial: processed up to ${Math.floor(r.processed_through_ms / 60000)}:${String(Math.floor(r.processed_through_ms / 1000) % 60).padStart(2, "0")}`
+                          : r.status}
+                      </span>
                     ) : (
                       <span />
                     )}

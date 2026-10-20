@@ -10,7 +10,12 @@ import YouTubePlayer, {
 import ChatPanel from "@/components/ChatPanel";
 import { useLearnSession } from "@/components/LearnSessionProvider";
 import { useCourseResources } from "@/components/useCourseResources";
-import { isApiConfigured, getSubjectResources, type LiveFrameCapture } from "@/lib/api";
+import {
+  isApiConfigured,
+  getSubjectResources,
+  reportPosition,
+  type LiveFrameCapture,
+} from "@/lib/api";
 import {
   CHAT_LAYOUT_OPTIONS,
   SAMPLE_CLIP_ID,
@@ -45,7 +50,7 @@ export default function ContentPage() {
   const subjectId = firstParam(params.subjectId);
   const resourceId = firstParam(params.resourceId) ?? "";
 
-  const { session, offline, reset } = useLearnSession();
+  const { session, offline, reset, subject } = useLearnSession();
   const apiLive = isApiConfigured() && !offline;
   const { resources, state: resourcesState, error: resourcesError } =
     useCourseResources({
@@ -196,6 +201,42 @@ export default function ContentPage() {
   }, []);
 
   const activeResourceId = selected ? selected.resourceId : null;
+
+  // Position heartbeat: tells the backend where a stream-mode video is being
+  // watched so later windows are processed ahead. Throttled to ~10 s while
+  // playing, immediate on seek, stopped once the server says "ready".
+  // Errors are swallowed; the real course id comes from the subject record.
+  const hbCourseId = subject?.course_id ?? null;
+  const hbResourceId = selected?.kind === "file" ? selected.resourceId : null;
+  const hbRes = resources.find((r) => r.id === hbResourceId);
+  const hbEligible = Boolean(hbRes) && (!hbRes?.status || hbRes.status === "partial");
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el || !hbResourceId || !hbCourseId || !apiLive || !hbEligible) return;
+    let done = false;
+    let last = 0;
+    const send = (): void => {
+      if (done) return;
+      last = Date.now();
+      reportPosition(hbCourseId, hbResourceId, Math.floor(el.currentTime * 1000))
+        .then((r) => {
+          if (r.status === "ready") done = true;
+        })
+        .catch(() => undefined);
+    };
+    const onTime = (): void => {
+      if (!el.paused && Date.now() - last >= 10_000) send();
+    };
+    el.addEventListener("timeupdate", onTime);
+    el.addEventListener("play", send);
+    el.addEventListener("seeked", send);
+    return () => {
+      done = true;
+      el.removeEventListener("timeupdate", onTime);
+      el.removeEventListener("play", send);
+      el.removeEventListener("seeked", send);
+    };
+  }, [hbResourceId, hbCourseId, apiLive, hbEligible]);
 
   if (!session) return null;
 

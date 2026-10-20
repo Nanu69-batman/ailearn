@@ -57,6 +57,11 @@ function isFatalSessionError(err: unknown): boolean {
   return isSessionExpiredError(err) || isSessionGoneError(err);
 }
 
+function fmtMs(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
+}
+
 export default function ChatPanel({
   sessionId,
   sessionToken,
@@ -211,13 +216,20 @@ export default function ChatPanel({
       // that is already honest and correct, so prepending "watched content yet"
       // would contradict it. Only low-evidence refusals get that prefix.
       const scopeEmpty = (res as { scope_empty?: boolean }).scope_empty === true;
+      const pending = res.processing_pending === true;
+      const pendingNote =
+        pending && typeof res.processed_through_ms === "number"
+          ? `\n\nThis part of the video is still being processed (ready up to ${fmtMs(res.processed_through_ms)}). Try again in a minute.`
+          : pending
+            ? "\n\nThis part of the video is still being processed. Try again in a minute."
+            : "";
       const assistantMsg: ChatMessage = {
         id: newId(),
         role: "assistant",
         content:
-          res.refused && !scopeEmpty
+          res.refused && !scopeEmpty && !pending
             ? `I can't answer from watched content yet.\n\n${res.answer}`
-            : res.answer,
+            : `${res.answer}${pendingNote}`,
         citations: res.citations,
         created_at: new Date().toISOString(),
       };
