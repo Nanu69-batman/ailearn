@@ -382,12 +382,36 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
-export function createLmsSession(
+/**
+ * Ask this app's own server (app/api/launch/route.ts, the demo LMS stand-in)
+ * to sign the launch. 404 means no secret is configured (local dev): send the
+ * launch unsigned, which the API accepts only with its dev secret.
+ */
+async function signLaunch(req: LmsSessionRequest): Promise<LmsSessionRequest> {
+  let res: Response;
+  try {
+    res = await fetch("/api/launch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
+    });
+  } catch {
+    return req;
+  }
+  if (res.status === 404) return req;
+  if (!res.ok) {
+    throw new ApiError(res.status, `Launch signing failed (${res.status})`, "");
+  }
+  return (await res.json()) as LmsSessionRequest;
+}
+
+export async function createLmsSession(
   req: LmsSessionRequest,
 ): Promise<LmsSessionResponse> {
+  const launch = await signLaunch(req);
   return apiFetch<LmsSessionResponse>("/lms/session", {
     method: "POST",
-    body: JSON.stringify(req),
+    body: JSON.stringify(launch),
   });
 }
 
