@@ -337,6 +337,48 @@ async def list_resources(course_id: str) -> dict:
     return {"resources": resources}
 
 
+@router.delete("/courses/{course_id}/resources/{resource_id}")
+async def delete_resource(course_id: str, resource_id: str) -> dict:
+    """Delete one resource: detach from every subject, then purge it.
+
+    The course in the path must own the resource; otherwise 404 and nothing is
+    touched. Subjects have no reverse index, so every subject is scanned.
+    Detach runs before purge so no subject is left pointing at a deleted id.
+    """
+    # Local imports: purge imports resolve_asset from this module.
+    from app.ingestion.purge import purge_resource
+    from app.subjects.store import resource_exists, subject_store
+
+    if not _SAFE_RESOURCE_ID.fullmatch(resource_id) or not resource_exists(
+        resource_id, course_id
+    ):
+        raise HTTPException(
+            status_code=404,
+            detail=f"unknown resource {resource_id} in course {course_id}",
+        )
+
+    detached_from: list[str] = []
+    for subject in subject_store.list_all():
+        if resource_id in subject.resource_ids:
+            subject_store.detach_resource(subject.id, resource_id)
+            detached_from.append(subject.id)
+
+    try:
+        report = purge_resource(resource_id)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"chunks removed but staged asset for {resource_id} could not be deleted",
+        ) from exc
+
+    return {
+        "resource_id": resource_id,
+        "deleted": True,
+        "detached_from": detached_from,
+        "asset_removed": bool(report["asset_removed"]),
+    }
+
+
 @router.get("/resources/{resource_id}/media")
 async def stream_media(resource_id: str) -> FileResponse:
     """Stream a resource's stored asset for the player's per-resource URL."""
