@@ -29,8 +29,12 @@ flows through the same strict-T gate as audio.
 
 from __future__ import annotations
 
+import io
 import logging
+import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -77,10 +81,65 @@ DESCRIBE_BACKOFF_CAP_S = backoff_mod.DEFAULT_BACKOFF_CAP_S
 #: failure this module exists to prevent -- so it is retried, then reported.
 DESCRIBE_EMPTY_RETRIES = 2
 
-#: Substrings that mark an exception as worth retrying rather than as a
-#: permanent failure. Matched against ``str(exc)`` because every SDK error
-#: type differs; the numeric codes (429/500/503) and the Gemini status strings
-#: are both in there deliberately.
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ[name])
+    except (KeyError, ValueError):
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ[name])
+    except (KeyError, ValueError):
+        return default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off", ""}
+
+
+#: Worker threads running describe batches. Call STARTS are still spaced by
+#: :data:`DESCRIBE_MIN_INTERVAL_S` across all workers, and a retryable failure
+#: on any worker pauses all of them (shared not-before), so this overlaps
+#: latency without raising the request rate. Env: ``VISION_CONCURRENCY``.
+VISION_CONCURRENCY = max(1, _env_int("VISION_CONCURRENCY", 3))
+
+#: Skip frames that look the same as the last KEPT frame. Env: ``VISUAL_DEDUPE``.
+DEDUPE_ENABLED = _env_bool("VISUAL_DEDUPE", True)
+
+#: Near-duplicate test: frames are reduced to 64x64 grayscale and split into an
+#: 8x8 grid; a frame is "changed" if ANY cell's mean absolute pixel difference
+#: (0-255) from the last kept frame exceeds this. Per-cell (not whole-image) so
+#: a small localised change -- one new line on a board -- still counts.
+#: TRADEOFF: the threshold is deliberately low (measured on a real lecture: static-frame noise 0.1-0.4, genuine incremental board changes 1.7-5.2), but
+#: a change smaller than it (a single faint character, a cursor move) is merged
+#: into the previous frame's description rather than described separately. The
+#: forced keep below bounds how long such a change can go unseen.
+#: Env: ``VISUAL_DEDUPE_CELL_THRESHOLD``.
+DEDUPE_CELL_THRESHOLD = _env_float("VISUAL_DEDUPE_CELL_THRESHOLD", 1.0)
+
+#: Safety net: at least every Nth sampled frame since the last kept one is kept
+#: regardless of similarity (5 -> at most 4 skipped, i.e. 20 s at a 4 s
+#: interval). Env: ``VISUAL_DEDUPE_FORCE_KEEP_EVERY``.
+DEDUPE_FORCE_KEEP_EVERY = max(1, _env_int("VISUAL_DEDUPE_FORCE_KEEP_EVERY", 5))
+
+#: Long-side cap (px) for frames SENT to the model; 0 disables. Frames already
+#: smaller are sent untouched. Env: ``VISUAL_FRAME_MAX_SIDE``.
+SEND_MAX_SIDE_PX = _env_int("VISUAL_FRAME_MAX_SIDE", 768)
+
+#: JPEG quality for downscaled frames sent to the model.
+#: Env: ``VISUAL_SEND_JPEG_QUALITY``.
+SEND_JPEG_QUALITY = _env_int("VISUAL_SEND_JPEG_QUALITY", 80)
+
+_DEDUPE_GRID = 8
+_DEDUPE_SIDE = 64
+
+
 def _is_retryable(exc: BaseException) -> bool:
     """Alias of :func:`app.ingestion.backoff.is_retryable`, kept for readability."""
     return backoff_mod.is_retryable(exc)
@@ -102,7 +161,9 @@ _VISUAL_PROMPT = (
     "short empty description such as \"no visible content\". OMIT what you "
     "cannot see. Never guess at content you cannot resolve, and never invent "
     "text that is not legible.\n"
-    "- One short paragraph per frame. Describe, do not interpret."
+    "- 1-2 concise factual sentences per frame. Describe, do not interpret. "
+    "Still name every exact equation, label, title, colour and shape you can "
+    "read -- they are what search will match on."
 )
 
 
@@ -433,11 +494,24 @@ class VisualPassReport:
     #: ``False`` when no describe pass ran at all (``describe=False``), which is
     #: "skipped" rather than "failed" -- nothing was attempted to go wrong.
     attempted: bool = True
+    #: Sampled frames skipped as near-duplicates of the last kept frame. They
+    #: are covered by that frame's description span, never "failed".
+    skipped_indices: list[int] = field(default_factory=list)
+    #: Subset of :attr:`skipped_indices` whose owning (kept) frame WAS described.
+    #: If the owner's batch failed, its skipped frames stay uncovered.
+    duplicate_covered_indices: list[int] = field(default_factory=list)
+    #: Per-window timing: sample_s, vision_calls, retry_wait_s, total_s, ...
+    timings: dict = field(default_factory=dict)
+
+    @property
+    def skipped_duplicates(self) -> int:
+        return len(self.skipped_indices)
 
     @property
     def covered_indices(self) -> list[int]:
-        """Expected indices that came back with a description."""
-        seen = set(self.described_indices)
+        """Expected indices that came back with a description (directly, or by
+        being a near-duplicate inside a described frame's span)."""
+        seen = set(self.described_indices) | set(self.duplicate_covered_indices)
         return [i for i in self.expected_indices if i in seen]
 
     @property
@@ -503,11 +577,95 @@ class VisualPassReport:
         return out
 
 
+class _CallGate:
+    """Shared pacing + backoff for all describe workers of one pass.
+
+    * ``wait_turn`` enforces a minimum spacing between call STARTS across every
+      worker (the free-tier request rate), and never lets a call start before
+      the shared ``not_before``.
+    * ``penalize`` is called when any worker sees a retryable failure: it moves
+      ``not_before`` forward so ALL workers pause, instead of each retrying on
+      its own clock.
+    * Batches take their first turn in submission order (``seq``) so call
+      starts are deterministic.
+    """
+
+    def __init__(self, min_interval_s: float, *, clock=time.monotonic, sleep=time.sleep):
+        self.min_interval_s = max(0.0, min_interval_s)
+        self._clock = clock
+        self._sleep = sleep
+        self._cond = threading.Condition()
+        self._last_start: float | None = None
+        self._not_before = 0.0
+        self._next_seq = 0
+        self.retry_wait_s = 0.0
+
+    @property
+    def not_before(self) -> float:
+        return self._not_before
+
+    def penalize(self, delay_s: float) -> None:
+        with self._cond:
+            now = self._clock()
+            target = now + max(0.0, delay_s)
+            if target > self._not_before:
+                # Count only the extension beyond an already-pending pause.
+                self.retry_wait_s += target - max(self._not_before, now)
+                self._not_before = target
+
+    def wait_turn(self, seq: int | None = None) -> None:
+        if seq is not None:
+            with self._cond:
+                while self._next_seq != seq:
+                    self._cond.wait()
+        try:
+            while True:
+                with self._cond:
+                    now = self._clock()
+                    ready = self._not_before
+                    if self._last_start is not None:
+                        ready = max(ready, self._last_start + self.min_interval_s)
+                    if now >= ready:
+                        self._last_start = now
+                        return
+                    wait = ready - now
+                self._sleep(wait)
+        finally:
+            if seq is not None:
+                with self._cond:
+                    self._next_seq = max(self._next_seq, seq + 1)
+                    self._cond.notify_all()
+
+
+class _PassStats:
+    """Thread-safe per-pass counters feeding ``VisualPassReport.timings``."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.latencies: list[float] = []
+        self.call_bytes: list[int] = []
+        self.call_frames: list[int] = []
+
+    def record_call(self, latency_s: float, nbytes: int, nframes: int) -> None:
+        with self._lock:
+            self.latencies.append(round(latency_s, 2))
+            self.call_bytes.append(nbytes)
+            self.call_frames.append(nframes)
+
+
+#: Per-worker-thread pass context (gate, seq, stats). Lets the pool call
+#: ``_describe_with_retry(items)`` with its original one-argument shape.
+_ctx = threading.local()
+
+
 def _describe_with_retry(
     frames: list[tuple[int, bytes]],
     *,
     max_attempts: int | None = None,
     sleep=time.sleep,
+    gate: _CallGate | None = None,
+    seq: int | None = None,
+    stats: _PassStats | None = None,
 ) -> tuple[dict[int, str], str]:
     """Describe one batch, surviving rate limits. Returns ``(result, error)``.
 
@@ -515,14 +673,33 @@ def _describe_with_retry(
     string so the caller can keep going and *record the gap*. Letting the
     exception out is what turned a partial pass into a truncated one with no
     trace.
+
+    With a ``gate`` the whole batch is retried after a SHARED pause (all
+    workers wait); without one (direct callers/tests) it sleeps locally.
     """
+    gate = gate if gate is not None else getattr(_ctx, "gate", None)
+    seq = seq if seq is not None else getattr(_ctx, "seq", None)
+    stats = stats if stats is not None else getattr(_ctx, "stats", None)
     attempts = max_attempts or DESCRIBE_MAX_ATTEMPTS
     empty_attempts = min(attempts, DESCRIBE_EMPTY_RETRIES + 1)
     last = "no description attempt was made"
+    nbytes = sum(len(j) for _, j in frames)
+
+    def _pause(delay: float) -> None:
+        if gate is not None:
+            gate.penalize(delay)
+        else:
+            sleep(delay)
+
     for attempt in range(1, attempts + 1):
+        if gate is not None:
+            gate.wait_turn(seq if attempt == 1 else None)
+        t0 = time.monotonic()
         try:
             result = _gemini_describe(frames)
         except Exception as exc:  # noqa: BLE001 - classified, never propagated
+            if stats is not None:
+                stats.record_call(time.monotonic() - t0, nbytes, len(frames))
             last = f"{type(exc).__name__}: {exc}"
             if not _is_retryable(exc) or attempt >= attempts:
                 log.error("visual: describe batch abandoned after %d attempt(s): %s",
@@ -531,8 +708,10 @@ def _describe_with_retry(
             delay = min(DESCRIBE_BACKOFF_CAP_S, DESCRIBE_BACKOFF_S ** attempt)
             log.warning("visual: describe attempt %d/%d failed (%s); retrying in %.0fs",
                         attempt, attempts, last, delay)
-            sleep(delay)
+            _pause(delay)
             continue
+        if stats is not None:
+            stats.record_call(time.monotonic() - t0, nbytes, len(frames))
         if result:
             return result, ""
         last = "model returned no usable frame descriptions"
@@ -540,8 +719,91 @@ def _describe_with_retry(
             log.error("visual: %s for indices %s", last,
                       [i for i, _ in frames])
             return {}, last
-        sleep(min(DESCRIBE_BACKOFF_CAP_S, DESCRIBE_BACKOFF_S ** attempt))
+        _pause(min(DESCRIBE_BACKOFF_CAP_S, DESCRIBE_BACKOFF_S ** attempt))
     return {}, last
+
+
+# --- frame preparation: near-duplicate detection and shrinking ---------------
+
+
+def _open_image(jpeg: bytes):
+    """Decode ``jpeg`` with PIL, or ``None`` if it is not a decodable image."""
+    try:
+        from PIL import Image
+
+        img = Image.open(io.BytesIO(jpeg))
+        img.load()
+        return img
+    except Exception:  # noqa: BLE001 - undecodable => treated as "changed"
+        return None
+
+
+def _signature(img) -> bytes | None:
+    """64x64 grayscale pixels of ``img`` (row-major), or ``None``."""
+    if img is None:
+        return None
+    try:
+        from PIL import Image
+
+        return img.convert("L").resize(
+            (_DEDUPE_SIDE, _DEDUPE_SIDE), Image.BOX
+        ).tobytes()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def frames_differ(
+    sig: bytes | None,
+    ref: bytes | None,
+    *,
+    threshold: float | None = None,
+) -> bool:
+    """True if ANY 8x8-grid cell's mean abs diff exceeds the threshold.
+
+    Unknown signatures (undecodable frames) count as different: when in doubt,
+    send the frame.
+    """
+    if sig is None or ref is None or len(sig) != len(ref):
+        return True
+    limit = DEDUPE_CELL_THRESHOLD if threshold is None else threshold
+    side, cell = _DEDUPE_SIDE, _DEDUPE_SIDE // _DEDUPE_GRID
+    for gy in range(_DEDUPE_GRID):
+        for gx in range(_DEDUPE_GRID):
+            total = 0
+            for y in range(gy * cell, (gy + 1) * cell):
+                off = y * side + gx * cell
+                a = sig[off : off + cell]
+                b = ref[off : off + cell]
+                total += sum(abs(p - q) for p, q in zip(a, b))
+            if total / (cell * cell) > limit:
+                return True
+    return False
+
+
+def shrink_frame(jpeg: bytes, img=None, *, max_side: int | None = None) -> bytes:
+    """Downscale so the long side is <= ``max_side`` (JPEG q=SEND_JPEG_QUALITY).
+
+    Frames already within the cap, undecodable frames, and ``max_side<=0`` are
+    returned unchanged.
+    """
+    limit = SEND_MAX_SIDE_PX if max_side is None else max_side
+    if limit <= 0:
+        return jpeg
+    img = img if img is not None else _open_image(jpeg)
+    if img is None or max(img.size) <= limit:
+        return jpeg
+    try:
+        from PIL import Image
+
+        scale = limit / max(img.size)
+        size = (max(1, round(img.width * scale)), max(1, round(img.height * scale)))
+        out = io.BytesIO()
+        img.convert("RGB").resize(size, Image.LANCZOS).save(
+            out, format="JPEG", quality=SEND_JPEG_QUALITY
+        )
+        return out.getvalue()
+    except Exception:  # noqa: BLE001
+        return jpeg
 
 
 def extract_visual_pass(
@@ -562,7 +824,14 @@ def extract_visual_pass(
     -- and reported the result as a successful ingest. A cap is still available
     for callers that genuinely want one, but it now marks the pass
     :attr:`VisualPassReport.truncated`, which forces a non-``complete`` status.
+
+    Near-duplicate frames are not sent: the last KEPT frame's description
+    covers the span up to the next kept frame, and its segment's ``end_ms``
+    grows to the end of the last frame it covers (clamped to the duration and
+    the window end). Timestamps still derive from sampler indices only, and a
+    later ``end_ms`` only makes the strict ``end_ms <= T`` gate stricter.
     """
+    t_start = time.monotonic()
     # Windowed: expected coverage is ONLY this window's indices, so a finished
     # window reports complete rather than partial.
     expected = window_frame_indices(
@@ -581,50 +850,105 @@ def extract_visual_pass(
     failures: list[str] = []
     truncated = False
     batch: list[tuple[int, bytes]] = []
-    last_call = 0.0
+    skipped: list[int] = []
+    owner: dict[int, int] = {}  # skipped index -> kept index covering it
+    last_covered: dict[int, int] = {}  # kept index -> last frame index it covers
+    stats = _PassStats()
+    gate = _CallGate(DESCRIBE_MIN_INTERVAL_S)
+    concurrency = max(1, VISION_CONCURRENCY)
+    futures: list = []
+    frames_sent = 0
+    raw_bytes = sent_bytes = 0
+    sample_s = 0.0
 
-    def _flush(items: list[tuple[int, bytes]]) -> None:
-        nonlocal last_call
-        gap = DESCRIBE_MIN_INTERVAL_S - (time.monotonic() - last_call)
-        if last_call and gap > 0:
-            time.sleep(gap)
-        last_call = time.monotonic()
-        result, error = _describe_with_retry(items)
+    def _run_batch(items: list[tuple[int, bytes]], seq: int):
+        _ctx.gate, _ctx.seq, _ctx.stats = gate, seq, stats
+        try:
+            result, error = _describe_with_retry(items)
+        finally:
+            _ctx.gate = _ctx.seq = _ctx.stats = None
         span = f"{items[0][0]}-{items[-1][0]}"
         if error:
-            failures.append(f"frames {span}: {error}")
-            return
+            return span, {}, [], error
         # The sampler's indices are the only ones that may become timestamps.
         # A reply naming an index we never decoded cannot be placed on the
         # timeline, so that entry is dropped and recorded -- never reassigned to
         # a neighbouring frame, never clamped onto the last one. The other
         # frames described in the same reply are genuine and are kept.
         kept, notes = _validated_descriptions(result, {i for i, _ in items})
-        for note in notes:
-            failures.append(f"frames {span}: {note}")
-        described.update(kept)
+        return span, kept, notes, ""
 
     sampler_kwargs: dict = {}
     if start_ms is not None or end_ms is not None:
         sampler_kwargs = {"start_ms": start_ms, "end_ms": end_ms}
-    for seen, (index, jpeg) in enumerate(
-        sample_frames(path, interval_s=interval_s, **sampler_kwargs)
-    ):
-        if max_frames is not None and seen >= max_frames:
-            truncated = True
-            log.error(
-                "visual: frame cap %d truncated the walk of %s -- %d of %d "
-                "frames will never be described",
-                max_frames, Path(path).name, min(seen, len(expected)), len(expected),
-            )
-            break
-        sampled.append(index)
-        batch.append((index, jpeg))
-        if len(batch) >= batch_size:
-            _flush(batch)
-            batch = []
-    if batch:
-        _flush(batch)
+
+    ref_sig: bytes | None = None
+    kept_index: int | None = None
+    since_kept = 0
+    with ThreadPoolExecutor(
+        max_workers=concurrency, thread_name_prefix="vision"
+    ) as pool:
+        frame_iter = iter(sample_frames(path, interval_s=interval_s, **sampler_kwargs))
+        seen = 0
+        while True:
+            t0 = time.monotonic()
+            try:
+                index, jpeg = next(frame_iter)
+            except StopIteration:
+                sample_s += time.monotonic() - t0
+                break
+            sample_s += time.monotonic() - t0
+            if max_frames is not None and seen >= max_frames:
+                truncated = True
+                log.error(
+                    "visual: frame cap %d truncated the walk of %s -- %d of %d "
+                    "frames will never be described",
+                    max_frames, Path(path).name, min(seen, len(expected)),
+                    len(expected),
+                )
+                break
+            seen += 1
+            sampled.append(index)
+
+            img = _open_image(jpeg) if (DEDUPE_ENABLED or SEND_MAX_SIDE_PX > 0) else None
+            keep = True
+            sig = None
+            if DEDUPE_ENABLED and kept_index is not None:
+                sig = _signature(img)
+                if since_kept + 1 < DEDUPE_FORCE_KEEP_EVERY and not frames_differ(
+                    sig, ref_sig
+                ):
+                    keep = False
+            elif DEDUPE_ENABLED:
+                sig = _signature(img)
+            if not keep:
+                since_kept += 1
+                skipped.append(index)
+                owner[index] = kept_index  # type: ignore[assignment]
+                last_covered[kept_index] = index  # type: ignore[index]
+                continue
+            kept_index, ref_sig, since_kept = index, sig, 0
+            last_covered[index] = index
+            small = shrink_frame(jpeg, img)
+            raw_bytes += len(jpeg)
+            sent_bytes += len(small)
+            frames_sent += 1
+            batch.append((index, small))
+            if len(batch) >= batch_size:
+                futures.append(pool.submit(_run_batch, batch, len(futures)))
+                batch = []
+        if batch:
+            futures.append(pool.submit(_run_batch, batch, len(futures)))
+        # Merge in submission (= index) order. result() re-raises any worker
+        # exception rather than swallowing it.
+        for fut in futures:
+            span, kept, notes, error = fut.result()
+            if error:
+                failures.append(f"frames {span}: {error}")
+                continue
+            for note in notes:
+                failures.append(f"frames {span}: {note}")
+            described.update(kept)
 
     report = VisualPassReport(
         expected_indices=expected,
@@ -633,15 +957,26 @@ def extract_visual_pass(
         failures=failures,
         truncated=truncated,
         duration_ms=duration_ms,
+        skipped_indices=skipped,
+        duplicate_covered_indices=[i for i in skipped if owner[i] in described],
     )
     report.segments = build_visual_segments(
         described,
         duration_ms=duration_ms,
         interval_s=interval_s,
-        # Belt and braces: `_flush` already refused stray indices, but the
-        # sampler is the authority and this is where it is finally known.
+        # Belt and braces: the sampler is the authority on which indices exist.
         sampled_indices=sampled,
     )
+    # Extend each kept frame's segment over the near-duplicates it covers. The
+    # new end is frame_bounds() of the LAST covered sampler index, so it is
+    # still pure index arithmetic, clamped to the duration and the window end.
+    for seg in report.segments:
+        tail = last_covered.get(seg.frame_index, seg.frame_index)
+        if tail != seg.frame_index:
+            _, new_end = frame_bounds(tail, duration_ms=duration_ms, interval_s=interval_s)
+            if end_ms is not None:
+                new_end = min(new_end, end_ms)
+            seg.end_ms = max(seg.end_ms, new_end)
     # Requirement: no stored chunk may claim content past the authoritative
     # duration. `frame_bounds` clamps, and this asserts it rather than trusting
     # it -- the strict-T gate is only as good as the upper bound it compares to.
@@ -654,6 +989,24 @@ def extract_visual_pass(
             )
             seg.end_ms = duration_ms
             seg.start_ms = min(seg.start_ms, max(duration_ms - 1, 0))
+    n_calls = len(stats.latencies)
+    report.timings = {
+        "window_ms": [start_ms, end_ms],
+        "sample_s": round(sample_s, 2),
+        "vision_calls": list(stats.latencies),
+        "bytes_per_call": list(stats.call_bytes),
+        "frames_per_call": list(stats.call_frames),
+        "retry_wait_s": round(gate.retry_wait_s, 2),
+        "frames_sampled": len(sampled),
+        "frames_sent": frames_sent,
+        "skipped_duplicates": len(skipped),
+        "raw_frame_bytes": raw_bytes,
+        "sent_frame_bytes": sent_bytes,
+        "calls": n_calls,
+        "concurrency": concurrency,
+        "total_s": round(time.monotonic() - t_start, 2),
+    }
+    log.info("visual: window timings %s", report.timings)
     if report.status != "complete":
         for warning in report.warnings:
             log.error("visual: %s", warning)

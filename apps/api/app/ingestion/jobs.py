@@ -610,6 +610,7 @@ def ingest_media_windows(
     v_cov: list[float] = []
     v_span: list[float] = []
     v_expected = v_described = 0
+    timings: list[dict] = []  # one visual-pass timing dict per window
     max_end = 0
     for done, (s, e) in enumerate(selected):
         note_stage(STAGE_TRANSCRIBING)
@@ -642,6 +643,8 @@ def ingest_media_windows(
             v_span.append(report_v.span_pct)
             v_expected += len(report_v.expected_indices)
             v_described += len(report_v.covered_indices)
+            if report_v.timings:
+                timings.append(report_v.timings)
 
         chunks = build_chunks(
             resource_id=resource_id, course_id=course_id, source_type="video",
@@ -710,6 +713,7 @@ def ingest_media_windows(
         "visual_coverage_pct": round(sum(v_cov) / len(v_cov), 1) if v_cov else 0.0,
         "visual_span_pct": round(sum(v_span) / len(v_span), 1) if v_span else 0.0,
         "warnings": warnings,
+        "timings": timings,
     }
 
 
