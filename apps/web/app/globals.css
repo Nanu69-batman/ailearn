@@ -34,6 +34,23 @@ body {
   font-size: 1.02em;
 }
 
+/* Shell + fullscreen-with-chat motion (used via Tailwind animate-[...]). */
+@keyframes shell-fade {
+  from { opacity: 0; transform: translateX(-4px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes immersive-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes immersive-chat-in {
+  from { opacity: 0; transform: translateX(100%); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  [class*="animate-[immersive"], [class*="animate-[shell"] { animation: none !important; }
+}
+
 /* The error colour rehype-katex applies when a span fails to parse. */
 .katex-error {
   color: #dc2626;

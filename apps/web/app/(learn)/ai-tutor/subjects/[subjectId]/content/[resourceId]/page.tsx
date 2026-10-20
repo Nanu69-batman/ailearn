@@ -446,7 +446,7 @@ export default function ContentPage() {
         <section
           className={
             immersive
-              ? `fixed inset-y-0 left-0 z-[60] flex items-center justify-center bg-black ${
+              ? `fixed inset-y-0 left-0 z-[60] flex animate-[immersive-in_280ms_cubic-bezier(0.2,0.8,0.2,1)] items-center justify-center bg-black transition-[right] duration-300 ease-out ${
                   immersiveChat ? "right-0 sm:right-[400px]" : "right-0"
                 }`
               : "flex min-w-0 flex-col gap-3 lg:col-start-1 lg:row-start-1"
@@ -524,10 +524,13 @@ export default function ContentPage() {
           className={
             !immersive
               ? "min-w-0 lg:sticky lg:top-20 lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:self-start"
-              : immersiveChat
-                ? "fixed inset-y-0 right-0 z-[61] w-full overflow-y-auto bg-white shadow-2xl sm:w-[400px] [&>section]:min-h-full [&>section]:rounded-none [&>section]:border-0 [&_[aria-live=polite]]:max-h-[calc(100dvh-220px)]"
-                : "hidden"
+              : `fixed inset-y-0 right-0 z-[61] w-full overflow-y-auto bg-white shadow-2xl transition-transform duration-300 ease-out sm:w-[400px] [&>section]:min-h-full [&>section]:rounded-none [&>section]:border-0 [&_[aria-live=polite]]:max-h-[calc(100dvh-220px)] ${
+                  immersiveChat
+                    ? "translate-x-0 animate-[immersive-chat-in_320ms_cubic-bezier(0.2,0.8,0.2,1)]"
+                    : "pointer-events-none translate-x-full"
+                }`
           }
+          aria-hidden={immersive && !immersiveChat ? true : undefined}
           aria-label="Malai tutor chat"
         >
           {immersive && (

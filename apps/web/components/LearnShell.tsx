@@ -7,8 +7,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useParams, usePathname, useRouter } from "next/navigation";
-import { DASHBOARD_PATH, SUBJECTS_PATH, firstParam, subjectPath } from "@/lib/learn";
+import { usePathname, useRouter } from "next/navigation";
+import { DASHBOARD_PATH, SUBJECTS_PATH } from "@/lib/learn";
 
 /**
  * The chrome every route inside the `(learn)` group shares: sidebar, mobile
@@ -93,12 +93,8 @@ function writeSidebarCollapsed(value: boolean): void {
 }
 
 export default function LearnShell({ children }: { children: ReactNode }) {
-  const params = useParams<{ subjectId?: string | string[] }>();
   const pathname = usePathname();
   const router = useRouter();
-  // The subject id is the backend's opaque id taken from the URL. It is null on
-  // /dashboard and on the subject list, where there is nothing to go "back" to.
-  const subjectId = firstParam(params.subjectId);
 
   /**
    * Starts false so the server-rendered HTML and the first client render agree;
@@ -298,52 +294,70 @@ export default function LearnShell({ children }: { children: ReactNode }) {
             sidebarCollapsed ? SIDEBAR_RAIL_CLASS : SIDEBAR_EXPANDED_CLASS,
           ].join(" ")}
         >
-          <div
-            className={
-              sidebarCollapsed
-                ? "flex items-center justify-center px-2 py-6"
-                : "flex items-center gap-3 px-5 py-6"
-            }
-          >
-            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 text-lg font-bold text-white">
-              M
-            </span>
-            {!sidebarCollapsed && (
-              <div className="min-w-0">
-                <p className="text-sm font-bold leading-tight text-white">Malai Pioneer</p>
+          {/* Brand row. Expanded: logo, name, collapse arrow on the right.
+              Rail: the logo itself is the expand button and turns into the
+              arrow on hover/focus. */}
+          {sidebarCollapsed ? (
+            <div className="flex items-center justify-center px-2 py-6">
+              <button
+                type="button"
+                onClick={toggleSidebar}
+                aria-expanded={false}
+                aria-controls={SIDEBAR_ID}
+                aria-label="Expand sidebar"
+                title="Expand sidebar"
+                className="group/brand relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 text-lg font-bold text-white transition hover:from-white/10 hover:to-white/10 focus:outline-none focus-visible:from-white/10 focus-visible:to-white/10 focus-visible:ring-2 focus-visible:ring-violet-400"
+              >
+                <span className="transition-all duration-200 group-hover/brand:scale-50 group-hover/brand:opacity-0 group-focus-visible/brand:opacity-0">
+                  M
+                </span>
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="absolute h-5 w-5 scale-50 opacity-0 transition-all duration-200 group-hover/brand:scale-100 group-hover/brand:opacity-100 group-focus-visible/brand:scale-100 group-focus-visible/brand:opacity-100"
+                  aria-hidden="true"
+                >
+                  <path d="M9 6l6 6-6 6" />
+                </svg>
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-3 py-6 pl-5 pr-3">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 text-lg font-bold text-white">
+                M
+              </span>
+              <div className="min-w-0 flex-1 animate-[shell-fade_200ms_ease-out]">
+                <p className="truncate text-sm font-bold leading-tight text-white">Malai Pioneer</p>
                 <p className="text-[11px] text-gray-400">Learning</p>
               </div>
-            )}
-          </div>
-
-          <div
-            className={
-              sidebarCollapsed ? "flex justify-center px-2 pb-2" : "flex justify-end px-3 pb-2"
-            }
-          >
-            <button
-              type="button"
-              onClick={toggleSidebar}
-              aria-expanded={!sidebarCollapsed}
-              aria-controls={SIDEBAR_ID}
-              aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-              title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-              className="rounded-lg p-1.5 text-gray-400 transition hover:bg-white/5 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
-            >
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="h-4 w-4 shrink-0"
-                aria-hidden="true"
+              <button
+                type="button"
+                onClick={toggleSidebar}
+                aria-expanded
+                aria-controls={SIDEBAR_ID}
+                aria-label="Collapse sidebar"
+                title="Collapse sidebar"
+                className="shrink-0 rounded-lg p-1.5 text-gray-400 transition hover:bg-white/5 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
               >
-                <path d={sidebarCollapsed ? "M9 6l6 6-6 6" : "M15 6l-6 6 6 6"} />
-              </svg>
-            </button>
-          </div>
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="h-4 w-4 shrink-0"
+                  aria-hidden="true"
+                >
+                  <path d="M15 6l-6 6 6 6" />
+                </svg>
+              </button>
+            </div>
+          )}
 
           <nav
             className={sidebarCollapsed ? "flex flex-col gap-1 px-2" : "flex flex-col gap-1 px-3"}
@@ -475,36 +489,6 @@ export default function LearnShell({ children }: { children: ReactNode }) {
                   <path d="M3 6h18M3 12h18M3 18h18" />
                 </svg>
               </button>
-              {subjectId !== null ? (
-                <a
-                  href={subjectPath(subjectId)}
-                  onClick={(e) => {
-                    // A real <a> keeps middle-click / open-in-new-tab working,
-                    // but a plain click is a client navigation so the session in
-                    // the provider above is never torn down.
-                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
-                    e.preventDefault();
-                    router.push(subjectPath(subjectId));
-                  }}
-                  className="rounded-xl border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium text-gray-600 shadow-sm transition hover:border-violet-300 hover:bg-gray-50 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
-                >
-                  ← Back to subject
-                </a>
-              ) : (
-                // No subject in the URL (/dashboard, /ai-tutor/subjects): the
-                // only honest destination is the subject list.
-                <a
-                  href={SUBJECTS_PATH}
-                  onClick={(e) => {
-                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
-                    e.preventDefault();
-                    router.push(SUBJECTS_PATH);
-                  }}
-                  className="rounded-xl border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium text-gray-600 shadow-sm transition hover:border-violet-300 hover:bg-gray-50 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
-                >
-                  ← All subjects
-                </a>
-              )}
               <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 text-base font-bold text-white md:hidden">
                 M
               </span>
