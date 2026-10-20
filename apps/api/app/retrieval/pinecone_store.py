@@ -99,7 +99,8 @@ class PineconeCollection:
     def _load_mirror(self) -> None:
         ids: list[str] = []
         for page in self._index.list():
-            ids.extend(page)
+            # Older clients yield id strings; newer ones yield items with .id.
+            ids.extend(getattr(item, "id", item) for item in page)
         for i in range(0, len(ids), FETCH_BATCH):
             got = self._index.fetch(ids=ids[i : i + FETCH_BATCH])
             for vid, vec in (got.vectors or {}).items():
