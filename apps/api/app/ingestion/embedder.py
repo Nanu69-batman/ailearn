@@ -363,6 +363,9 @@ class GeminiEmbedder:
     #: quota tests do) still has them.
     _sink = None
     _order_checked = False
+    #: Sleep used between retries; an instance attribute seam so tests need
+    #: not wait out the real 15s+ backoff.
+    _retry_sleep = staticmethod(time.sleep)
 
     def __init__(self, model: str, api_key: str, *, sink=None) -> None:
         from google import genai
@@ -438,7 +441,6 @@ class GeminiEmbedder:
         """
         if self._order_checked or n_texts < 2:
             return
-        self._order_checked = True
         probe = (
             (
                 "photosynthesis converts light energy into chemical energy inside "
@@ -458,6 +460,7 @@ class GeminiEmbedder:
                 "per-text fallback will apply",
                 len(batched), len(probe),
             )
+            self._order_checked = True
             return
         singles: list[list[float]] = []
         for text in probe:
@@ -481,6 +484,9 @@ class GeminiEmbedder:
                     f"to index -- a positional zip here would attach the wrong "
                     f"vector to the wrong chunk."
                 )
+        # Only now: a transient probe error above must leave the check pending
+        # so the next call retries it, not skip it forever on this instance.
+        self._order_checked = True
 
     def _embed_batch_checked(self, batch: list[str], *, offset: int = 0) -> list[list[float]]:
         """Embed one batch and refuse to return anything mis-aligned.
@@ -583,6 +589,7 @@ class GeminiEmbedder:
             max_attempts=self.EMBED_MAX_ATTEMPTS,
             backoff_s=self.EMBED_BACKOFF_S,
             backoff_cap_s=self.EMBED_BACKOFF_CAP_S,
+            sleep=self._retry_sleep,
         )
 
     def _attempt(self, batch: list[str]) -> list[list[float]]:
