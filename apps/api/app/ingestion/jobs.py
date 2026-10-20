@@ -388,11 +388,13 @@ def ingest_media(
             "time-gated content without an authoritative timeline"
         )
 
+    note_stage(STAGE_TRANSCRIBING)
     transcript, audio_signals = audio_mod.transcribe(path, duration_ms=duration_ms)
     visual: list[visual_mod.VisualSegment] = []
     visual_report = visual_mod.VisualPassReport(duration_ms=duration_ms)
     warnings: list[str] = []
     if with_visual:
+        note_stage(STAGE_DESCRIBING)
         try:
             visual_report = visual_mod.extract_visual_pass(
                 str(path), duration_ms=duration_ms, max_frames=max_visual_frames
@@ -427,6 +429,10 @@ def ingest_media(
         title=_resolve_title(path, title),
     )
     chunks = _clamp_to_duration(chunks, duration_ms)
+    # The chunk write is where the embedding happens, and on a long video it
+    # is the phase a caller watches: report it so "embedding 120/253" is
+    # visible rather than a frozen "processing".
+    note_stage(STAGE_EMBEDDING)
     written = _store().add(chunks)
     report = {
         "audio_chunks": sum(1 for c in chunks if c.metadata.get("kind") == "transcript"),
