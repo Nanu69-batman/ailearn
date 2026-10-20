@@ -149,6 +149,11 @@ class ChatResponse(BaseModel):
     #: boolean. A refusal is NOT grounded (``False``) -- nothing was served from
     #: the lesson -- so this is only ``True`` when a cited answer was returned.
     grounded: bool = True
+    #: True only when the focused video has been processed just up to
+    #: ``processed_through_ms`` and the playhead is past that point: the
+    #: answer is an honest "not processed yet", not a content refusal.
+    processing_pending: bool = False
+    processed_through_ms: int | None = None
 
 
 class MessageOut(BaseModel):

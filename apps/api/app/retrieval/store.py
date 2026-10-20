@@ -181,6 +181,16 @@ def chroma_metadata(chunk) -> dict:
         # the catalogue must show the resource id rather than invent one.
         "title": str(chunk.metadata.get("title", "") or ""),
     }
+    # Processing-frontier markers, written only by the windowed video ingest.
+    # Absent (not a sentinel) for every legacy chunk, so legacy resources stay
+    # indistinguishable from fully processed ones.
+    for key in ("processed_through_ms", "duration_ms"):
+        raw = (chunk.metadata or {}).get(key)
+        if raw is not None:
+            try:
+                meta[key] = int(raw)
+            except (TypeError, ValueError):
+                pass
     log.debug("chroma metadata for %s gated=%s", chunk.chunk_id, gated)
     return meta
 
@@ -289,6 +299,63 @@ class ChromaVectorStore:
     def delete_resource(self, resource_id: str) -> None:
         self._collection.delete(where={"resource_id": {"$eq": resource_id}})
 
+    def delete_resource_range(self, resource_id: str, start_ms: int, end_ms: int) -> int:
+        """Delete chunks of EXACTLY ``resource_id`` lying within [start_ms, end_ms].
+
+        A chunk is in range when ``start_ms <= chunk.start_ms`` and
+        ``chunk.end_ms <= end_ms``; chunks with unknown (sentinel) bounds are
+        never matched. Exact ``resource_id`` equality only -- no course or
+        prefix sweeps. Lets a re-run window replace its chunks without leaving
+        stale ones. Returns the number deleted.
+        """
+        if not resource_id:
+            return 0
+        where = {
+            "$and": [
+                {"resource_id": {"$eq": resource_id}},
+                {"start_ms": {"$gte": int(start_ms)}},
+                {"end_ms": {"$ne": NO_END_MS}},
+                {"end_ms": {"$lte": int(end_ms)}},
+            ]
+        }
+        got = self._collection.get(where=where, include=[])
+        ids = list(got.get("ids") or [])
+        if ids:
+            self._collection.delete(ids=ids)
+        return len(ids)
+
+    def processing_frontier(self, resource_id: str) -> dict | None:
+        """Frontier facts for one exact resource, or ``None`` if unknown.
+
+        Returns ``{"source_type", "processed_through_ms", "duration_ms"}``;
+        the two ms values are the MAX over the resource's chunks, ``None``
+        when no chunk carries them. Catalog lookup only: no gate involved.
+        """
+        if not resource_id:
+            return None
+        try:
+            got = self._collection.get(
+                where={"resource_id": {"$eq": resource_id}}, include=["metadatas"]
+            )
+        except Exception as exc:  # noqa: BLE001 - must not 500 chat
+            log.warning("processing_frontier failed for %s: %s", resource_id, exc)
+            return None
+        out: dict | None = None
+        for meta in got.get("metadatas") or []:
+            if not meta or meta.get("resource_id") != resource_id:
+                continue
+            if out is None:
+                out = {
+                    "source_type": meta.get("source_type") or None,
+                    "processed_through_ms": None,
+                    "duration_ms": None,
+                }
+            for key in ("processed_through_ms", "duration_ms"):
+                v = meta.get(key)
+                if isinstance(v, int) and (out[key] is None or v > out[key]):
+                    out[key] = v
+        return out
+
     def count(self) -> int:
         return self._collection.count()
 
@@ -357,14 +424,42 @@ class ChromaVectorStore:
                     "title": (meta.get("title") or None),
                     "status": "ready",
                     "asset_name": None,
+                    "_frontier_ms": None,
+                    "_duration_ms": None,
                 }
+                self._fold_frontier(seen[rid], meta)
                 continue
+            self._fold_frontier(entry, meta)
             # Chunks of one resource all carry the same filename, but a partial
             # re-ingest can leave some chunks without one. Keep the first real
             # title found rather than letting an empty one overwrite it.
             if not entry["title"] and meta.get("title"):
                 entry["title"] = str(meta["title"])
-        return list(seen.values())
+        out = list(seen.values())
+        for entry in out:
+            # DURATION SOURCE: the `duration_ms` the windowed ingest stamps on
+            # chunk metadata (probed from the container). The max video
+            # end_ms is NOT used: it equals the processed frontier, so it could
+            # never read as partial. Unknown duration => stays "ready".
+            duration = entry.pop("_duration_ms")
+            frontier = entry.pop("_frontier_ms")
+            if frontier is not None:
+                # Key omitted for legacy resources so their shape is unchanged
+                # (the subjects view mirrors this shape exactly).
+                entry["processed_through_ms"] = frontier
+            if frontier is not None and duration is not None and frontier < duration:
+                entry["status"] = "partial"
+        return out
+
+    @staticmethod
+    def _fold_frontier(entry: dict, meta: dict) -> None:
+        for key, slot in (
+            ("processed_through_ms", "_frontier_ms"),
+            ("duration_ms", "_duration_ms"),
+        ):
+            v = meta.get(key)
+            if isinstance(v, int) and (entry[slot] is None or v > entry[slot]):
+                entry[slot] = v
 
     # -- reads ----------------------------------------------------------
 

@@ -23,8 +23,15 @@ from app.retrieval.recency import (
     is_recency_seeking,
     is_supplemental_request,
 )
+from app.retrieval.store import TIME_GATED_SOURCE_TYPES
 
 log = logging.getLogger(__name__)
+
+PROCESSING_PENDING_TEXT = (
+    "This part of the video hasn't been processed yet, so I can't answer "
+    "about it reliably. Please try again in a little while, or ask about "
+    "an earlier point in the video."
+)
 
 STRICT_T_MODES = frozenset({"summarize", "quiz"})
 VIDEO_SOURCE_TYPES = frozenset({"video", "video_transcript"})
@@ -152,6 +159,30 @@ class ChatService:
 
         return RetrievalService(store=self._store, embedder=self._embedder)
 
+    def _pending_frontier(self, allowed: list[str], t_ms: int) -> int | None:
+        """Frontier F if a granted time-gated video is partial and ``t_ms > F``.
+
+        Reads only resources already inside the granted (intersected) scope.
+        A store without frontier support, a resource with no marker, or one
+        whose known duration the marker has reached, yields ``None``.
+        """
+        lookup = getattr(self._store, "processing_frontier", None)
+        if lookup is None:
+            return None
+        for rid in allowed:
+            info = lookup(rid)
+            if not info or info.get("source_type") not in TIME_GATED_SOURCE_TYPES:
+                continue
+            f = info.get("processed_through_ms")
+            if f is None:
+                continue
+            duration = info.get("duration_ms")
+            if duration is not None and f >= duration:
+                continue
+            if t_ms > f:
+                return f
+        return None
+
     async def chat(
         self,
         *,
@@ -204,6 +235,19 @@ class ChatService:
                 scope_empty=True,
                 mode="grounded",
                 grounded=False,
+            )
+
+        pending = self._pending_frontier(allowed, t_ms)
+        if pending is not None:
+            self._persist(session_id, message, PROCESSING_PENDING_TEXT, [])
+            return ChatResponse(
+                answer=PROCESSING_PENDING_TEXT,
+                citations=[],
+                refused=True,
+                mode="grounded",
+                grounded=False,
+                processing_pending=True,
+                processed_through_ms=pending,
             )
 
         history = self._messages.user_texts(session_id, limit=5)
