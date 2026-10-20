@@ -194,7 +194,8 @@ def test_upload_stream_mode_attaches_after_first_window(env, monkeypatch):
     orig = router_mod._attach_to_subject
 
     def spy(subject, rid):
-        attached_at.append(len(CALLS))
+        # Record the committed transcript frontier at attach time.
+        attached_at.append(_store.processing_frontier(rid)["processed_through_ms"])
         return orig(subject, rid)
 
     monkeypatch.setattr(router_mod, "_attach_to_subject", spy)
@@ -204,7 +205,10 @@ def test_upload_stream_mode_attaches_after_first_window(env, monkeypatch):
         files={"file": ("lec.mp4", b"\x00" * 16, "video/mp4")},
     )
     assert r.status_code == 200, r.text
-    assert attached_at[0] == 1  # after the first window, before the second
+    # Attached after the first stage T commit and before the second window's
+    # commit (commits are serialised). CALLS is not used: with two lanes the next
+    # window's transcribe may already be running when the callback fires.
+    assert attached_at[0] == 120_000
     rid = r.json()["resource_id"]
     listing = client.get(f"/subjects/{sub['id']}/resources").json()["resources"]
     row = next(x for x in listing if x["id"] == rid)
@@ -239,8 +243,13 @@ def test_position_queued_then_idempotent_then_ready(env):
     done = _wait(client, b1["job_id"])
     assert done["status"] == "done"
     assert CALLS == [(360_000, 420_000)]  # exactly one window job
+    # Transcript is complete but visuals lag: not ready yet, a V catch-up queues.
     r3 = client.post(url, json={"t_ms": 300_000}).json()
-    assert r3["status"] == "ready" and r3["processed_through_ms"] == DUR
+    assert r3["status"] == "queued" and r3["processed_through_ms"] == DUR
+    assert r3["visual_through_ms"] == 360_000
+    _wait(client, r3["job_id"])
+    r4 = client.post(url, json={"t_ms": 300_000}).json()
+    assert r4["status"] == "ready" and r4["visual_through_ms"] == DUR
 
 
 def test_position_far_idle_and_validation(env):

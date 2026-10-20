@@ -184,7 +184,7 @@ def chroma_metadata(chunk) -> dict:
     # Processing-frontier markers, written only by the windowed video ingest.
     # Absent (not a sentinel) for every legacy chunk, so legacy resources stay
     # indistinguishable from fully processed ones.
-    for key in ("processed_through_ms", "duration_ms"):
+    for key in ("processed_through_ms", "duration_ms", "visual_through_ms"):
         raw = (chunk.metadata or {}).get(key)
         if raw is not None:
             try:
@@ -299,25 +299,30 @@ class ChromaVectorStore:
     def delete_resource(self, resource_id: str) -> None:
         self._collection.delete(where={"resource_id": {"$eq": resource_id}})
 
-    def delete_resource_range(self, resource_id: str, start_ms: int, end_ms: int) -> int:
+    def delete_resource_range(
+        self, resource_id: str, start_ms: int, end_ms: int, kind: str | None = None
+    ) -> int:
         """Delete chunks of EXACTLY ``resource_id`` lying within [start_ms, end_ms].
 
         A chunk is in range when ``start_ms <= chunk.start_ms`` and
         ``chunk.end_ms <= end_ms``; chunks with unknown (sentinel) bounds are
         never matched. Exact ``resource_id`` equality only -- no course or
         prefix sweeps. Lets a re-run window replace its chunks without leaving
-        stale ones. Returns the number deleted.
+        stale ones. ``kind`` ("transcript" | "visual"), when given, restricts
+        the delete to that stage's chunks; ``None`` deletes every kind.
+        Returns the number deleted.
         """
         if not resource_id:
             return 0
-        where = {
-            "$and": [
-                {"resource_id": {"$eq": resource_id}},
-                {"start_ms": {"$gte": int(start_ms)}},
-                {"end_ms": {"$ne": NO_END_MS}},
-                {"end_ms": {"$lte": int(end_ms)}},
-            ]
-        }
+        clauses = [
+            {"resource_id": {"$eq": resource_id}},
+            {"start_ms": {"$gte": int(start_ms)}},
+            {"end_ms": {"$ne": NO_END_MS}},
+            {"end_ms": {"$lte": int(end_ms)}},
+        ]
+        if kind is not None:
+            clauses.append({"kind": {"$eq": str(kind)}})
+        where = {"$and": clauses}
         got = self._collection.get(where=where, include=[])
         ids = list(got.get("ids") or [])
         if ids:
@@ -349,8 +354,9 @@ class ChromaVectorStore:
                     "source_type": meta.get("source_type") or None,
                     "processed_through_ms": None,
                     "duration_ms": None,
+                    "visual_through_ms": None,
                 }
-            for key in ("processed_through_ms", "duration_ms"):
+            for key in ("processed_through_ms", "duration_ms", "visual_through_ms"):
                 v = meta.get(key)
                 if isinstance(v, int) and (out[key] is None or v > out[key]):
                     out[key] = v
@@ -426,6 +432,7 @@ class ChromaVectorStore:
                     "asset_name": None,
                     "_frontier_ms": None,
                     "_duration_ms": None,
+                    "_visual_ms": None,
                 }
                 self._fold_frontier(seen[rid], meta)
                 continue
@@ -443,6 +450,9 @@ class ChromaVectorStore:
             # never read as partial. Unknown duration => stays "ready".
             duration = entry.pop("_duration_ms")
             frontier = entry.pop("_frontier_ms")
+            visual_through = entry.pop("_visual_ms")
+            if visual_through is not None:
+                entry["visual_through_ms"] = visual_through
             if frontier is not None:
                 # Key omitted for legacy resources so their shape is unchanged
                 # (the subjects view mirrors this shape exactly).
@@ -456,6 +466,7 @@ class ChromaVectorStore:
         for key, slot in (
             ("processed_through_ms", "_frontier_ms"),
             ("duration_ms", "_duration_ms"),
+            ("visual_through_ms", "_visual_ms"),
         ):
             v = meta.get(key)
             if isinstance(v, int) and (entry[slot] is None or v > entry[slot]):

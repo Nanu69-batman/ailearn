@@ -359,30 +359,40 @@ class PositionRequest(BaseModel):
     t_ms: int = Field(ge=0)
 
 
-#: Serialises "is a window running? -> queue one" so two rapid /position calls
-#: cannot both queue a job for the same window. In-flight state itself is
-#: derived from the job registry (any pending/processing job for the resource).
+#: In-flight guard: ``(resource_id, kind, window_start_ms) -> job_id``. Held
+#: only in memory (state is otherwise derived from the store), mutated under
+#: ``_POSITION_LOCK`` so rapid /position calls cannot double-queue a window. At
+#: most one job per (resource, kind) runs at a time, which also keeps the
+#: transcript frontier contiguous.
 _POSITION_LOCK = threading.Lock()
+_INFLIGHT: dict[tuple[str, str, int], str] = {}
+
+#: Max transcript windows queued ahead of the playhead per call.
+MAX_T_WINDOWS_PER_CALL = 2
 
 
-def _running_job_for(resource_id: str):
-    from app.ingestion import jobs as jobs_mod
+def reset_inflight() -> None:
+    with _POSITION_LOCK:
+        _INFLIGHT.clear()
 
-    with jobs_mod._LOCK:
-        for job in jobs_mod._JOBS.values():
-            if job.resource_id == resource_id and job.status in ("pending", "processing"):
-                return job
-    return None
+
+def _inflight_for(resource_id: str, kind: str) -> list[str]:
+    return [
+        jid for (rid, k, _w), jid in _INFLIGHT.items() if rid == resource_id and k == kind
+    ]
 
 
 @router.post("/courses/{course_id}/resources/{resource_id}/position")
 async def report_position(
     course_id: str, resource_id: str, body: PositionRequest
 ) -> dict:
-    """Playhead report: top up the next window when the learner nears the frontier.
+    """Playhead report: keep the transcript ahead of the learner, visuals caught up.
 
-    Stateless: the frontier and duration come from chunk metadata, so this
-    keeps working after a restart. Idempotent: at most one job per resource.
+    Stateless apart from the in-flight guard: both frontiers and the duration
+    come from chunk metadata, so this keeps working after a restart. Queues up
+    to two stage-T windows while ``frontier < t_ms + LOOKAHEAD_MS`` and a stage-V
+    catch-up job while ``visual_through_ms < processed_through_ms``. ``ready``
+    only when both frontiers have reached the duration.
     """
     from app.retrieval import registry
     from app.subjects.store import resource_exists
@@ -397,40 +407,104 @@ async def report_position(
     store = registry.get_shared_store()
     info = store.processing_frontier(resource_id) or {}
     frontier = info.get("processed_through_ms")
+    vthrough = info.get("visual_through_ms")
     duration = info.get("duration_ms")
-    out = {"processed_through_ms": frontier, "duration_ms": duration}
-    if frontier is None or duration is None or frontier >= duration:
-        return {"status": "ready", **out}
-    if body.t_ms + LOOKAHEAD_MS < frontier:
-        return {"status": "idle", **out}
+    out = {
+        "processed_through_ms": frontier,
+        "visual_through_ms": vthrough,
+        "duration_ms": duration,
+    }
+    if frontier is None or duration is None:
+        return {"status": "ready", "job_ids": [], **out}
+    t_complete = frontier >= duration
+    # Legacy / no-visual resources carry no marker: never visual-pending.
+    v_complete = vthrough is None or vthrough >= duration
+    if t_complete and v_complete:
+        return {"status": "ready", "job_ids": [], **out}
+
+    t_windows: list[int] = []
+    if not t_complete:
+        w = frontier // WINDOW_MS
+        while (
+            len(t_windows) < MAX_T_WINDOWS_PER_CALL
+            and w * WINDOW_MS < duration
+            and w * WINDOW_MS < body.t_ms + LOOKAHEAD_MS
+        ):
+            t_windows.append(w)
+            w += 1
+    v_windows: list[int] = []
+    if vthrough is not None and vthrough < frontier:
+        v_first = vthrough // WINDOW_MS
+        v_last = (frontier + WINDOW_MS - 1) // WINDOW_MS  # exclusive
+        v_windows = list(range(v_first, v_last))
+
+    if not t_windows and not v_windows:
+        with _POSITION_LOCK:
+            ids = _inflight_for(resource_id, "transcript") + _inflight_for(
+                resource_id, "visual"
+            )
+        return {
+            "status": "running" if ids else "idle",
+            "job_ids": list(dict.fromkeys(ids)),
+            **({"job_id": ids[0]} if ids else {}),
+            **out,
+        }
+
+    from app.ingestion import jobs as jobs_mod
 
     with _POSITION_LOCK:
-        running = _running_job_for(resource_id)
-        if running is not None:
-            return {"status": "running", "job_id": running.job_id, **out}
-        asset = resolve_asset(resource_id)
-        if asset is None:
-            raise HTTPException(
-                status_code=409,
-                detail=f"cannot process more of {resource_id}: its media file is not on disk",
-            )
-        title = None
-        try:
-            for entry in store.resources(course_id):
-                if entry.get("id") == resource_id:
-                    title = entry.get("title")
-        except Exception:
-            log.debug("title lookup failed for %s", resource_id, exc_info=True)
-        job = new_job(course_id, resource_id)
+        to_queue: list[tuple[str, list[int]]] = []
+        if t_windows and not _inflight_for(resource_id, "transcript"):
+            to_queue.append(("transcript", t_windows))
+        if v_windows and not _inflight_for(resource_id, "visual"):
+            to_queue.append(("visual", v_windows))
+        queued: list[str] = []
+        if to_queue:
+            asset = resolve_asset(resource_id)
+            if asset is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"cannot process more of {resource_id}: its media file is not on disk",
+                )
+            title = None
+            try:
+                for entry in store.resources(course_id):
+                    if entry.get("id") == resource_id:
+                        title = entry.get("title")
+            except Exception:
+                log.debug("title lookup failed for %s", resource_id, exc_info=True)
+            for kind, windows in to_queue:
+                job = new_job(course_id, resource_id)
+                keys = [(resource_id, kind, w * WINDOW_MS) for w in windows]
+                for k in keys:
+                    _INFLIGHT[k] = job.job_id
 
-        def work() -> dict:
-            return ingest_media_windows(
-                asset, course_id=course_id, resource_id=resource_id, title=title,
-                mode="stream", start_window=frontier // WINDOW_MS, n_windows=1,
-            )
+                def work(kind=kind, windows=windows, keys=keys) -> dict:
+                    try:
+                        return jobs_mod.ingest_media_windows(
+                            asset, course_id=course_id, resource_id=resource_id,
+                            title=title, mode="stream", start_window=windows[0],
+                            n_windows=len(windows), stages=(kind,),
+                        )
+                    finally:
+                        with _POSITION_LOCK:
+                            for k in keys:
+                                _INFLIGHT.pop(k, None)
 
-        schedule(job, work)
-    return {"status": "queued", "job_id": job.job_id, **out}
+                queued.append(job.job_id)
+                schedule(job, work)
+        running = _inflight_for(resource_id, "transcript") + _inflight_for(
+            resource_id, "visual"
+        )
+    job_ids = list(dict.fromkeys(queued + running))
+    body_out = {
+        "status": "queued" if queued else "running",
+        "job_ids": job_ids,
+        **out,
+    }
+    if job_ids:
+        body_out["job_id"] = job_ids[0]
+    return body_out
 
 
 @router.delete("/courses/{course_id}/resources/{resource_id}")

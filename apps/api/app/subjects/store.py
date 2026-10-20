@@ -318,6 +318,8 @@ def list_subject_resources(subject_id: str) -> list[dict] | None:
                         found[rid]["processed_through_ms"] = row[
                             "processed_through_ms"
                         ]
+                    if "visual_through_ms" in row:
+                        found[rid]["visual_through_ms"] = row["visual_through_ms"]
                     # The registry row never carries asset_name (the course
                     # router decorates it from UPLOAD_DIR) — do the same here
                     # or the web client hides file videos for subjects.

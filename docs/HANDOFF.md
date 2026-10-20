@@ -122,6 +122,15 @@ There is no `/demo` page.
     and the backoff.
 - **Progressive ingest.** `POST /courses/{id}/ingest` takes `mode=full|stream` (default `full`; 422 otherwise; video files only, YouTube unchanged). Windows are 120 s; `stream` does the first 3 then stops partial; `POST /courses/{id}/resources/{rid}/position {t_ms}` queues the next window when `t_ms + 120 s >= frontier` (statuses queued/running/idle/ready; 409 if the media file is gone). Job payload adds `mode, processed_through_ms, duration_ms, windows_done, windows_total`. A window yielding zero chunks cannot advance the frontier. Tests: `tests/test_progressive_ingest.py`.
 
+### Staged ingest (transcript first, visuals after)
+
+- Each 2-min window is two independently committed stages: T (transcribe -> transcript chunks) then V (frame description -> visual chunks). `processed_through_ms` = transcript frontier; `visual_through_ms` is stamped on visual chunks (and on transcript chunks: window end if no visual pass, else 0). No marker = legacy = never visual-pending.
+- One transcript lane + one vision lane overlap (`ingest_media_windows(..., pipelined=True)`); output identical to serial. Either lane failing fails the job. Job progress adds `visual_through_ms`, `transcript_windows_done`, `visual_windows_done`.
+- Chunk ordinals per window: transcript `[off, off+60000)`, visual `[off+60000, off+120000)`. `store.delete_resource_range(..., kind="transcript"|"visual")`.
+- Chat: `ChatResponse.visual_pending` / `visual_through_ms`; low-evidence refusal while pending uses `VISUAL_PENDING_REFUSAL_TEXT` and skips the supplemental fallback.
+- `POST .../position` queues up to 2 stage-T windows (lookahead 240 s) plus a V catch-up job; returns `job_ids` (+ `job_id`), `visual_through_ms`; `ready` only when both frontiers are complete; in-flight guard is in memory. Stream upload attaches to the subject after first stage T.
+- Tests: `tests/test_staged_ingest.py`.
+
 ## 6. Bugs found and fixed — do not reintroduce
 
 - **Visual coverage was silently capped at 24%.** `ingest_media(...,

@@ -154,6 +154,11 @@ class ChatResponse(BaseModel):
     #: answer is an honest "not processed yet", not a content refusal.
     processing_pending: bool = False
     processed_through_ms: int | None = None
+    #: True when the playhead is inside the transcript-processed region but
+    #: past ``visual_through_ms``: the transcript is indexed, the on-screen
+    #: description for this part is still being produced.
+    visual_pending: bool = False
+    visual_through_ms: int | None = None
 
 
 class MessageOut(BaseModel):

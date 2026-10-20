@@ -121,6 +121,13 @@ def apply_strict_timestamp(passages: Sequence, current_time_ms: int, mode: str):
     return kept
 
 
+VISUAL_PENDING_REFUSAL_TEXT = (
+    "I could not find this in what has been indexed so far. What is on screen "
+    "for this part of the video is still being processed, so try again in a "
+    "moment."
+)
+
+
 class ChatService:
     def __init__(
         self,
@@ -183,6 +190,27 @@ class ChatService:
                 return f
         return None
 
+    def _visual_frontier(self, allowed: list[str], t_ms: int) -> int | None:
+        """``visual_through_ms`` V if a granted video's visuals lag the playhead.
+
+        Only resources carrying a ``visual_through_ms`` marker are considered
+        (legacy resources never are). Called after the transcript-frontier
+        check, so ``t_ms <= processed_through_ms`` for any marked video.
+        """
+        lookup = getattr(self._store, "processing_frontier", None)
+        if lookup is None:
+            return None
+        for rid in allowed:
+            info = lookup(rid)
+            if not info or info.get("source_type") not in TIME_GATED_SOURCE_TYPES:
+                continue
+            v = info.get("visual_through_ms")
+            if v is None:
+                continue
+            if t_ms > v:
+                return v
+        return None
+
     async def chat(
         self,
         *,
@@ -193,6 +221,43 @@ class ChatService:
         focus_resource_id: str | None = None,
         live_frame=None,
         no_frame_note: str | None = None,
+    ) -> ChatResponse:
+        """Answer one learner question; flags ``visual_pending`` when visuals lag."""
+        from app.chat.launch import clamp_current_time_ms
+
+        visual_through: int | None = None
+        session = self._sessions.get(session_id)
+        if session is not None:
+            t_ms = clamp_current_time_ms(current_time_ms)
+            allowed = effective_resource_scope(session.resource_scope, focus_resource_id)
+            if allowed and self._pending_frontier(allowed, t_ms) is None:
+                visual_through = self._visual_frontier(allowed, t_ms)
+        resp = await self._chat_core(
+            session_id=session_id,
+            current_time_ms=current_time_ms,
+            message=message,
+            mode=mode,
+            focus_resource_id=focus_resource_id,
+            live_frame=live_frame,
+            no_frame_note=no_frame_note,
+            visual_through=visual_through,
+        )
+        if visual_through is not None:
+            resp.visual_pending = True
+            resp.visual_through_ms = visual_through
+        return resp
+
+    async def _chat_core(
+        self,
+        *,
+        session_id: str,
+        current_time_ms: int,
+        message: str,
+        mode: str = "qa",
+        focus_resource_id: str | None = None,
+        live_frame=None,
+        no_frame_note: str | None = None,
+        visual_through: int | None = None,
     ) -> ChatResponse:
         """Answer one learner question.
 
@@ -315,8 +380,15 @@ class ChatService:
         mode_allows_supplemental = mode not in SUPPLEMENTAL_DISABLED_MODES
         explicit_supplemental = mode_allows_supplemental and is_supplemental_request(message)
 
+        visual_lag = visual_through is not None
+        low_text = VISUAL_PENDING_REFUSAL_TEXT if visual_lag else REFUSAL_TEXT
+
         if not passages:
-            if mode_allows_supplemental and not (prefer_recent or is_frame_question(message)):
+            if (
+                mode_allows_supplemental
+                and not visual_lag
+                and not (prefer_recent or is_frame_question(message))
+            ):
                 resp = await self._supplemental_answer(
                     session_id=session_id,
                     message=message,
@@ -328,9 +400,9 @@ class ChatService:
                 )
                 if resp is not None:
                     return resp
-            self._persist(session_id, message, prefix + REFUSAL_TEXT, [])
+            self._persist(session_id, message, prefix + low_text, [])
             return ChatResponse(
-                answer=prefix + REFUSAL_TEXT,
+                answer=prefix + low_text,
                 citations=[],
                 refused=True,
                 mode="grounded",
@@ -357,8 +429,8 @@ class ChatService:
             system=system, user_prompt=user_prompt, passages=passages, mode=mode
         )
 
-        def refuse() -> ChatResponse:
-            text = prefix + REFUSAL_TEXT
+        def refuse(low_evidence: bool = False) -> ChatResponse:
+            text = prefix + (low_text if low_evidence else REFUSAL_TEXT)
             self._persist(session_id, message, text, [])
             return ChatResponse(
                 answer=text,
@@ -371,7 +443,11 @@ class ChatService:
 
         # A refusal answer carries no citations by design.
         if result.text == REFUSAL_TEXT:
-            if mode_allows_supplemental and not (prefer_recent or is_frame_question(message)):
+            if (
+                mode_allows_supplemental
+                and not visual_lag
+                and not (prefer_recent or is_frame_question(message))
+            ):
                 resp = await self._supplemental_answer(
                     session_id=session_id,
                     message=message,
@@ -383,7 +459,7 @@ class ChatService:
                 )
                 if resp is not None:
                     return resp
-            return refuse()
+            return refuse(low_evidence=True)
 
         cited_ids = list(result.cited_ids) or extract_cited_ids(result.text)
         # Parse answer text too so hand-written providers cannot smuggle IDs
@@ -416,7 +492,7 @@ class ChatService:
                 mode=mode,
             )
             if result.text == REFUSAL_TEXT:
-                return refuse()
+                return refuse(low_evidence=True)
             cited_ids = list(result.cited_ids) or extract_cited_ids(result.text)
             for cid in extract_cited_ids(result.text):
                 if cid not in cited_ids:

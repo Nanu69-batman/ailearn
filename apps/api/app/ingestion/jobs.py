@@ -25,6 +25,7 @@ import logging
 import re
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -542,10 +543,28 @@ def ingest_media(
 #: frame indices partition cleanly across windows.
 WINDOW_MS = 120_000
 INITIAL_WINDOWS = 3
-LOOKAHEAD_MS = 120_000
+LOOKAHEAD_MS = 2 * WINDOW_MS
 assert WINDOW_MS % round(visual_mod.FRAME_INTERVAL_S * 1000) == 0
 
 INGEST_MODES = ("full", "stream")
+
+KIND_TRANSCRIPT = "transcript"
+KIND_VISUAL = "visual"
+ALL_STAGES = (KIND_TRANSCRIPT, KIND_VISUAL)
+
+#: Ordinal budget of ONE stage inside a window. A window ``[s, e)`` owns the
+#: ordinals ``[offset, offset + WINDOW_MS)`` (``offset = window_index_offset(s)``).
+#: Transcript chunks use ``[offset, offset + SPAN)`` and visual chunks use
+#: ``[offset + SPAN, offset + 2 * SPAN)`` with ``SPAN = WINDOW_MS // 2``. The
+#: two stages therefore never collide and each is deterministic on its own, so
+#: either stage can be re-run independently. ``build_chunks(max_chunks=SPAN)``
+#: raises if a stage overflows its sub-range.
+STAGE_ORDINAL_SPAN = WINDOW_MS // 2
+
+
+def stage_index_offset(window_start_ms: int, kind: str) -> int:
+    base = window_index_offset(window_start_ms)
+    return base if kind == KIND_TRANSCRIPT else base + STAGE_ORDINAL_SPAN
 
 
 def window_bounds(duration_ms: int) -> list[tuple[int, int]]:
@@ -553,6 +572,159 @@ def window_bounds(duration_ms: int) -> list[tuple[int, int]]:
     return [
         (s, min(s + WINDOW_MS, duration_ms)) for s in range(0, max(duration_ms, 0), WINDOW_MS)
     ]
+
+
+@dataclass
+class _WinCtx:
+    path: Path
+    course_id: str
+    resource_id: str
+    video_id: str | None
+    title: str | None
+    duration_ms: int
+    with_visual: bool
+    max_visual_frames: int | None
+    store: object
+
+
+def _bound_chunks(
+    chunks: list[Chunk], ctx: _WinCtx, s: int, e: int, extra: dict
+) -> list[Chunk]:
+    """Clamp to the file and the window, then stamp the frontier markers."""
+    chunks = _clamp_to_duration(chunks, ctx.duration_ms)
+    bounded: list[Chunk] = []
+    for chunk in chunks:
+        # A window never claims content beyond its own end.
+        if chunk.start_ms is not None and chunk.start_ms >= e:
+            continue
+        if chunk.end_ms is not None and chunk.end_ms > e:
+            chunk.end_ms = e
+        if (
+            chunk.start_ms is not None
+            and chunk.end_ms is not None
+            and chunk.end_ms <= chunk.start_ms
+        ):
+            continue
+        chunk.metadata["processed_through_ms"] = min(e, ctx.duration_ms)
+        chunk.metadata["duration_ms"] = ctx.duration_ms
+        chunk.metadata.update(extra)
+        bounded.append(chunk)
+    return bounded
+
+
+def _compute_transcript(ctx: _WinCtx, s: int, e: int) -> tuple[list[Chunk], dict]:
+    note_stage(STAGE_TRANSCRIBING)
+    transcript, signals = audio_mod.transcribe(
+        ctx.path, duration_ms=ctx.duration_ms, start_ms=s, end_ms=e
+    )
+    chunks = build_chunks(
+        resource_id=ctx.resource_id, course_id=ctx.course_id, source_type="video",
+        transcript=transcript, video_id=ctx.video_id, title=ctx.title,
+        index_offset=stage_index_offset(s, KIND_TRANSCRIPT),
+        max_chunks=STAGE_ORDINAL_SPAN,
+    )
+    # Without a visual pass there is nothing to wait for: the visual frontier
+    # equals the transcript frontier. With one, stamp 0 so the resource carries
+    # the marker (is not legacy) from the first transcript commit; the max over
+    # chunks is then raised by the visual chunks as stage V lands.
+    extra = {"visual_through_ms": min(e, ctx.duration_ms) if not ctx.with_visual else 0}
+    return _bound_chunks(chunks, ctx, s, e, extra), signals
+
+
+def _compute_visual(ctx: _WinCtx, s: int, e: int):
+    note_stage(STAGE_DESCRIBING)
+    report_v = visual_mod.extract_visual_pass(
+        str(ctx.path), duration_ms=ctx.duration_ms,
+        max_frames=ctx.max_visual_frames, start_ms=s, end_ms=e,
+    )
+    chunks = build_chunks(
+        resource_id=ctx.resource_id, course_id=ctx.course_id, source_type="video",
+        visual=report_v.segments, video_id=ctx.video_id, title=ctx.title,
+        index_offset=stage_index_offset(s, KIND_VISUAL),
+        max_chunks=STAGE_ORDINAL_SPAN,
+    )
+    extra = {"visual_through_ms": min(e, ctx.duration_ms)}
+    return _bound_chunks(chunks, ctx, s, e, extra), report_v
+
+
+def _commit_stage(ctx: _WinCtx, kind: str, s: int, e: int, chunks: list[Chunk]) -> int:
+    """Replace this stage's chunks in ``[s, e]`` and write the new ones."""
+    note_stage(STAGE_EMBEDDING)
+    ctx.store.delete_resource_range(ctx.resource_id, s, e, kind=kind)
+    return ctx.store.add(chunks)
+
+
+class _Tally:
+    """Thread-safe aggregation of per-stage results and job progress."""
+
+    def __init__(self, *, mode, duration_ms, stages, total, first_start, with_visual):
+        self.lock = threading.Lock()
+        self.mode, self.duration_ms, self.stages, self.total = mode, duration_ms, stages, total
+        self.with_visual = with_visual
+        self.t_done = self.v_done = 0
+        self.processed = self.visual = first_start
+        self.audio_chunks = self.visual_chunks = self.total_chunks = 0
+        self.warnings: list[str] = []
+        self.signals: dict = {}
+        self.v_status: list[str] = []
+        self.v_cov: list[float] = []
+        self.v_span: list[float] = []
+        self.v_expected = self.v_described = 0
+        self.timings: list[dict] = []
+        self.max_end = 0
+
+    def progress_fields(self) -> dict:
+        active = [
+            n for k, n in ((KIND_TRANSCRIPT, self.t_done), (KIND_VISUAL, self.v_done))
+            if k in self.stages
+        ]
+        out = {
+            "mode": self.mode, "duration_ms": self.duration_ms,
+            "windows_done": min(active) if active else 0, "windows_total": self.total,
+        }
+        if KIND_TRANSCRIPT in self.stages:
+            out["processed_through_ms"] = self.processed
+            out["transcript_windows_done"] = self.t_done
+        if KIND_VISUAL in self.stages or (
+            KIND_TRANSCRIPT in self.stages and not self.with_visual
+        ):
+            out["visual_through_ms"] = self.visual
+        if KIND_VISUAL in self.stages:
+            out["visual_windows_done"] = self.v_done
+        return out
+
+    def record(self, kind, e, chunks, written, extra=None) -> None:
+        with self.lock:
+            self.total_chunks += written
+            self.max_end = max([self.max_end, *(c.end_ms or 0 for c in chunks)])
+            end = min(e, self.duration_ms)
+            if kind == KIND_TRANSCRIPT:
+                self.t_done += 1
+                self.processed = end
+                self.audio_chunks += sum(
+                    1 for c in chunks if c.metadata.get("kind") == "transcript"
+                )
+                if not self.with_visual:
+                    self.visual = end
+                if extra:
+                    self.signals = extra
+            else:
+                self.v_done += 1
+                self.visual = end
+                self.visual_chunks += sum(
+                    1 for c in chunks if c.metadata.get("kind") == "visual"
+                )
+                if extra is not None:
+                    self.warnings.extend(extra.warnings)
+                    self.v_status.append(extra.status)
+                    self.v_cov.append(extra.coverage_pct)
+                    self.v_span.append(extra.span_pct)
+                    self.v_expected += len(extra.expected_indices)
+                    self.v_described += len(extra.covered_indices)
+                    if extra.timings:
+                        self.timings.append(extra.timings)
+            fields = self.progress_fields()
+        note_progress(**fields)
 
 
 def ingest_media_windows(
@@ -568,18 +740,29 @@ def ingest_media_windows(
     start_window: int | None = None,
     n_windows: int | None = None,
     on_window_done=None,
+    stages: tuple[str, ...] = ALL_STAGES,
+    pipelined: bool = True,
 ) -> dict:
-    """Windowed video ingest: each window is queryable as soon as it is written.
+    """Windowed, two-stage video ingest.
+
+    Each window is split into stage T (transcribe -> transcript chunks) and
+    stage V (frame description -> visual chunks), committed independently: the
+    transcript is queryable as soon as stage T lands. ``processed_through_ms``
+    is the transcript frontier, ``visual_through_ms`` the visual one (stamped
+    on visual chunks; on transcript chunks only when ``with_visual`` is False).
 
     ``mode="full"`` loops every window from ``start_window`` (default 0);
-    ``mode="stream"`` does ``n_windows`` (default :data:`INITIAL_WINDOWS`) and
-    leaves the resource partial. Per window: transcribe + visual over
-    ``[s, e)``, build chunks with window-safe ordinals, clamp to ``e`` (never
-    past the window, never past the file), stamp ``processed_through_ms`` and
-    ``duration_ms``, delete any prior chunks inside ``[s, e]`` so a re-run
-    leaves no stale chunks, then add. The strict ``end_ms <= T`` gate is not
-    touched here. ``on_window_done(index)`` is called after each window is
-    written.
+    ``mode="stream"`` does ``n_windows`` (default :data:`INITIAL_WINDOWS`).
+    ``stages`` selects which stages run (default both). With both stages and
+    ``pipelined=True`` a transcript lane and a vision lane run on two threads
+    (concurrency 1 each; V of window N only starts after T of window N has
+    committed), and each lane's commit (embedding + write) overlaps its next
+    compute. The resulting chunk set is identical to serial execution. Any
+    exception in either lane fails the whole call with the stage and window in
+    the message; the other lane stops at its next window boundary.
+
+    ``on_window_done(index)`` fires after a window's stage T commit (or stage V
+    when only V runs). The strict ``end_ms <= T`` gate is not touched here.
     """
     if mode not in INGEST_MODES:
         raise ValueError(f"unknown ingest mode {mode!r}")
@@ -590,131 +773,158 @@ def ingest_media_windows(
             f"cannot determine duration of {path.name}; refusing to ingest "
             "time-gated content without an authoritative timeline"
         )
-    resolved_title = _resolve_title(path, title)
+    run_stages = tuple(k for k in ALL_STAGES if k in stages)
+    if KIND_VISUAL in run_stages and not with_visual:
+        run_stages = tuple(k for k in run_stages if k != KIND_VISUAL)
+    if not run_stages:
+        raise ValueError("no ingest stage selected")
+    ctx = _WinCtx(
+        path=path, course_id=course_id, resource_id=resource_id, video_id=video_id,
+        title=_resolve_title(path, title), duration_ms=duration_ms,
+        with_visual=with_visual, max_visual_frames=max_visual_frames, store=_store(),
+    )
     bounds = window_bounds(duration_ms)
     first = start_window or 0
     if n_windows is None and mode == "stream":
         n_windows = INITIAL_WINDOWS
     selected = bounds[first:] if n_windows is None else bounds[first : first + n_windows]
 
-    store = _store()
-    processed = selected[0][0] if selected else 0
-    note_progress(
-        mode=mode, duration_ms=duration_ms, processed_through_ms=processed,
-        windows_done=0, windows_total=len(selected),
+    tally = _Tally(
+        mode=mode, duration_ms=duration_ms, stages=run_stages, total=len(selected),
+        first_start=selected[0][0] if selected else 0, with_visual=with_visual,
     )
-    audio_chunks = visual_chunks = total_chunks = 0
-    warnings: list[str] = []
-    signals: dict = {}
-    v_status: list[str] = []
-    v_cov: list[float] = []
-    v_span: list[float] = []
-    v_expected = v_described = 0
-    timings: list[dict] = []  # one visual-pass timing dict per window
-    max_end = 0
-    for done, (s, e) in enumerate(selected):
-        note_stage(STAGE_TRANSCRIBING)
-        transcript, window_signals = audio_mod.transcribe(
-            path, duration_ms=duration_ms, start_ms=s, end_ms=e
-        )
-        signals = window_signals
-        visual: list[visual_mod.VisualSegment] = []
-        if with_visual:
-            note_stage(STAGE_DESCRIBING)
-            try:
-                report_v = visual_mod.extract_visual_pass(
-                    str(path), duration_ms=duration_ms,
-                    max_frames=max_visual_frames, start_ms=s, end_ms=e,
-                )
-            except Exception as exc:  # noqa: BLE001 - visual is additive to audio
-                log.warning("visual extraction failed for %s [%d,%d): %s", path.name, s, e, exc)
-                warnings.append(f"visual extraction failed: {type(exc).__name__}: {exc}")
-                report_v = visual_mod.VisualPassReport(
-                    expected_indices=visual_mod.window_frame_indices(
-                        duration_ms, start_ms=s, end_ms=e
-                    ),
-                    duration_ms=duration_ms,
-                    failures=[f"{type(exc).__name__}: {exc}"],
-                )
-            visual = report_v.segments
-            warnings.extend(report_v.warnings)
-            v_status.append(report_v.status)
-            v_cov.append(report_v.coverage_pct)
-            v_span.append(report_v.span_pct)
-            v_expected += len(report_v.expected_indices)
-            v_described += len(report_v.covered_indices)
-            if report_v.timings:
-                timings.append(report_v.timings)
+    note_progress(**tally.progress_fields())
 
-        chunks = build_chunks(
-            resource_id=resource_id, course_id=course_id, source_type="video",
-            transcript=transcript, visual=visual, video_id=video_id,
-            title=resolved_title, index_offset=window_index_offset(s),
-            max_chunks=window_max_chunks(s, e),
-        )
-        chunks = _clamp_to_duration(chunks, duration_ms)
-        bounded: list[Chunk] = []
-        for chunk in chunks:
-            # A window never claims content beyond its own end.
-            if chunk.start_ms is not None and chunk.start_ms >= e:
-                continue
-            if chunk.end_ms is not None and chunk.end_ms > e:
-                chunk.end_ms = e
-            if (
-                chunk.start_ms is not None
-                and chunk.end_ms is not None
-                and chunk.end_ms <= chunk.start_ms
-            ):
-                continue
-            chunk.metadata["processed_through_ms"] = min(e, duration_ms)
-            chunk.metadata["duration_ms"] = duration_ms
-            bounded.append(chunk)
-        if not bounded:
-            log.warning("window [%d,%d) of %s produced no chunks", s, e, resource_id)
-        note_stage(STAGE_EMBEDDING)
-        store.delete_resource_range(resource_id, s, e)
-        written = store.add(bounded)
-        total_chunks += written
-        audio_chunks += sum(1 for c in bounded if c.metadata.get("kind") == "transcript")
-        visual_chunks += sum(1 for c in bounded if c.metadata.get("kind") == "visual")
-        max_end = max([max_end, *(c.end_ms or 0 for c in bounded)])
-        processed = min(e, duration_ms)
-        note_progress(
-            mode=mode, duration_ms=duration_ms, processed_through_ms=processed,
-            windows_done=done + 1, windows_total=len(selected),
-        )
-        if on_window_done is not None:
-            try:
-                on_window_done(first + done)
-            except Exception:
-                log.warning("on_window_done failed", exc_info=True)
+    done_events = [threading.Event() for _ in selected]
+    stop = threading.Event()
+    errors: list[tuple[str, int, int, int, BaseException]] = []
+    err_lock = threading.Lock()
+
+    def fail(kind: str, i: int, s: int, e: int, exc: BaseException) -> None:
+        log.error("%s stage failed for %s window %d [%d,%d): %s",
+                  kind, resource_id, first + i, s, e, exc, exc_info=exc)
+        with err_lock:
+            errors.append((kind, first + i, s, e, exc))
+        stop.set()
+
+    def compute(kind: str, s: int, e: int):
+        if kind == KIND_TRANSCRIPT:
+            chunks, signals = _compute_transcript(ctx, s, e)
+            return chunks, signals
+        return _compute_visual(ctx, s, e)
+
+    def commit(kind: str, i: int, s: int, e: int, chunks, extra) -> None:
+        try:
+            if not chunks:
+                log.warning("%s window [%d,%d) of %s produced no chunks", kind, s, e, resource_id)
+            written = _commit_stage(ctx, kind, s, e, chunks)
+            tally.record(kind, e, chunks, written, extra)
+            if kind == KIND_TRANSCRIPT:
+                done_events[i].set()
+            notify = kind == run_stages[0]
+            if notify and on_window_done is not None:
+                try:
+                    on_window_done(first + i)
+                except Exception:
+                    log.warning("on_window_done failed", exc_info=True)
+        except Exception as exc:  # noqa: BLE001 - recorded, re-raised by the caller
+            fail(kind, i, s, e, exc)
+
+    def lane(kind: str) -> None:
+        pool = ThreadPoolExecutor(max_workers=1)
+        pending = None
+        try:
+            for i, (s, e) in enumerate(selected):
+                if stop.is_set():
+                    break
+                if kind == KIND_VISUAL and KIND_TRANSCRIPT in run_stages:
+                    while not done_events[i].wait(0.05):
+                        if stop.is_set():
+                            return
+                    if stop.is_set():
+                        return
+                try:
+                    chunks, extra = compute(kind, s, e)
+                except Exception as exc:  # noqa: BLE001
+                    fail(kind, i, s, e, exc)
+                    break
+                if pending is not None:
+                    pending.result()
+                pending = pool.submit(
+                    contextvars.copy_context().run, commit, kind, i, s, e, chunks, extra
+                )
+            if pending is not None:
+                pending.result()
+        finally:
+            pool.shutdown(wait=True)
+
+    def lane_in_ctx(kind: str):
+        return contextvars.copy_context().run(lane, kind)
+
+    if pipelined and len(run_stages) == 2:
+        with ThreadPoolExecutor(max_workers=2) as lanes:
+            futures = [lanes.submit(lane_in_ctx, k) for k in run_stages]
+            for f in futures:
+                f.result()
+    else:
+        for i, (s, e) in enumerate(selected):
+            for kind in run_stages:
+                if stop.is_set():
+                    break
+                try:
+                    chunks, extra = compute(kind, s, e)
+                except Exception as exc:  # noqa: BLE001
+                    fail(kind, i, s, e, exc)
+                    break
+                commit(kind, i, s, e, chunks, extra)
+            if stop.is_set():
+                break
+
+    if errors:
+        kind, widx, s, e, exc = errors[0]
+        raise RuntimeError(
+            f"{kind} stage failed for window {widx} [{s},{e}): "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
 
     if not with_visual:
         visual_status = "skipped"
+    elif not tally.v_status:
+        visual_status = "skipped" if KIND_VISUAL not in run_stages else "complete"
     else:
         visual_status = (
-            "complete" if all(x == "complete" for x in v_status)
-            else next(x for x in v_status if x != "complete")
+            "complete" if all(x == "complete" for x in tally.v_status)
+            else next(x for x in tally.v_status if x != "complete")
         )
-    return {
+    report = {
         "mode": mode,
-        "processed_through_ms": processed,
         "windows_done": len(selected),
         "windows_total": len(selected),
-        "audio_chunks": audio_chunks,
-        "visual_chunks": visual_chunks,
-        "total_chunks": total_chunks,
+        "transcript_windows_done": tally.t_done,
+        "visual_windows_done": tally.v_done,
+        "audio_chunks": tally.audio_chunks,
+        "visual_chunks": tally.visual_chunks,
+        "total_chunks": tally.total_chunks,
         "duration_ms": duration_ms,
-        "max_end_ms": max_end,
-        "audio_signals": signals,
+        "max_end_ms": tally.max_end,
+        "audio_signals": tally.signals,
         "visual_status": visual_status,
-        "visual_expected_frames": v_expected,
-        "visual_described_frames": v_described,
-        "visual_coverage_pct": round(sum(v_cov) / len(v_cov), 1) if v_cov else 0.0,
-        "visual_span_pct": round(sum(v_span) / len(v_span), 1) if v_span else 0.0,
-        "warnings": warnings,
-        "timings": timings,
+        "visual_expected_frames": tally.v_expected,
+        "visual_described_frames": tally.v_described,
+        "visual_coverage_pct": (
+            round(sum(tally.v_cov) / len(tally.v_cov), 1) if tally.v_cov else 0.0
+        ),
+        "visual_span_pct": (
+            round(sum(tally.v_span) / len(tally.v_span), 1) if tally.v_span else 0.0
+        ),
+        "warnings": tally.warnings,
+        "timings": tally.timings,
     }
+    if KIND_TRANSCRIPT in run_stages:
+        report["processed_through_ms"] = tally.processed
+    if KIND_VISUAL in run_stages or not with_visual:
+        report["visual_through_ms"] = tally.visual
+    return report
 
 
 def ingest_document(
@@ -947,7 +1157,9 @@ def job_payload(job: IngestJob) -> dict:
         if detail.get(key) is not None:
             payload[key] = detail[key]
     for key in (
-        "mode", "processed_through_ms", "duration_ms", "windows_done", "windows_total"
+        "mode", "processed_through_ms", "visual_through_ms", "duration_ms",
+        "windows_done", "windows_total", "transcript_windows_done",
+        "visual_windows_done",
     ):
         if detail.get(key) is not None:
             payload[key] = detail[key]
