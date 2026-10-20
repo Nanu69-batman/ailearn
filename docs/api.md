@@ -4,10 +4,10 @@ Live contract for the FastAPI backend in `apps/api/`.
 
 | | Hosted | Local |
 |---|---|---|
-| Base URL | `<API_URL>` | `http://localhost:8123` |
-| Swagger UI (try requests) | `<API_URL>/docs` | `http://localhost:8123/docs` |
-| ReDoc | `<API_URL>/redoc` | `http://localhost:8123/redoc` |
-| OpenAPI JSON | `<API_URL>/openapi.json` | `http://localhost:8123/openapi.json` |
+| Base URL | `https://malai-pioneer-api.onrender.com` | `http://localhost:8123` |
+| Swagger UI (try requests) | `https://malai-pioneer-api.onrender.com/docs` | `http://localhost:8123/docs` |
+| ReDoc | `https://malai-pioneer-api.onrender.com/redoc` | `http://localhost:8123/redoc` |
+| OpenAPI JSON | `https://malai-pioneer-api.onrender.com/openapi.json` | `http://localhost:8123/openapi.json` |
 
 The web client reads the base URL from `NEXT_PUBLIC_API_URL`.
 `apps/web/lib/api.ts` is the other half of the contract, so a change to one
@@ -57,7 +57,7 @@ protect the model quota with `MAX_UPLOAD_MB`, `MAX_VIDEO_MINUTES` and
 | GET | `/courses/{course_id}/resources` | — | List a course's indexed resources |
 | POST | `/courses/{course_id}/resources/{resource_id}/position` | — | Playhead heartbeat; queues the next stream-mode windows |
 | DELETE | `/courses/{course_id}/resources/{resource_id}` | — | Delete a resource: detach from subjects, purge chunks and file |
-| GET | `/resources/{resource_id}/media` | — | Stream a resource's asset (Range-capable; hosted: redirect to R2) |
+| GET | `/resources/{resource_id}/media` | — | Stream a resource's asset (Range-capable) |
 | GET | `/subjects` | — | List subjects |
 | POST | `/subjects` | — | Create a subject (`201`) |
 | GET | `/subjects/{subject_id}` | — | Read one subject |
@@ -256,9 +256,7 @@ provider error.
   removed but the stored file could not be deleted.
 - `GET /resources/{resource_id}/media` — streams the stored asset. Locally it is
   served from disk with HTTP Range support (`206 Partial Content` when ranged).
-  On the hosted deployment (`STORAGE=r2`) it redirects to a short-lived
-  presigned Cloudflare R2 URL, and the browser streams from R2 with Range
-  requests. Errors: `404 {"detail": "no stored media for …"}`.
+  The hosted deployment serves it the same way. Errors: `404 {"detail": "no stored media for …"}`.
 
 ## Subjects
 
@@ -333,7 +331,7 @@ what the web client does.
 
 Requires the API running on `http://localhost:8123` with `LMS_LAUNCH_SECRET=dev-secret`
 and `ALLOW_UNSIGNED_LAUNCH=true` (local dev only), so the launch below is unsigned.
-Against the hosted API (`<API_URL>`), the launch must be signed as described under
+Against the hosted API (`https://malai-pioneer-api.onrender.com`), the launch must be signed as described under
 **Auth and signing**. `/health`, the subject routes and the ingest routes work
 there unchanged.
 

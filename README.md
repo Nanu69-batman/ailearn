@@ -15,17 +15,21 @@ attached to the subject.
 
 | What | Link |
 |---|---|
-| Web app (Vercel) | `<WEB_URL>` |
-| API (Hugging Face Space) | `<API_URL>` |
-| Interactive API docs (Swagger UI) | `<API_URL>/docs` |
-| API reference (ReDoc) | `<API_URL>/redoc` |
-| Health check | `<API_URL>/health` returns `{"status": "ok"}` |
+| Web app (Vercel) | `https://ailearn-theta.vercel.app` |
+| API (Render, Docker) | `https://malai-pioneer-api.onrender.com` |
+| Interactive API docs (Swagger UI) | `https://malai-pioneer-api.onrender.com/docs` |
+| API reference (ReDoc) | `https://malai-pioneer-api.onrender.com/redoc` |
+| Health check | `https://malai-pioneer-api.onrender.com/health` returns `{"status": "ok"}` |
 
-Suggested walkthrough: open `<WEB_URL>`, go to the dashboard, open a subject
-that contains `Partial-derivatives.mp4` (or upload it there, see
-[docs/DATASET.md](docs/DATASET.md)), play it, pause at about
-0:30 and ask "What equation is on screen?", then pause at 0:02 and ask the same
-question. The second one is refused, because nothing had been shown yet.
+Suggested walkthrough: open `https://ailearn-theta.vercel.app`, go to the dashboard and open the
+**Engineering Mathematics** subject, which already holds `Partial-derivatives.mp4`.
+Play it and pause at about 0:30, then ask "What is the final worked example at
+the end of the video?" The tutor says the lesson hasn't got there yet, and every
+citation ends before 0:30. Pause at about 5:00 and ask "What equation is on
+screen right now?" It answers from the moments just before the playhead.
+
+The API runs on Render's free tier, so the first request after about 15 idle
+minutes takes up to a minute while it wakes.
 
 ## What makes it different
 
@@ -71,12 +75,11 @@ question. The second one is refused, because nothing had been shown yet.
 flowchart LR
   U["Learner's browser"] --> W["Next.js 15 web app<br/>Vercel"]
   W -->|"signed LMS launch (HMAC)"| A
-  U -->|"REST: chat, ingest, media"| A["FastAPI API<br/>Docker on Hugging Face Spaces"]
+  U -->|"REST: chat, ingest, media"| A["FastAPI API<br/>Docker on Render"]
   A --> V[("Pinecone<br/>vector index")]
-  A --> S[("Cloudflare R2<br/>videos, PDFs, PPTX, images")]
+  A --> S[("Container disk<br/>videos, PDFs, PPTX, images")]
   A --> G["Gemini<br/>answers, embeddings, frame descriptions"]
   A --> Q["Groq Whisper<br/>speech to text"]
-  U -.->|"presigned media URL, Range requests"| S
 ```
 
 More diagrams (hosting, ingest pipeline, question flow) and the safety
@@ -94,8 +97,8 @@ invariants are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 | Vision | Gemini (frame and image descriptions, live frames) |
 | Speech to text | Groq `whisper-large-v3-turbo`, with local faster-whisper as fallback |
 | Media | PyAV (decode, duration, frame sampling), pypdf, python-pptx |
-| File storage | Cloudflare R2 (hosted) or local disk |
-| Hosting | Vercel (web), Hugging Face Spaces Docker (API) |
+| File storage | Local disk (the demo video is baked into the hosted image) |
+| Hosting | Vercel (web), Render Docker free tier (API, `render.yaml`) |
 | Tests | pytest (backend), `tsc --noEmit` and a contract check (frontend) |
 
 ## Quickstart (local)
@@ -146,7 +149,7 @@ To load the sample lecture, see [docs/DATASET.md](docs/DATASET.md).
 | `EMBEDDING_MODEL` | `gemini-embedding-2` | Embedding model (3072-d) |
 | `GROQ_API_KEY` | empty | Hosted transcription. With no key, local faster-whisper is used |
 | `GROQ_TRANSCRIBE_MODEL` | `whisper-large-v3-turbo` | Groq model |
-| `CORS_ORIGIN` | `http://localhost:3000` | The single allowed browser origin (`<WEB_URL>` when hosted) |
+| `CORS_ORIGIN` | `http://localhost:3000` | The single allowed browser origin (`https://ailearn-theta.vercel.app` when hosted) |
 | `LMS_LAUNCH_SECRET` | `dev-secret` | HMAC secret for LMS launches and session tokens. Must match the web app's secret |
 | `ALLOW_UNSIGNED_LAUNCH` | `false` | `true` accepts unsigned launches. **Localhost demo only**; it works only together with `LMS_LAUNCH_SECRET=dev-secret` |
 | `USE_IN_MEMORY` | `true` | Process-local sessions, mirrored to `data/` |
@@ -155,15 +158,14 @@ To load the sample lecture, see [docs/DATASET.md](docs/DATASET.md).
 | `MAX_UPLOADS_PER_HOUR` | `0` (no cap) | Global upload rate cap that protects the free model quota |
 | `VECTOR_STORE` | `chroma` | `pinecone` on the hosted deployment *(hosted only)* |
 | `PINECONE_API_KEY`, `PINECONE_INDEX` | none | Pinecone credentials and index name *(hosted only)* |
-| `STORAGE` | disk | `r2` on the hosted deployment *(hosted only)* |
-| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` | none | Cloudflare R2 credentials and bucket *(hosted only)* |
+| `LOCAL_WHISPER_FALLBACK` | `true` | `false` on the hosted 512 MB instance: if Groq fails, the window fails visibly instead of loading a local model |
 | `OCR_BACKEND` | off | `unlimited-ocr` enables OCR for scanned PDFs (needs an operator-installed GPU stack) |
 
 **Web** (`apps/web/.env.local` locally, Vercel project settings when hosted):
 
 | Variable | Purpose |
 |---|---|
-| `NEXT_PUBLIC_API_URL` | API base URL (`http://localhost:8123` locally, `<API_URL>` when hosted) |
+| `NEXT_PUBLIC_API_URL` | API base URL (`http://localhost:8123` locally, `https://malai-pioneer-api.onrender.com` when hosted) |
 | `LMS_LAUNCH_SECRET` | **Server-only.** A Next.js server route signs the LMS launch with it, so the hosted API can run with `ALLOW_UNSIGNED_LAUNCH=false` |
 
 Never commit `apps/api/.env`. It holds the API keys and the launch secret.
@@ -190,7 +192,7 @@ Current results and what each test file protects are listed in
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Hosting topology, ingest pipeline, question flow, safety invariants |
 | [docs/api.md](docs/api.md) | Every route: auth, request, response, error codes |
-| [docs/deployment-guide.md](docs/deployment-guide.md) | Step-by-step deployment: Pinecone, R2, Hugging Face Space, Vercel, smoke test, rollback |
+| [docs/deployment-guide.md](docs/deployment-guide.md) | Step-by-step deployment: Pinecone, Render, Vercel, smoke test, rollback |
 | [docs/EVALUATION.md](docs/EVALUATION.md) | RAG evaluation results, test inventory, performance numbers |
 | [docs/DATASET.md](docs/DATASET.md) | Sample lecture, PDF and golden question set, and how to ingest them |
 | [PROJECT.md](PROJECT.md) | Feature inventory, decision log, detailed Mermaid flows |
@@ -203,7 +205,7 @@ Current results and what each test file protects are listed in
 ## Known limitations
 
 - **YouTube ingest is unreliable when hosted.** YouTube often blocks caption and
-  video downloads from datacenter IPs such as Hugging Face's. Upload the file
+  video downloads from datacenter IPs such as Render's. Upload the file
   instead. YouTube ingest has also not been verified in the development
   environment.
 - **Free-tier quotas limit throughput.** Gemini's free tier allows about 100
@@ -213,8 +215,10 @@ Current results and what each test file protects are listed in
   capped by size, length and rate to protect the quota.
 - **Job, session and subject state lives in process memory.** Sessions and
   subjects are mirrored to local files. Ingest job status and the in-flight
-  window guard are lost on restart. A restarted free Space also loses anything
-  not stored in Pinecone or R2. Moving this state out of the process is Phase A
+  window guard are lost on restart. Render's free disk is wiped on every
+  restart and wake-up, so files uploaded on the hosted site disappear then
+  (their index entries stay in Pinecone). The demo video survives because it is
+  baked into the image. Moving this state out of the process is Phase A
   of [docs/SCALING_PLAN.md](docs/SCALING_PLAN.md).
 - **State-changing routes (upload, delete, subjects, position) have no auth.**
   Only chat and history are bound to a signed session. See

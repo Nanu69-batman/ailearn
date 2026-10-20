@@ -24,7 +24,7 @@ sampled frames** (`0..652000 ms`), with visual coverage at **100%**.
 ### Through the UI
 
 1. Start the app (`run.bat`, or see the [README quickstart](../README.md#quickstart-local)),
-   or open the hosted app at `<WEB_URL>`.
+   or open the hosted app at `https://ailearn-theta.vercel.app`.
 2. Go to **Dashboard**, create a subject (for example "Engineering Mathematics")
    and open it.
 3. In the file upload form, choose `test-data/Partial-derivatives.mp4`. Pick
@@ -45,7 +45,7 @@ Accepted types: video (for example `.mp4`), `.pdf`, `.pptx`, `.png`, `.jpg`,
 `mode` (`full` or `stream`, video only). Full reference: [api.md](api.md).
 
 ```bash
-BASE=http://localhost:8123        # or <API_URL>
+BASE=http://localhost:8123        # or https://malai-pioneer-api.onrender.com
 
 # 1. create a subject linked to a course id (returns {"id": "sub_…", ...})
 curl -s -X POST "$BASE/subjects" -H 'content-type: application/json' \

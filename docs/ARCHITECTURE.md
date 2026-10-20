@@ -18,11 +18,11 @@ flowchart LR
     W["Next.js 15 web app"]
     L["Server route<br/>signs LMS launch (HMAC)"]
   end
-  subgraph HF["Hugging Face Space (Docker, CPU, port 7860)"]
+  subgraph RN["Render (Docker, free tier)"]
     A["FastAPI API<br/>chat, ingest, retrieval"]
+    D[("Container disk<br/>media and documents")]
   end
   P[("Pinecone serverless<br/>vectors, cosine")]
-  R[("Cloudflare R2<br/>media and documents")]
   G["Gemini API<br/>LLM, embeddings, vision"]
   Q["Groq API<br/>whisper-large-v3-turbo"]
 
@@ -30,11 +30,9 @@ flowchart LR
   W --> L
   L -->|"POST /lms/session (signed)"| A
   B -->|"POST /chat, /chat/live-frame,<br/>/courses/{id}/ingest, /position"| A
-  B -->|"GET /resources/{id}/media"| A
-  A -.->|"redirect to presigned URL"| B
-  B -->|"GET with Range"| R
+  B -->|"GET /resources/{id}/media (Range)"| A
   A --> P
-  A --> R
+  A --> D
   A --> G
   A --> Q
 ```
@@ -42,9 +40,9 @@ flowchart LR
 | Component | Where | Why there |
 |---|---|---|
 | Web (Next.js 15) | Vercel, root dir `apps/web` | Static and edge-friendly. The only server-side code is the launch-signing route, which keeps `LMS_LAUNCH_SECRET` out of the browser |
-| API (FastAPI) | Hugging Face Space, Docker SDK, free CPU tier | Vercel cannot host it: the function bundle limit is 250 MB, while faster-whisper, PyAV and chromadb are larger. Ingest jobs run in the background for minutes, and serverless functions have no persistent disk |
-| Vectors | Pinecone serverless (`VECTOR_STORE=pinecone`) | Survives Space restarts. Local dev uses Chroma on disk (`VECTOR_STORE=chroma`) |
-| Files | Cloudflare R2 (`STORAGE=r2`) | Survives restarts and has no egress fees. The media route redirects to a presigned URL and the browser streams from R2 with HTTP Range. Local dev stores files on disk |
+| API (FastAPI) | Render web service, Docker, free tier (`render.yaml`, `apps/api/deploy/render/Dockerfile`) | Vercel cannot host it: the function bundle limit is 250 MB, while faster-whisper, PyAV and chromadb are larger, and ingest jobs run in the background for minutes. One process, because jobs and sessions live in memory |
+| Vectors | Pinecone serverless (`VECTOR_STORE=pinecone`) | Render's free disk is wiped on restart, so the index lives outside the container. The same `build_where` scope + strict-T filter runs in Pinecone, and every match is re-checked against it in Python. Local dev uses Chroma on disk (`VECTOR_STORE=chroma`) |
+| Files | Container disk | A hackathon trade-off. The demo video is baked into the image, so it is always there. Files uploaded on the hosted site last until the next restart. The media route serves them with HTTP Range |
 | LLM / embeddings / vision | Gemini `gemini-3.5-flash-lite`, `gemini-embedding-2` (3072-d) | One provider for answers, vectors and frame descriptions |
 | Speech to text | Groq `whisper-large-v3-turbo`, with local faster-whisper as fallback | About 3 s per 2-minute window on Groq, against 14-18 s for local `tiny` (measured, see [EVALUATION.md](EVALUATION.md)). This is what makes a small CPU host workable |
 
@@ -60,7 +58,7 @@ retrying.
 flowchart TD
   UP["POST /courses/{id}/ingest<br/>multipart, mode=full|stream"] --> CAP{"Size / length / rate caps"}
   CAP -->|"over"| E413["413 or 429, nothing stored"]
-  CAP -->|"ok"| ST["Store original file<br/>R2 (hosted) or disk (local)"]
+  CAP -->|"ok"| ST["Store original file<br/>on disk"]
   ST --> KIND{"File type"}
   KIND -->|"pdf / pptx"| DOC["pypdf / python-pptx text<br/>(OCR if no text layer and enabled)"]
   KIND -->|"image"| IMG["Gemini describes image<br/>ungated, cited by image_no"]
