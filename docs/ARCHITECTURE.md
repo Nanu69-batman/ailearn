@@ -1,0 +1,142 @@
+# Architecture
+
+Malai Pioneer has two deployable parts: a Next.js web app and a FastAPI API.
+The API makes every decision that matters for correctness: which passages a
+learner may see at time `T`, which citations are real, and when to refuse. The
+browser plays media, captures a frame when asked, and posts requests.
+
+Related: [api.md](api.md) (routes), [deployment-guide.md](deployment-guide.md)
+(how to stand this up), [../PROJECT.md](../PROJECT.md) (more detailed flows and the
+decision log).
+
+## (a) Hosting topology
+
+```mermaid
+flowchart LR
+  B["Browser<br/>video player + chat"]
+  subgraph VER["Vercel"]
+    W["Next.js 15 web app"]
+    L["Server route<br/>signs LMS launch (HMAC)"]
+  end
+  subgraph HF["Hugging Face Space (Docker, CPU, port 7860)"]
+    A["FastAPI API<br/>chat, ingest, retrieval"]
+  end
+  P[("Pinecone serverless<br/>vectors, cosine")]
+  R[("Cloudflare R2<br/>media and documents")]
+  G["Gemini API<br/>LLM, embeddings, vision"]
+  Q["Groq API<br/>whisper-large-v3-turbo"]
+
+  B --> W
+  W --> L
+  L -->|"POST /lms/session (signed)"| A
+  B -->|"POST /chat, /chat/live-frame,<br/>/courses/{id}/ingest, /position"| A
+  B -->|"GET /resources/{id}/media"| A
+  A -.->|"redirect to presigned URL"| B
+  B -->|"GET with Range"| R
+  A --> P
+  A --> R
+  A --> G
+  A --> Q
+```
+
+| Component | Where | Why there |
+|---|---|---|
+| Web (Next.js 15) | Vercel, root dir `apps/web` | Static and edge-friendly. The only server-side code is the launch-signing route, which keeps `LMS_LAUNCH_SECRET` out of the browser |
+| API (FastAPI) | Hugging Face Space, Docker SDK, free CPU tier | Vercel cannot host it: the function bundle limit is 250 MB, while faster-whisper, PyAV and chromadb are larger. Ingest jobs run in the background for minutes, and serverless functions have no persistent disk |
+| Vectors | Pinecone serverless (`VECTOR_STORE=pinecone`) | Survives Space restarts. Local dev uses Chroma on disk (`VECTOR_STORE=chroma`) |
+| Files | Cloudflare R2 (`STORAGE=r2`) | Survives restarts and has no egress fees. The media route redirects to a presigned URL and the browser streams from R2 with HTTP Range. Local dev stores files on disk |
+| LLM / embeddings / vision | Gemini `gemini-3.5-flash-lite`, `gemini-embedding-2` (3072-d) | One provider for answers, vectors and frame descriptions |
+| Speech to text | Groq `whisper-large-v3-turbo`, with local faster-whisper as fallback | About 3 s per 2-minute window on Groq, against 14-18 s for local `tiny` (measured, see [EVALUATION.md](EVALUATION.md)). This is what makes a small CPU host workable |
+
+Free-tier protection on the API: `MAX_UPLOAD_MB`, `MAX_VIDEO_MINUTES` (read from
+the container header before any model call), `MAX_UPLOADS_PER_HOUR`, a
+60 requests/min/IP limit on chat routes, and fail-fast quota handling. A spent
+daily quota returns `503 {"detail": "... quota reached ..."}` and does not keep
+retrying.
+
+## (b) Ingest pipeline
+
+```mermaid
+flowchart TD
+  UP["POST /courses/{id}/ingest<br/>multipart, mode=full|stream"] --> CAP{"Size / length / rate caps"}
+  CAP -->|"over"| E413["413 or 429, nothing stored"]
+  CAP -->|"ok"| ST["Store original file<br/>R2 (hosted) or disk (local)"]
+  ST --> KIND{"File type"}
+  KIND -->|"pdf / pptx"| DOC["pypdf / python-pptx text<br/>(OCR if no text layer and enabled)"]
+  KIND -->|"image"| IMG["Gemini describes image<br/>ungated, cited by image_no"]
+  KIND -->|"video"| WIN["Split into 120 s windows<br/>duration from container header"]
+  WIN --> T["Stage T: transcript lane<br/>window audio to Groq (or faster-whisper)"]
+  WIN --> V["Stage V: visual lane<br/>frame every 4 s, skip duplicates,<br/>Gemini describes frames"]
+  T --> CT["Chunk transcript<br/>times from the audio signal"]
+  V --> CV["Visual chunks<br/>times from frame-index arithmetic"]
+  CT --> EMB["Batch embed, 64 texts per call<br/>gemini-embedding-2"]
+  CV --> EMB
+  DOC --> EMB
+  IMG --> EMB
+  EMB --> VS[("Vector store<br/>Pinecone or Chroma")]
+  VS --> FR["Frontier markers on chunks:<br/>processed_through_ms (transcript)<br/>visual_through_ms (visual)"]
+```
+
+How it works:
+
+- **Windows.** Video is processed in 120 s windows. Each window has two
+  independently committed stages. Stage T (transcribe, chunk, embed, store) runs
+  first, so a window becomes askable quickly. Stage V (frame descriptions) runs
+  in a second lane in parallel, one window behind.
+- **Modes.** `full` processes every window in one job. `stream` processes the
+  first 3 windows (6 minutes) at upload. After that the player reports its
+  position (`POST /courses/{id}/resources/{rid}/position`), and the API queues up
+  to two transcript windows ahead of the playhead plus a visual catch-up job.
+- **Frontiers live in the store, not in memory.** Chunks carry
+  `processed_through_ms` and `visual_through_ms`, so the next window can be
+  derived after a restart. A window with nothing to index still advances the
+  frontier.
+- **Timestamps never come from a language model.** Transcript times come from
+  the ASR segments, shifted by the window offset. Frame times come from the
+  sampler's index. A frame index in the model's reply that the sampler never
+  produced is dropped and recorded; it is never clamped or reassigned.
+- **Degradation is reported.** Each job reports `visual_status`
+  (complete / partial / failed / skipped), `visual_coverage_pct` and warnings. A
+  scanned PDF that could not be read reports `skipped` or `failed` with the reason.
+  It never looks like an empty document that was read successfully.
+
+## (c) Question flow
+
+```mermaid
+flowchart TD
+  Q["Learner pauses at T, asks a question"] --> S["POST /chat<br/>session_id + session_token + current_time_ms"]
+  S --> AUTH{"Session exists and<br/>HMAC token valid?"}
+  AUTH -->|"no"| X401["401 / 404"]
+  AUTH -->|"yes"| SC["Scope = granted resource_scope<br/>INTERSECTED with focused video"]
+  SC --> EMPTY{"Scope empty?"}
+  EMPTY -->|"yes"| RS["Refuse, scope_empty=true"]
+  EMPTY -->|"no"| QRY["Vector query restricted to scope<br/>filter: end_ms <= T (in the query)"]
+  QRY --> PY["Python re-check: drop any passage<br/>with end_ms missing or > T"]
+  PY --> REC["Optional recency re-rank<br/>(gated pool only)"]
+  REC --> LLM["Gemini answers from surviving passages only"]
+  LLM --> CIT{"At least one citation, and every<br/>cited id in the retrieved set?"}
+  CIT -->|"no"| RF["Refuse, no citations"]
+  CIT -->|"yes"| OK["Answer + validated citations<br/>(ms range, transcript or visual)"]
+```
+
+"Ask about this frame" (`POST /chat/live-frame`) adds one step before the query.
+The captured JPEG is described by Gemini, and the description joins the pool as a
+passage with `start_ms == end_ms == T`, so it passes the same gate. `T` is first
+checked against the duration the server read from the file. An out-of-range `T`
+gets `422`; it is never clamped.
+
+## Safety invariants
+
+These are product properties, and the tests pin them. They are not tuning
+knobs.
+
+| # | Invariant | Why |
+|---|---|---|
+| 1 | **Strict timestamp gate: keep a video passage only when `end_ms <= T`.** Never `start_ms <= T`. A missing `end_ms` excludes the passage. The rule is enforced inside the vector query and re-checked in Python. | A passage that *starts* before `T` can still *end* after it, and its tail is a spoiler. An earlier eval with the loose rule measured a 48% production-gap rate. The current eval measures 0 leakage. |
+| 2 | **Citations are validated against the retrieved set.** Uncited answers and unknown ids are refused. | A model can cite a plausible-looking id that was never retrieved. Passing that through presents an ungrounded answer as grounded. |
+| 3 | **Scope is intersected, never replaced.** The focused video narrows the granted `resource_scope`; it cannot widen it. | An earlier version replaced the scope with the focused id, which let a client read outside its grant. |
+| 4 | **Plausible-looking ids are not real ids.** Subjects refuse to attach a resource id that the index cannot vouch for. | A scope such as `["res_video"]` once matched no indexed chunk and silently refused every question. |
+| 5 | **Timestamps come from signals, not from the model.** ASR segment times and frame-index arithmetic set the times; a live frame sits at exactly `T`. | A model that labels a frame from 650 s as "index 5" would otherwise store it at 20 s, which is a spoiler leak. |
+| 6 | **Signed launches in production.** `LMS_LAUNCH_SECRET=dev-secret` with `ALLOW_UNSIGNED_LAUNCH=true` is for a localhost demo only. Hosted, the Vercel server route signs launches and the API runs with `ALLOW_UNSIGNED_LAUNCH=false`. | The launch carries the learner, the course and the allowed resources. Unsigned, anyone could grant themselves any scope. |
+| 7 | **Secrets stay out of the repo and the browser.** `apps/api/.env` is git-ignored. The web app's launch secret is server-only (no `NEXT_PUBLIC_` prefix). | |
+| 8 | **Model HTML stays inert.** No `rehype-raw`, and KaTeX runs with `trust: false`. `npm run contract-check` fails if either is broken. | Answers are model output rendered in the learner's browser. |

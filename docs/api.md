@@ -1,10 +1,18 @@
 # API Reference — AI Learning Assistant
 
-Live contract for the FastAPI backend in `apps/api/`. **Base URL (local):**
-`http://localhost:8123` — the web client reads it from `NEXT_PUBLIC_API_URL`
-(`apps/web/.env.example`). `apps/web/lib/api.ts` is the other half of the
-contract: change one, change the other. Context: `PROJECT.md` (architecture),
-`docs/HANDOFF.md` (current state).
+Live contract for the FastAPI backend in `apps/api/`.
+
+| | Hosted | Local |
+|---|---|---|
+| Base URL | `<API_URL>` | `http://localhost:8123` |
+| Swagger UI (try requests) | `<API_URL>/docs` | `http://localhost:8123/docs` |
+| ReDoc | `<API_URL>/redoc` | `http://localhost:8123/redoc` |
+| OpenAPI JSON | `<API_URL>/openapi.json` | `http://localhost:8123/openapi.json` |
+
+The web client reads the base URL from `NEXT_PUBLIC_API_URL`.
+`apps/web/lib/api.ts` is the other half of the contract, so a change to one
+needs a matching change to the other. Context: [ARCHITECTURE.md](ARCHITECTURE.md),
+[../PROJECT.md](../PROJECT.md), [HANDOFF.md](HANDOFF.md).
 
 Conventions: JSON unless a route says `multipart/form-data`; errors use the
 FastAPI shape `{"detail": "…"}`; `current_time_ms` is the learner clock in ms,
@@ -12,6 +20,26 @@ valid `0 .. 21600000` (6 h, clamped server-side); `issued_at` is **required**
 (omitting it is a `422`; epoch ms canonical, epoch seconds auto-detected);
 requests may carry `x-request-id` for log correlation. Rate limit: 60
 req/min/IP across `/lms/session`, `/chat` and `/chat/live-frame` → `429`.
+**Quota exhaustion:** if a Gemini daily quota is spent during any request (chat,
+live frame or ingest), the API answers `503` with a readable reason and stops
+instead of retrying:
+
+```json
+{"detail": "Gemini embedding quota reached (limit <N>, <quotaId>). It resets in about <H>h <M>m. Stopped instead of waiting."}
+```
+
+The message format comes from `quota_exhausted_message()` in
+`app/ingestion/backoff.py`. `<quotaId>`, `<N>` and the reset time are copied from
+the provider's reply. The prefix reads "Gemini request quota" for generation
+calls and "API quota" when the provider is not identified. A background ingest job that hits the quota
+reports the same text in its `error` field with `status: "failed"`, and
+`/position` returns `status: "failed"` with that `error` until the reset time.
+
+**Auth summary:** chat and history routes need a session token minted by a
+signed `POST /lms/session`. Ingest, resource, subject and media routes are
+currently unauthenticated (see [TODO.md](TODO.md), item 7). Hosted deployments
+protect the model quota with `MAX_UPLOAD_MB`, `MAX_VIDEO_MINUTES` and
+`MAX_UPLOADS_PER_HOUR` instead.
 
 ## Route table
 
@@ -27,7 +55,9 @@ req/min/IP across `/lms/session`, `/chat` and `/chat/live-frame` → `429`.
 | POST | `/courses/{course_id}/ingest-youtube` | — | Ingest a YouTube URL (JSON) |
 | GET | `/ingestion/jobs/{job_id}` | — | Ingest job status |
 | GET | `/courses/{course_id}/resources` | — | List a course's indexed resources |
-| GET | `/resources/{resource_id}/media` | — | Stream a resource's asset (Range-capable) |
+| POST | `/courses/{course_id}/resources/{resource_id}/position` | — | Playhead heartbeat; queues the next stream-mode windows |
+| DELETE | `/courses/{course_id}/resources/{resource_id}` | — | Delete a resource: detach from subjects, purge chunks and file |
+| GET | `/resources/{resource_id}/media` | — | Stream a resource's asset (Range-capable; hosted: redirect to R2) |
 | GET | `/subjects` | — | List subjects |
 | POST | `/subjects` | — | Create a subject (`201`) |
 | GET | `/subjects/{subject_id}` | — | Read one subject |
@@ -64,16 +94,28 @@ from the body field only** (see **Auth and signing**); `message` — string
 `video_id` — string, optional, focus resource (a ranking preference that does
 not widen the scope); `mode` — string, optional: `qa` (default) ·
 `explain_simple` · `analogy` · `summarize` · `compare` · `quiz`.
-`200` response — `answer`, `citations[]`, `refused`, `scope_empty`,
-`live_frame` (`"live"` | `"document"` | null):
+`200` response: `answer`, `citations[]`, `refused`, `scope_empty`,
+`live_frame` (`"live"` | `"document"` | null), `mode` (`"grounded"` |
+`"supplemental"`), `grounded` (bool), `processing_pending` +
+`processed_through_ms` (the playhead is past the processed part of a stream-mode
+video, so the answer is an honest "not processed yet"), and `visual_pending` +
+`visual_through_ms` (the transcript is indexed, but the on-screen descriptions
+for this part are still being produced):
 
 ```json
 {"answer": "The spike comes from the warmup step [chunk_id=ch_7f2a]. …",
  "citations": [{"chunk_id": "ch_7f2a", "source_type": "video", "modality": "transcript",
    "video_id": "vid_lecture_03", "start_ms": 150000, "end_ms": 180000,
    "page_no": null, "slide_no": null, "image_no": null, "live": false}],
- "refused": false, "scope_empty": false, "live_frame": null}
+ "refused": false, "scope_empty": false, "live_frame": null,
+ "mode": "grounded", "grounded": true,
+ "processing_pending": false, "processed_through_ms": null,
+ "visual_pending": false, "visual_through_ms": null}
 ```
+
+`mode: "supplemental"` appears only when the lesson has not covered the question
+and the assistant teaches it from general knowledge. The answer text labels it
+as not from the video, and it carries zero citations.
 
 Citation fields: `chunk_id` (always present); `source_type` (`video` · `pdf` ·
 `pptx` · `image` · `note` · `code`); `modality` (`"transcript"` | `"visual"` |
@@ -97,7 +139,8 @@ the product refuses to answer from material the learner was never granted.
 
 Errors: `404 {"detail": "session not found"}` · `401 {"detail": "invalid launch"}`
 · `422` validation (empty message, message > 4000 chars, unknown mode, negative
-`current_time_ms`, unknown field) · `429` rate limit · `502 {"detail": "upstream provider error"}`.
+`current_time_ms`, unknown field) · `429` rate limit · `502 {"detail": "upstream provider error"}`
+· `503` provider quota spent (see Conventions).
 
 ### GET /sessions/{session_id}/messages
 
@@ -136,12 +179,26 @@ provider error.
 ## Ingestion
 
 - `POST /courses/{course_id}/ingest` — `multipart/form-data`: `file` (required:
-  video, PDF, PPTX or image) and `subject_id` (optional form field). With
-  `subject_id` the server derives the real course from the subject and
-  auto-attaches the resource to it on success. `200` → `{"job_id": "job_…",
-  "resource_id": "res_…", "status": "pending"}`. Errors: `422` unsupported file
-  type or empty file · `413` upload over 512 MB · `404` unknown `subject_id` ·
-  `422` subject is not linked to a course.
+  video, PDF, PPTX, or a PNG/JPG/JPEG/WEBP image), `subject_id` (optional form
+  field) and `mode` (optional, `full` (default) or `stream`; it affects video only).
+  With `subject_id` the server derives the real course from the subject and
+  auto-attaches the resource to it on success. In `stream` mode the attach happens
+  right after the first window. Video is processed in 120 s windows. `full` runs
+  them all in one job. `stream` runs the first 3 and leaves the rest to `/position`.
+  `200` → `{"job_id": "job_…", "resource_id": "res_…", "status": "pending"}`.
+  Errors: `422` unsupported file type, empty file, or `mode` other than
+  `full`/`stream` · `413` upload over the size cap (512 MB hard limit, or
+  `MAX_UPLOAD_MB` when set) · `413` video longer than `MAX_VIDEO_MINUTES` (read
+  from the container header before any model call is spent) · `429` more than
+  `MAX_UPLOADS_PER_HOUR` uploads in the last hour (global, not per IP) · `404`
+  unknown `subject_id` · `422` subject is not linked to a course.
+
+  ```bash
+  curl -s -X POST "$BASE/courses/demo/ingest" \
+    -F "file=@test-data/Partial-derivatives.mp4;type=video/mp4" \
+    -F "subject_id=sub_xxxxxxxxxxxxxxxx" -F "mode=stream"
+  # {"job_id":"job_…","resource_id":"res_…","status":"pending"}
+  ```
 - `POST /courses/{course_id}/ingest-youtube` — JSON body `url` (required) and
   `subject_id` (optional). Same subject rules, same response envelope. Errors:
   `422` "not a recognisable YouTube URL" · `404` unknown `subject_id` · `422`
@@ -151,14 +208,57 @@ provider error.
   present; the rest appear only when the ingest produced them: `error`,
   `stage`, `embedded`, `embedding_total`, `warnings`, `image_no`,
   `visual_status`, `visual_coverage_pct`, `visual_span_pct`, `document_status`,
-  `text_chars`, `ocr_status`, `ocr_reason`. Errors: `404 {"detail": "unknown job …"}`.
+  `text_chars`, `ocr_status`, `ocr_reason`, and for windowed video `mode`,
+  `processed_through_ms`, `visual_through_ms`, `duration_ms`, `windows_done`,
+  `windows_total`, `transcript_windows_done`, `visual_windows_done`.
+  Errors: `404 {"detail": "unknown job …"}`.
+
+  ```json
+  {"job_id": "job_…", "resource_id": "res_…", "status": "processing", "mode": "stream",
+   "processed_through_ms": 240000, "visual_through_ms": 120000, "duration_ms": 655500,
+   "windows_done": 2, "windows_total": 6}
+  ```
 - `GET /courses/{course_id}/resources` — `200` → `{"resources": [{"id", "type",
   "provider", "youtube_id", "title", "status", "asset_name"}]}`; `provider` is
-  `youtube` or `file`, `asset_name` is the on-disk asset the media route serves
-  when one exists. A failed listing returns an empty list, not a `500`.
-- `GET /resources/{resource_id}/media` — streams the stored asset; supports
-  HTTP Range requests (`206 Partial Content` when ranged, `200` otherwise).
-  Errors: `404 {"detail": "no stored media for …"}`.
+  `youtube` or `file`, `asset_name` is the stored asset the media route serves
+  when one exists. A partly processed video also carries `processed_through_ms`
+  and `visual_through_ms`, and its `status` reads as partial until both reach
+  the duration. A failed listing returns an empty list, not a `500`.
+- `POST /courses/{course_id}/resources/{resource_id}/position` — the player's
+  playhead heartbeat for stream-mode videos. Body: `{"t_ms": 300000}` (int ≥ 0).
+  The API derives both frontiers and the duration from chunk metadata, so this
+  works after a restart. It queues up to 2 transcript windows while
+  `frontier < t_ms + 240000`, plus a visual catch-up job while
+  `visual_through_ms < processed_through_ms`. `200`:
+
+  ```json
+  {"status": "queued", "job_ids": ["job_…"], "job_id": "job_…",
+   "processed_through_ms": 360000, "visual_through_ms": 240000, "duration_ms": 655500}
+  ```
+
+  `status` is `queued` (new work queued), `running` (work already in flight),
+  `idle` (nothing to do yet), `ready` (both frontiers reached the end, or the
+  resource is not windowed), or `failed`. `failed` comes with an `error` that
+  carries the quota message while a spent quota blocks new work.
+  Errors: `404` unknown resource in that course · `409 {"detail": "cannot
+  process more of res_…: its media file is not on disk"}` · `422` negative
+  `t_ms`.
+- `DELETE /courses/{course_id}/resources/{resource_id}` — the course in the path
+  must own the resource, otherwise `404` and nothing is touched. The resource is
+  detached from every subject first, then its chunks (matched on the exact
+  resource id) and stored file are removed. `200`:
+
+  ```json
+  {"resource_id": "res_…", "deleted": true, "detached_from": ["sub_…"], "asset_removed": true}
+  ```
+
+  Errors: `404 {"detail": "unknown resource … in course …"}` · `500` chunks
+  removed but the stored file could not be deleted.
+- `GET /resources/{resource_id}/media` — streams the stored asset. Locally it is
+  served from disk with HTTP Range support (`206 Partial Content` when ranged).
+  On the hosted deployment (`STORAGE=r2`) it redirects to a short-lived
+  presigned Cloudflare R2 URL, and the browser streams from R2 with Range
+  requests. Errors: `404 {"detail": "no stored media for …"}`.
 
 ## Subjects
 
@@ -220,15 +320,22 @@ what the web client does.
 | 403 | Forbidden | `POST /chat/live-frame` | Focused resource outside the session's grant |
 | 404 | Not found | `/chat`, `/chat/live-frame`, `GET /sessions/{id}/messages` | Unknown `session_id` |
 | 404 | Not found | `GET /ingestion/jobs/{id}`, `GET /resources/{id}/media`, `/subjects…` | Unknown job, unknown resource asset, unknown subject |
-| 413 | Payload too large | `POST /courses/{id}/ingest`, `POST /chat/live-frame` | Upload over 512 MB; captured frame over 8 MB |
-| 422 | Validation error | most write routes | Empty/oversize fields, out-of-range `current_time_ms`, unknown mode or field, unrecognisable YouTube URL, frame time outside the media duration, question not about the current frame |
-| 429 | Too many requests | `/lms/session`, `/chat`, `/chat/live-frame` | Over 60 req/min/IP |
+| 404 | Not found | `POST …/position`, `DELETE /courses/{id}/resources/{rid}` | Resource unknown or not owned by that course |
+| 409 | Conflict | `POST …/position` | More windows needed but the media file is gone |
+| 413 | Payload too large | `POST /courses/{id}/ingest`, `POST /chat/live-frame` | Upload over 512 MB or `MAX_UPLOAD_MB`; video longer than `MAX_VIDEO_MINUTES`; captured frame over 8 MB |
+| 422 | Validation error | most write routes | Empty/oversize fields, out-of-range `current_time_ms`, unknown mode or field, ingest `mode` not `full`/`stream`, unrecognisable YouTube URL, frame time outside the media duration, question not about the current frame |
+| 429 | Too many requests | `/lms/session`, `/chat`, `/chat/live-frame`; `POST /courses/{id}/ingest` | Over 60 req/min/IP; over `MAX_UPLOADS_PER_HOUR` uploads (global) |
+| 500 | Server error | `DELETE /courses/{id}/resources/{rid}` | Chunks removed but the stored file could not be deleted |
 | 502 | Upstream error | `/chat`, `/chat/live-frame` | LLM/vision provider failure (redacted detail) |
+| 503 | Service unavailable | any route that calls Gemini | A daily provider quota is spent: `{"detail": "… quota reached … Stopped instead of waiting."}` (`QuotaExhaustedError`) |
 
 ## curl smoke test
 
 Requires the API running on `http://localhost:8123` with `LMS_LAUNCH_SECRET=dev-secret`
 and `ALLOW_UNSIGNED_LAUNCH=true` (local dev only), so the launch below is unsigned.
+Against the hosted API (`<API_URL>`), the launch must be signed as described under
+**Auth and signing**. `/health`, the subject routes and the ingest routes work
+there unchanged.
 
 ```bash
 BASE=http://localhost:8123
