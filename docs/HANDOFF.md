@@ -106,8 +106,10 @@ There is no `/demo` page.
 11. **True batched embedding** (`app/ingestion/embedder.py`). `batchEmbedContents`
     returns 1 pooled vector for N texts, so the old path fell back to one HTTP request
     per chunk — ~257 sequential calls for an 11-minute video, which is why ingest took
-    minutes. `embedContent` now sends one `Content` per text in a batch of up to 100.
-    **253 texts -> 3 calls of <=100 at the current batch size (the earlier 7-call figure was measured at a smaller batch size), vs 257 sequential before.** The quota is
+    minutes. `embedContent` now sends one `Content` per text in a batch of up to 64 (`BATCH_SIZE`; the API hard limit is 100, but the quota is metered
+    in *texts*/min, so a 100-text call spends the whole allowance and the order self-check
+    or a concurrent query tips the next call over — 64 leaves headroom).
+    **253 texts -> 4 calls of <=64, vs 257 sequential before.** The quota is
     100 *requests*/min, so this also removes the ~2.5-minute quota floor. Order is
     load-bearing — the store zips vectors against chunks positionally — so the returned
     count is asserted against the count sent, and `_verify_order_once` proves the

@@ -201,7 +201,7 @@ def test_batched_vectors_align_with_input_texts():
     """Vector i is the embedding of text i, across batch boundaries.
 
     Alignment is asserted across a batch boundary (253 texts over batches of
-    100), because that is where an off-by-one would hide: a chunk that came
+    BATCH_SIZE), because that is where an off-by-one would hide: a chunk that came
     out one slot early still looks like a perfectly good vector.
     """
     client = _FakeClient()
@@ -457,9 +457,12 @@ def test_quota_pacing_waits_for_the_window_instead_of_being_refused():
     finally:
         embedder_mod.install_embedding_quota(previous)
 
-    assert len(client.models.calls) == 2, "two batches, not 150 requests"
-    assert waited, "the second batch must wait for the quota window to refill"
-    assert sum(waited) >= 30.0, "50 more texts at 100/minute is 30 seconds"
+    assert [len(c) for c in client.models.calls] == [64, 64, 22]
+    assert len(client.models.calls) == 3, "three batches, not 150 requests"
+    assert waited, "later batches must wait for the quota window to refill"
+    # Capacity 100: batch 1 leaves 36, batch 2 is 28 short (16.8 s at 100/min)
+    # and drains the bucket, batch 3 is 22 short (13.2 s) = 30 s in total.
+    assert sum(waited) >= 30.0 - 1e-6, "50 texts beyond capacity is 30 seconds"
 
 
 # ---------------------------------------------------------------------------
@@ -577,8 +580,21 @@ def _texts(n: int) -> list[str]:
     return [f"chunk number {i} of the lecture" for i in range(n)]
 
 
-def test_batch_size_is_pinned_to_the_api_limit():
-    assert GeminiEmbedder.BATCH_SIZE == 100
+def test_batch_size_is_pinned_below_the_api_limit():
+    assert GeminiEmbedder.BATCH_SIZE == 64
+
+
+def test_batch_size_within_api_limit_and_100_texts_never_one_call():
+    assert GeminiEmbedder.BATCH_SIZE <= 100
+    client = _FakeClient()
+    emb = _embedder(client)
+
+    emb.embed_documents(_texts(100))
+
+    sizes = [len(c) for c in client.models.calls]
+    assert len(sizes) > 1, "100 texts must not go out as a single call"
+    assert max(sizes) <= GeminiEmbedder.BATCH_SIZE
+    assert sum(sizes) == 100
 
 
 @pytest.mark.parametrize("n", [0, 1, 7, 100])
@@ -588,14 +604,16 @@ def test_contents_for_gives_one_content_per_text(n):
     assert [c.parts[0].text for c in contents] == _texts(n)
 
 
-def test_250_texts_split_100_100_50_in_order():
+def test_250_texts_split_by_batch_size_in_order():
     client = _FakeClient()
     emb = _embedder(client)
     texts = _texts(250)
 
     vectors = emb.embed_documents(texts)
 
-    assert [len(c) for c in client.models.calls] == [100, 100, 50]
+    b = GeminiEmbedder.BATCH_SIZE
+    assert [len(c) for c in client.models.calls] == [b, b, b, 250 - 3 * b]
+    assert [len(c) for c in client.models.calls] == [64, 64, 64, 58]
     assert [t for c in client.models.calls for t in c] == texts
     assert [v[:16] for v in vectors] == [_vector_for(t)[:16] for t in texts]
 
@@ -746,10 +764,12 @@ def test_429_retries_only_that_batch_without_duplicates():
 
     vectors = emb.embed_documents(texts)
 
-    assert [len(c) for c in client.models.calls] == [100, 100, 100, 50]
-    assert client.models.calls[0] == texts[:100]
-    assert client.models.calls[1] == client.models.calls[2] == texts[100:200]
-    assert client.models.calls[3] == texts[200:]
+    b = GeminiEmbedder.BATCH_SIZE
+    assert [len(c) for c in client.models.calls] == [b, b, b, b, 250 - 3 * b]
+    assert client.models.calls[0] == texts[:b]
+    assert client.models.calls[1] == client.models.calls[2] == texts[b : 2 * b]
+    assert client.models.calls[3] == texts[2 * b : 3 * b]
+    assert client.models.calls[4] == texts[3 * b :]
     assert sleeps == [GeminiEmbedder.EMBED_BACKOFF_S]
     assert len(vectors) == 250
     assert [v[:16] for v in vectors] == [_vector_for(t)[:16] for t in texts]

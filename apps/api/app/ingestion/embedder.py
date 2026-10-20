@@ -334,13 +334,16 @@ class GeminiEmbedder:
     Imported lazily so a missing key or SDK never breaks module import.
     """
 
-    #: Texts per ``embed_content`` call. The API's own hard limit, verified
-    #: against the live model: 100 texts return exactly 100 vectors of width
-    #: 3072 in a single HTTP call, and 101 texts are rejected with
-    #: ``400 INVALID_ARGUMENT: at most 100 requests can be in one batch``.
-    #: Sizing to the limit is what keeps a 253-chunk ingest to three round
-    #: trips instead of two hundred and fifty-three.
-    BATCH_SIZE = 100
+    #: Texts per ``embed_content`` call. The API's hard limit is 100 (verified
+    #: against the live model: 101 texts are rejected with ``400
+    #: INVALID_ARGUMENT: at most 100 requests can be in one batch``), but the
+    #: *quota* is metered in texts per minute, so a 100-text call spends the
+    #: whole allowance and the order self-check (4 texts) or a concurrent query
+    #: tips the next call over. 64 leaves headroom for both.
+    #:
+    #: The bucket in :class:`_TextQuota`, not this number, is what paces an
+    #: ingest.
+    BATCH_SIZE = 64
 
     #: Width the configured model is expected to return. A vector of another
     #: width is not a slow answer, it is an unindexable one (see
