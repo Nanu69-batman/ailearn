@@ -217,6 +217,7 @@ export default function ContentPage() {
     visual: number | null;
     duration: number | null;
     state: string;
+    error: string | null;
   } | null>(null);
   const procThrough = proc?.through ?? hbRes?.processed_through_ms ?? null;
   const procState = proc?.state ?? (hbRes?.status === "partial" ? "partial" : "ready");
@@ -239,6 +240,7 @@ export default function ContentPage() {
             visual: r.visual_through_ms ?? null,
             duration: r.duration_ms ?? null,
             state: r.status,
+            error: r.error ?? null,
           });
           if (r.status === "ready") done = true;
         })
@@ -480,9 +482,16 @@ export default function ContentPage() {
             {proc?.visual != null && proc.visual < procThrough
               ? `On-screen descriptions are ready through ${fmtClock(proc.visual)} (still processing). `
               : ""}
-            {procState === "queued" || procState === "running"
-              ? "Processing the next part now…"
-              : "The rest is processed as you watch."}
+            {procState === "failed"
+              ? ""
+              : procState === "queued" || procState === "running"
+                ? "Processing the next part now…"
+                : "The rest is processed as you watch."}
+          </p>
+        )}
+        {selected.kind === "file" && procState === "failed" && (
+          <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+            Processing stopped: {proc?.error ?? "the server could not process the next part."}
           </p>
         )}
         {chatLayout === "bottom" && (

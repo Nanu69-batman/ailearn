@@ -2,12 +2,14 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.chat.router import describe_active_providers
 from app.chat.router import router as chat_router
 from app.config import settings
+from app.ingestion.backoff import QuotaExhaustedError
 from app.ingestion.router import router as ingestion_router
 from app.middleware import RequestIDMiddleware
 from app.subjects.router import router as subjects_router
@@ -54,6 +56,13 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="AI Learning Assistant API", version="0.1.0", lifespan=lifespan)
+
+
+@app.exception_handler(QuotaExhaustedError)
+async def _quota_exhausted(_request: Request, exc: QuotaExhaustedError) -> JSONResponse:
+    # A spent daily quota is a service state, not a server bug: say so plainly.
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
+
 
 app.add_middleware(RequestIDMiddleware)
 app.add_middleware(

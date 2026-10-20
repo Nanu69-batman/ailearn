@@ -438,6 +438,13 @@ async def report_position(
         v_last = (frontier + WINDOW_MS - 1) // WINDOW_MS  # exclusive
         v_windows = list(range(v_first, v_last))
 
+    from app.ingestion.backoff import active_quota_block
+
+    blocked = active_quota_block()
+    if blocked and (t_windows or v_windows):
+        # Queueing now would fail at once and spend more requests; say why.
+        return {"status": "failed", "job_ids": [], "error": blocked, **out}
+
     if not t_windows and not v_windows:
         with _POSITION_LOCK:
             ids = _inflight_for(resource_id, "transcript") + _inflight_for(

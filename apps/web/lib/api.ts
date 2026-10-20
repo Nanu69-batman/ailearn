@@ -689,8 +689,10 @@ export function getIngestJob(jobId: string): Promise<IngestJob> {
 }
 
 export interface PositionResponse {
-  status: "queued" | "running" | "idle" | "ready";
+  status: "queued" | "running" | "idle" | "ready" | "failed";
   job_id?: string;
+  /** Set with status "failed", e.g. a spent daily API quota. */
+  error?: string;
   processed_through_ms: number;
   visual_through_ms?: number | null;
   duration_ms: number;

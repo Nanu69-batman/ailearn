@@ -16,9 +16,87 @@ callers are fixing, not a cost optimisation.
 from __future__ import annotations
 
 import logging
+import re
 import time
 
 log = logging.getLogger(__name__)
+
+#: A 429 whose advised wait is longer than this is a spent quota (e.g. the
+#: free tier's per-day cap), not a per-minute window: retrying only keeps the
+#: job "running" for minutes before it fails anyway, so stop at once.
+LONG_QUOTA_WAIT_S = 600.0
+
+_RETRY_DELAY_RE = re.compile(r"retryDelay'?\"?\s*:\s*'?\"?(\d+(?:\.\d+)?)s")
+_QUOTA_ID_RE = re.compile(r"quotaId'?\"?\s*:\s*'?\"?([A-Za-z0-9_-]+)")
+_QUOTA_VALUE_RE = re.compile(r"quotaValue'?\"?\s*:\s*'?\"?(\d+)")
+
+
+class QuotaExhaustedError(RuntimeError):
+    """A provider quota is used up for hours; retrying now cannot succeed."""
+
+
+#: Process-wide note of the last spent quota: ``(until_monotonic, message)``.
+#: Lets callers that would otherwise re-queue work every few seconds (the
+#: position heartbeat) report the reason instead of burning more requests.
+_QUOTA_BLOCK: tuple[float, str] | None = None
+#: How long to hold a block when the provider gave no reset time.
+_DEFAULT_BLOCK_S = 600.0
+
+
+def note_quota_block(wait_s: float, message: str) -> None:
+    global _QUOTA_BLOCK
+    _QUOTA_BLOCK = (time.monotonic() + (wait_s or _DEFAULT_BLOCK_S), message)
+
+
+def active_quota_block() -> str | None:
+    """The spent-quota message while its reset time has not passed."""
+    block = _QUOTA_BLOCK
+    if block is None or time.monotonic() >= block[0]:
+        return None
+    return block[1]
+
+
+def clear_quota_block() -> None:
+    global _QUOTA_BLOCK
+    _QUOTA_BLOCK = None
+
+
+def long_quota_wait_s(exc: BaseException) -> float | None:
+    """Seconds the provider says to wait, when that marks a spent quota.
+
+    Returns ``None`` for ordinary rate limits (short waits) and for errors
+    that carry no wait at all, so those keep the normal retry path.
+    """
+    text = str(exc)
+    per_day = "PerDay" in text
+    m = _RETRY_DELAY_RE.search(text)
+    wait = float(m.group(1)) if m else None
+    if wait is not None and wait > LONG_QUOTA_WAIT_S:
+        return wait
+    if per_day:
+        return wait if wait is not None else 0.0
+    return None
+
+
+def quota_exhausted_message(exc: BaseException, wait_s: float) -> str:
+    """One readable line for the job status; no raw provider payload."""
+    text = str(exc)
+    qid = _QUOTA_ID_RE.search(text)
+    qval = _QUOTA_VALUE_RE.search(text)
+    quota = qid.group(1) if qid else "provider quota"
+    if "Embed" in quota or "embed_content" in text:
+        what = "Gemini embedding quota"
+    elif "Generate" in quota or "generate_content" in text:
+        what = "Gemini request quota"
+    else:
+        what = "API quota"
+    limit = f" (limit {qval.group(1)}, {quota})" if qval else f" ({quota})"
+    if wait_s > 0:
+        h, rem = divmod(int(wait_s), 3600)
+        when = f"It resets in about {h}h {rem // 60}m."
+    else:
+        when = "It resets daily."
+    return f"{what} reached{limit}. {when} Stopped instead of waiting."
 
 #: Default attempts before a call is abandoned.
 DEFAULT_MAX_ATTEMPTS = 5
@@ -106,6 +184,12 @@ def call_with_retry(
         try:
             return fn()
         except Exception as exc:  # re-raised below, after classification
+            long_wait = long_quota_wait_s(exc)
+            if long_wait is not None:
+                msg = quota_exhausted_message(exc, long_wait)
+                log.error("%s: %s", what, msg)
+                note_quota_block(long_wait, msg)
+                raise QuotaExhaustedError(msg) from exc
             if not is_retryable(exc) or attempt >= attempts:
                 log.error(
                     "%s failed after %d attempt(s): %s: %s",

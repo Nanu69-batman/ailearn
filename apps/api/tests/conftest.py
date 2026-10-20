@@ -29,8 +29,12 @@ import pytest
 def _no_hosted_transcription(monkeypatch):
     """Never call Groq from tests, even when the developer's .env has a key."""
     from app.config import settings
+    from app.ingestion.backoff import clear_quota_block
 
     monkeypatch.setattr(settings, "groq_api_key", "")
+    clear_quota_block()
+    yield
+    clear_quota_block()
 
 
 @pytest.fixture(autouse=True)
