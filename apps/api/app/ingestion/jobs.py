@@ -651,7 +651,30 @@ def _commit_stage(ctx: _WinCtx, kind: str, s: int, e: int, chunks: list[Chunk]) 
     """Replace this stage's chunks in ``[s, e]`` and write the new ones."""
     note_stage(STAGE_EMBEDDING)
     ctx.store.delete_resource_range(ctx.resource_id, s, e, kind=kind)
+    if not chunks:
+        _mark_empty_window(ctx, kind, s, e)
+        return 0
     return ctx.store.add(chunks)
+
+
+def _mark_empty_window(ctx: _WinCtx, kind: str, s: int, e: int) -> None:
+    """Advance the frontier past a window with nothing to index."""
+    mark = getattr(ctx.store, "mark_progress", None)
+    if mark is None:
+        return
+    end = min(e, ctx.duration_ms)
+    if kind == KIND_TRANSCRIPT:
+        visual = 0 if ctx.with_visual else end
+    else:
+        visual = end
+    mark(
+        resource_id=ctx.resource_id, course_id=ctx.course_id, kind=kind, start_ms=s,
+        frontier={
+            "processed_through_ms": end,
+            "duration_ms": ctx.duration_ms,
+            "visual_through_ms": visual,
+        },
+    )
 
 
 class _Tally:

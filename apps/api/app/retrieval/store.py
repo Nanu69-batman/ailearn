@@ -296,6 +296,47 @@ class ChromaVectorStore:
         )
         return len(chunks)
 
+    def mark_progress(
+        self, *, resource_id: str, course_id: str, kind: str, start_ms: int, frontier: dict
+    ) -> None:
+        """Record a window that produced no chunks, so the frontier still advances.
+
+        Without this an empty window (silence, a static slide) leaves the
+        frontier behind it and ``/position`` re-queues it forever. The marker
+        can never be retrieved, twice over: ``end_ms`` is the NO_END_MS
+        sentinel on a time-gated source type (the strict-T arm excludes it),
+        and it has no ``chunk_id`` (``_to_passage`` drops it). Its fixed id
+        per (resource, kind, window) makes a re-run overwrite it, and
+        ``delete_resource`` removes it by the same exact-id filter as chunks.
+        """
+        meta = {
+            "chunk_id": "",
+            "resource_id": resource_id,
+            "course_id": course_id,
+            "source_type": "video",
+            "start_ms": int(start_ms),
+            "end_ms": NO_END_MS,
+            "kind": "progress_marker",
+            "title": "",
+        }
+        meta.update({k: int(v) for k, v in frontier.items() if v is not None})
+        self._collection.upsert(
+            ids=[f"{resource_id}__progress_{kind}_{int(start_ms)}"],
+            documents=[""],
+            metadatas=[meta],
+            embeddings=[self._marker_vector()],
+        )
+
+    def _marker_vector(self) -> list[float]:
+        # Any unit vector of the collection's width; borrowed from a stored
+        # record so no embedding request is spent on a marker.
+        got = self._collection.get(limit=1, include=["embeddings"])
+        embs = got.get("embeddings")
+        width = len(embs[0]) if embs is not None and len(embs) else len(
+            self._embedder.embed_query("progress marker")
+        )
+        return [1.0] + [0.0] * (width - 1)
+
     def delete_resource(self, resource_id: str) -> None:
         self._collection.delete(where={"resource_id": {"$eq": resource_id}})
 
