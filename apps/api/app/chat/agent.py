@@ -38,6 +38,7 @@ from app.chat.prompts import (
     SOURCE_NARRATION_RULE,
     TUTOR_PERSONA,
     extract_cited_ids,
+    strip_dangling_marker,
 )
 from app.ingestion.backoff import QuotaExhaustedError
 from app.retrieval.store import TIME_GATED_SOURCE_TYPES
@@ -129,6 +130,8 @@ TOOLS: list[dict] = [
     },
 ]
 
+
+TRUNCATED_NOTE = "\n\n*(I ran out of room there — ask me to continue.)*"
 
 CITE_REPAIR_TEXT = (
     "Your answer has no citations. Restate the same answer, ending every "
@@ -383,7 +386,9 @@ class LessonAgent:
                 "tools": TOOLS,
                 "tool_choice": tool_choice,
                 "temperature": 0.2,
-                "max_tokens": 1500,
+                # Reasoning tokens count against this budget too; 1500 cut long
+                # summaries off mid-citation.
+                "max_tokens": 4096,
                 # Hidden reasoning tokens dominate latency on a free endpoint, but
                 # with reasoning fully off the model skips its tools and answers
                 # uncited. Low effort keeps the tool use and cuts the wait.
@@ -418,6 +423,11 @@ class LessonAgent:
                     )
                 continue
             text = (msg.get("content") or "").strip()
+            if data["choices"][0].get("finish_reason") == "length" and text:
+                # Cut off by the token budget: drop a half-written citation and
+                # say so, rather than ending mid-sentence without explanation.
+                log.warning("agent: reply truncated at max_tokens")
+                text = strip_dangling_marker(text) + TRUNCATED_NOTE
             if (
                 needs_lesson
                 and tool_calls_made == 0

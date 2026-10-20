@@ -264,6 +264,22 @@ def test_general_knowledge_is_not_served_for_a_quiz(env):
     assert resp.mode != "supplemental"
 
 
+def test_reply_cut_off_mid_citation_shows_no_raw_marker(env):
+    truncated = say("It holds y fixed [chunk_id=c_early]. Each is only part of f [chunk_id=c_ea")
+    truncated["choices"][0]["finish_reason"] = "length"
+    ask, _, _ = env(call("get_lesson_content", from_seconds=0, to_seconds=200), truncated)
+    resp = ask("summarize what I've watched", mode="summarize")
+    assert "chunk_id" not in resp.answer
+    assert "ask me to continue" in resp.answer
+    assert [c.chunk_id for c in resp.citations] == ["c_early"]
+
+
+def test_strip_citation_markers_drops_a_dangling_marker():
+    from app.chat.prompts import strip_citation_markers
+
+    assert strip_citation_markers("part of f [chunk_id=res_2e6_c4") == "part of f"
+
+
 # --- intent classifier (classic-path routing) ------------------------------
 
 

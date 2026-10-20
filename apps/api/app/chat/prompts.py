@@ -43,6 +43,9 @@ _ID = r"[A-Za-z0-9_\-]+"
 #: *read more* markers makes validation stricter, never weaker.
 MARKER_RE = re.compile(r"\[chunk_id=" + _ID + r"(?:\s*,\s*(?:chunk_id\s*=\s*)?" + _ID + r")*\]")
 
+#: An unterminated marker at the very end of a truncated reply.
+_DANGLING_MARKER_RE = re.compile(r"\s*\[chunk_id=[^\]]*$")
+
 #: Splits a marker body (``chunk_id=aaa, bbb``) into its bare IDs.
 _MARKER_ID_SPLIT_RE = re.compile(r"(?:chunk_id\s*=)|[\s,]+")
 
@@ -743,6 +746,11 @@ CITE_REPAIR_INSTRUCTION = (
 )
 
 
+def strip_dangling_marker(answer: str) -> str:
+    """Drop an unterminated ``[chunk_id=...`` at the end of a truncated reply."""
+    return _DANGLING_MARKER_RE.sub("", answer or "")
+
+
 def strip_citation_markers(answer: str) -> str:
     """Remove every ``[chunk_id=...]`` marker from user-visible answer text.
 
@@ -759,6 +767,10 @@ def strip_citation_markers(answer: str) -> str:
     if not answer:
         return answer or ""
     cleaned = MARKER_RE.sub("", answer)
+    # A reply cut off by the output-token limit can end inside a marker
+    # ("... of f [chunk_id=res_abc_c4"). It never closed, so it was never
+    # validated or turned into a citation; drop it rather than show it.
+    cleaned = _DANGLING_MARKER_RE.sub("", cleaned)
     # Tidy the gaps the removal leaves behind without reflowing the prose.
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
     cleaned = re.sub(r"[ \t]+([.,;:!?])", r"\1", cleaned)
