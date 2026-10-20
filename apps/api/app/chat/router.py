@@ -28,6 +28,7 @@ from app.chat.schemas import (
 )
 from app.chat.service import ChatService, SessionNotFoundError
 from app.chat.sessions import message_store, reset_stores, session_store
+from app.ingestion.backoff import QuotaExhaustedError
 
 log = logging.getLogger(__name__)
 
@@ -220,6 +221,10 @@ async def post_chat(body: ChatRequest, request: Request) -> ChatResponse:
     except SessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail="session not found") from exc
     except HTTPException:
+        raise
+    except QuotaExhaustedError:
+        # A spent quota is a RuntimeError too, but it must reach the app's
+        # 503 handler with its readable reason, not a generic 502.
         raise
     except (httpx.HTTPError, ConnectionError, TimeoutError, RuntimeError) as exc:
         # M5: provider/upstream failure -> 502 with redacted detail.
@@ -427,6 +432,10 @@ async def post_chat_live_frame(
         # and never a silent drop to the nearest pre-indexed frame.
         log.warning("live frame unreadable for %s at %sms: %s", resource_id, at_ms, exc)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except QuotaExhaustedError:
+        # A spent quota is a RuntimeError too, but it must reach the app's
+        # 503 handler with its readable reason, not a generic 502.
+        raise
     except (httpx.HTTPError, ConnectionError, TimeoutError, RuntimeError) as exc:
         log.error("live frame vision error: %s: %s", type(exc).__name__, exc)
         raise HTTPException(status_code=502, detail="upstream provider error") from exc

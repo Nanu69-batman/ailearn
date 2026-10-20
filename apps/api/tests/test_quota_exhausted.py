@@ -94,3 +94,27 @@ def test_position_reports_quota_instead_of_queueing(env):
     backoff.clear_quota_block()
     b = client.post(url, json={"t_ms": 100_000}).json()
     assert b["status"] == "queued"
+
+
+def test_chat_reports_spent_quota_as_503_not_502(monkeypatch):
+    from app.chat import router as chat_router
+    from app.chat.launch import create_session_token
+    from app.config import settings
+    from app.main import app
+
+    class _Spent:
+        async def chat(self, **kw):
+            raise QuotaExhaustedError("Gemini embedding quota reached. It resets in about 2h 0m.")
+
+    monkeypatch.setattr(chat_router, "get_service", lambda: _Spent())
+    session = chat_router.session_store.create(
+        learner_id="l1", course_id="c1", resource_id="r1", lesson_id=None,
+        resource_scope=["r1"], current_time_ms=0,
+    )
+    token = create_session_token(settings.lms_launch_secret, session.id, "l1")
+    r = TestClient(app).post("/chat", json={
+        "session_id": session.id, "session_token": token,
+        "current_time_ms": 0, "message": "hi",
+    })
+    assert r.status_code == 503
+    assert r.json()["detail"].startswith("Gemini embedding quota reached")
