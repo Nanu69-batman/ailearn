@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     # message, and vector stores (tests/dev). Set false to select the
     # Postgres-backed vector store when DATABASE_URL looks real and reachable.
     use_in_memory: bool = True
+    # Free-tier protection for a public deployment. 0 = no cap (local dev).
+    # Every upload spends Gemini embedding/vision requests from a shared quota.
+    max_upload_mb: int = 0
+    max_video_minutes: int = 0
+    max_uploads_per_hour: int = 0
 
     def expected_embedding_dim(self) -> int:
         """Vector width every chunk and every query must agree on.

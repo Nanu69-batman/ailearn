@@ -17,6 +17,7 @@ import logging
 import re
 import shutil
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Annotated
@@ -37,6 +38,7 @@ from app.ingestion.jobs import (
     ingest_media_windows,
     ingest_youtube,
     job_payload,
+    media_duration_ms,
     new_job,
     sanitize_filename,
     schedule,
@@ -58,6 +60,35 @@ UPLOAD_DIR = Path(settings.yt_data_dir).parent / "uploads"
 #: separator, or ``..`` in it is not one of ours, and must never reach
 #: ``glob()`` or ``unlink()``.
 _SAFE_RESOURCE_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+#: Upload timestamps for ``settings.max_uploads_per_hour``. Global, not per
+#: IP: behind a hosting proxy every client shares one address, and the thing
+#: being protected (the model quota) is global too.
+_UPLOAD_TIMES: list[float] = []
+_UPLOAD_LOCK = threading.Lock()
+
+
+def _take_upload_slot() -> None:
+    cap = settings.max_uploads_per_hour
+    if cap <= 0:
+        return
+    now = time.monotonic()
+    with _UPLOAD_LOCK:
+        _UPLOAD_TIMES[:] = [t for t in _UPLOAD_TIMES if now - t < 3600]
+        if len(_UPLOAD_TIMES) >= cap:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"this deployment accepts {cap} uploads per hour to stay within "
+                    "its free model quota; please try again later"
+                ),
+            )
+        _UPLOAD_TIMES.append(now)
+
+
+def reset_upload_slots() -> None:
+    with _UPLOAD_LOCK:
+        _UPLOAD_TIMES.clear()
 
 
 def resolve_asset(
@@ -212,6 +243,7 @@ async def ingest_file(
     original_name = sanitize_filename(file.filename)
 
     target_course_id, subject = _resolve_ingest_subject(course_id, subject_id)
+    _take_upload_slot()
 
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     resource_id = _resource_id()
@@ -219,21 +251,36 @@ async def ingest_file(
         file.filename, source_type=source_type, content_type=file.content_type
     )
     target = UPLOAD_DIR / f"{resource_id}{suffix}"
+    max_bytes = MAX_UPLOAD_BYTES
+    if settings.max_upload_mb > 0:
+        max_bytes = min(max_bytes, settings.max_upload_mb * 1024 * 1024)
     size = 0
     with target.open("wb") as handle:
         while chunk := await file.read(1024 * 1024):
             size += len(chunk)
-            if size > MAX_UPLOAD_BYTES:
+            if size > max_bytes:
                 handle.close()
                 target.unlink(missing_ok=True)
                 raise HTTPException(
                     status_code=413,
-                    detail=f"upload exceeds {MAX_UPLOAD_BYTES // (1024*1024)}MB",
+                    detail=f"upload exceeds {max_bytes // (1024*1024)}MB",
                 )
             handle.write(chunk)
     if size == 0:
         target.unlink(missing_ok=True)
         raise HTTPException(status_code=422, detail="uploaded file is empty")
+    if source_type == "video" and settings.max_video_minutes > 0:
+        # Checked from the container header, before any model call is spent.
+        duration = media_duration_ms(target)
+        if duration is not None and duration > settings.max_video_minutes * 60_000:
+            target.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"video is {duration // 60_000} min; this deployment accepts "
+                    f"videos up to {settings.max_video_minutes} min"
+                ),
+            )
 
     job = new_job(target_course_id, resource_id)
     log.info(
