@@ -24,6 +24,11 @@ Open engineering tasks, in priority order. Added 2026-10-21. None started.
    hit once. Ideas: cache repeated query embeddings; merge a window's transcript
    and visual embeds into one call where the stages line up. A paid key is the
    real fix for a demo with many users.
+   - Alternative: switch to `nvidia/nemotron-3-embed-1b:free` via OpenRouter.
+     It has been probed and returns 2048-d vectors, against Gemini's 3072-d.
+   - That means a new Pinecone index and re-ingesting every resource.
+   - Query and chunk vectors must come from the same model, so Gemini can only
+     be a fallback if each chunk is embedded into both indexes.
 5. **Smaller first window** (about 30 s, then 120 s windows) for a faster first
    answer. Chunk ids assume 120 s windows, so the ordinal scheme must change.
    Decide after task 2.
