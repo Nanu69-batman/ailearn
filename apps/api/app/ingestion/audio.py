@@ -93,8 +93,26 @@ def _shim_pyav_metadata_errors() -> None:
     av.open = _open
 
 
+_WHISPER_MODELS: dict[str, object] = {}
+
+
+def _get_whisper_model(model_size: str):
+    """One WhisperModel per size per process; loading it is expensive."""
+    model = _WHISPER_MODELS.get(model_size)
+    if model is None:
+        from faster_whisper import WhisperModel
+
+        model = WhisperModel(model_size, device="cpu", compute_type="int8")
+        _WHISPER_MODELS[model_size] = model
+    return model
+
+
 def transcribe_with_whisper(
-    path: str, *, model_size: str | None = None
+    path: str,
+    *,
+    model_size: str | None = None,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
 ) -> list[TranscriptSegment]:
     """Transcribe via faster-whisper. Segment bounds come from the audio.
 
@@ -102,18 +120,21 @@ def transcribe_with_whisper(
     weights on first use, and tests must never trigger that. Tests inject a
     fake instead (see ``tests/test_audio_transcribe.py``).
     """
-    from faster_whisper import WhisperModel
-
-    model = WhisperModel(
-        model_size or WHISPER_MODEL_SIZE, device="cpu", compute_type="int8"
-    )
+    model = _get_whisper_model(model_size or WHISPER_MODEL_SIZE)
     # faster-whisper opens the file itself with av.open(..., metadata_errors=
     # "ignore"). PyAV >= 19 removed that kwarg, so the whole call raises
     # TypeError and audio silently degrades to the Gemini fallback. Shimmed
     # here rather than pinned in requirements because the alternative is a
     # floor on a transitive dependency with no Python 3.14 wheels.
     _shim_pyav_metadata_errors()
-    segments, _info = model.transcribe(path, beam_size=5, vad_filter=True)
+    kwargs: dict = {"beam_size": 5, "vad_filter": True}
+    if start_ms is not None or end_ms is not None:
+        # clip_timestamps keeps segment times ABSOLUTE (no offset math).
+        # faster-whisper takes "start,end" in seconds; end 0 means file end.
+        lo = (start_ms or 0) / 1000.0
+        hi = end_ms / 1000.0 if end_ms is not None else 0
+        kwargs["clip_timestamps"] = f"{lo},{hi}"
+    segments, _info = model.transcribe(path, **kwargs)
     out = [
         TranscriptSegment(float(s.start), float(s.end), (s.text or "").strip())
         for s in segments
@@ -290,11 +311,31 @@ def timestamp_agreement(
 TIMESTAMP_AGREEMENT_TOLERANCE_MS = 2000
 
 
+def _clip_to_window(
+    segments: list[TranscriptSegment],
+    start_ms: int | None,
+    end_ms: int | None,
+    duration_ms: int | None,
+) -> list[TranscriptSegment]:
+    """Drop segments outside the window (never clamp); end bounded by duration."""
+    lo = (start_ms or 0) / 1000.0
+    hi = float("inf") if end_ms is None else end_ms / 1000.0
+    if duration_ms:
+        hi = min(hi, duration_ms / 1000.0)
+    return [
+        TranscriptSegment(max(s.start_s, lo), min(s.end_s, hi), s.text)
+        for s in segments
+        if s.start_s >= lo - 0.5 and s.end_s <= hi + 0.5 and min(s.end_s, hi) > max(s.start_s, lo)
+    ]
+
+
 def transcribe(
     path: str,
     *,
     duration_ms: int | None = None,
     allow_gemini: bool = True,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
 ) -> tuple[list[TranscriptSegment], dict]:
     """Primary whisper, secondary Gemini, reconciled.
 
@@ -306,16 +347,23 @@ def transcribe(
         duration_ms = media_duration_ms(path)
     duration_s = duration_ms / 1000.0 if duration_ms else None
 
+    windowed = start_ms is not None or end_ms is not None
     primary: list[TranscriptSegment] = []
     whisper_error: str | None = None
     try:
-        primary = transcribe_with_whisper(path)
+        if windowed:
+            primary = transcribe_with_whisper(path, start_ms=start_ms, end_ms=end_ms)
+            primary = _clip_to_window(primary, start_ms, end_ms, duration_ms)
+        else:
+            primary = transcribe_with_whisper(path)
     except Exception as exc:  # noqa: BLE001 - fallback is the whole point
         whisper_error = f"{type(exc).__name__}: {exc}"
         log.warning("faster-whisper unavailable for %s (%s)", path, whisper_error)
 
     secondary: list[TranscriptSegment] = []
-    if allow_gemini:
+    # Windowed runs skip Gemini entirely: it needs a whole-file upload, which
+    # is unaffordable per window.
+    if allow_gemini and not windowed:
         try:
             raw = transcribe_with_gemini(path, duration_s=duration_s)
             verdict = reconcile_gemini_timeline(raw, duration_s)

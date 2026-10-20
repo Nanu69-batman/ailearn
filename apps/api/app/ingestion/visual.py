@@ -183,7 +183,36 @@ def iter_frame_indices(
     return list(range(count))
 
 
-def sample_frames(path: str, *, interval_s: float = FRAME_INTERVAL_S):
+def window_frame_indices(
+    duration_ms: int,
+    *,
+    interval_s: float = FRAME_INTERVAL_S,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
+) -> list[int]:
+    """Indices for ``[start_ms, end_ms)``: ``[ceil(start/i), ceil(min(end,dur)/i))``.
+
+    With no range this IS :func:`iter_frame_indices`. Windows aligned to
+    multiples of the interval partition the monolithic index set exactly.
+    """
+    if start_ms is None and end_ms is None:
+        return iter_frame_indices(duration_ms, interval_s=interval_s)
+    if duration_ms <= 0:
+        return []
+    interval_ms = round(interval_s * 1000)
+    lo = -(-max(start_ms or 0, 0) // interval_ms)
+    hi_ms = duration_ms if end_ms is None else min(end_ms, duration_ms)
+    hi = -(-hi_ms // interval_ms)
+    return list(range(lo, max(hi, lo)))
+
+
+def sample_frames(
+    path: str,
+    *,
+    interval_s: float = FRAME_INTERVAL_S,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
+):
     """Decode frames at the sample interval with PyAV.
 
     Yields ``(frame_index, jpeg_bytes)``. Uses seek-then-decode so a
@@ -200,8 +229,11 @@ def sample_frames(path: str, *, interval_s: float = FRAME_INTERVAL_S):
         if stream is None:
             raise ValueError(f"no video stream in {path}")
         stream.thread_type = "AUTO"
-        for index in iter_frame_indices(
-            _container_duration_ms(container), interval_s=interval
+        for index in window_frame_indices(
+            _container_duration_ms(container),
+            interval_s=interval,
+            start_ms=start_ms,
+            end_ms=end_ms,
         ):
             offset = int(index * interval)
             container.seek(offset * 1_000_000, any_frame=False, backward=True)
@@ -520,6 +552,8 @@ def extract_visual_pass(
     batch_size: int = FRAMES_PER_BATCH,
     max_frames: int | None = None,
     describe: bool = True,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
 ) -> VisualPassReport:
     """Full visual pass with an honest account of what it covered.
 
@@ -529,7 +563,11 @@ def extract_visual_pass(
     for callers that genuinely want one, but it now marks the pass
     :attr:`VisualPassReport.truncated`, which forces a non-``complete`` status.
     """
-    expected = iter_frame_indices(duration_ms, interval_s=interval_s)
+    # Windowed: expected coverage is ONLY this window's indices, so a finished
+    # window reports complete rather than partial.
+    expected = window_frame_indices(
+        duration_ms, interval_s=interval_s, start_ms=start_ms, end_ms=end_ms
+    )
     if not describe:
         # Offline mode: no sampling and no model call at all. `describe=False`
         # must stay a hard no-model guarantee, not merely "the batches happen
@@ -566,7 +604,12 @@ def extract_visual_pass(
             failures.append(f"frames {span}: {note}")
         described.update(kept)
 
-    for seen, (index, jpeg) in enumerate(sample_frames(path, interval_s=interval_s)):
+    sampler_kwargs: dict = {}
+    if start_ms is not None or end_ms is not None:
+        sampler_kwargs = {"start_ms": start_ms, "end_ms": end_ms}
+    for seen, (index, jpeg) in enumerate(
+        sample_frames(path, interval_s=interval_s, **sampler_kwargs)
+    ):
         if max_frames is not None and seen >= max_frames:
             truncated = True
             log.error(

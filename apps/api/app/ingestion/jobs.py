@@ -252,6 +252,22 @@ def _store():
     return get_shared_store()
 
 
+def window_index_offset(window_start_ms: int) -> int:
+    """Ordinal base for a window: ``window_start_ms // 1000 * 1000``.
+
+    Invariant: a window ``[s, e)`` owns ordinals ``[offset, offset + (e - s))``,
+    i.e. one ordinal per millisecond of window length. Windows are disjoint in
+    time, so their ordinal ranges are disjoint and monotonic. Pass
+    ``max_chunks=window_max_chunks(s, e)`` to enforce it.
+    """
+    return max(int(window_start_ms), 0) // 1000 * 1000
+
+
+def window_max_chunks(window_start_ms: int, window_end_ms: int) -> int:
+    """Chunk budget for a window under :func:`window_index_offset`."""
+    return window_end_ms - window_index_offset(window_start_ms)
+
+
 def build_chunks(
     *,
     resource_id: str,
@@ -262,8 +278,13 @@ def build_chunks(
     visual: list[visual_mod.VisualSegment] | None = None,
     video_id: str | None = None,
     title: str | None = None,
+    index_offset: int = 0,
+    max_chunks: int | None = None,
 ) -> list[Chunk]:
     """Assemble indexable chunks from every extractor.
+
+    ``index_offset``/``max_chunks`` make ordinals window-safe (see
+    :func:`window_index_offset`); defaults leave behaviour unchanged.
 
     Audio and visual chunks are tagged ``video`` so they flow through the same
     strict-T gate the store applies to transcripts. That gate is
@@ -275,7 +296,7 @@ def build_chunks(
     uploaded rather than an internal extractor label like "transcript".
     """
     chunks: list[Chunk] = []
-    index = 0
+    index = index_offset
     for seg in text_segments or []:
         made = chunk_segment(
             seg,
@@ -315,6 +336,11 @@ def build_chunks(
         )
         chunks.extend(made)
         index += len(made)
+    if max_chunks is not None and index - index_offset > max_chunks:
+        raise ValueError(
+            f"window produced {index - index_offset} chunks, exceeding the "
+            f"ordinal stride {max_chunks}; ordinals would collide with the next window"
+        )
     return chunks
 
 
