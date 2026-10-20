@@ -40,3 +40,6 @@ dist/
 build/
 ppt/
 PPT_CONTENT.md
+
+# Local test videos (not part of the repo)
+test-data/Differential-equation-introduction-SnapYT.App.mp4
