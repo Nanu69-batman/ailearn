@@ -143,8 +143,10 @@ class ChatResponse(BaseModel):
     #: ``"supplemental"`` means the lesson had not covered the question, so the
     #: assistant taught it from general knowledge instead -- visibly labelled in
     #: the answer text and carrying ZERO citations, because nothing in it came
-    #: from the video.
-    mode: Literal["grounded", "supplemental"] = "grounded"
+    #: from the video. ``"conversational"`` is a greeting / thanks / "who are
+    #: you" turn: no retrieval ran, nothing about the lesson is claimed, and it
+    #: carries ZERO citations.
+    mode: Literal["grounded", "supplemental", "conversational"] = "grounded"
     #: Convenience mirror of ``mode == "grounded"`` for clients that branch on a
     #: boolean. A refusal is NOT grounded (``False``) -- nothing was served from
     #: the lesson -- so this is only ``True`` when a cited answer was returned.

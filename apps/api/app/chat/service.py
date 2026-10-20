@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Sequence
 
+from app.chat.intent import (
+    COVERAGE_QUERY,
+    INTENT_MODES,
+    SMALLTALK,
+    classify_intent,
+    has_subject_content,
+)
 from app.chat.llm import DeterministicStubLLM
 from app.chat.prompts import (
+    CONVERSATIONAL_FALLBACK_TEXT,
     REFUSAL_TEXT,
     SCOPE_REFUSAL_TEXT,
+    build_conversational_prompt,
     build_grounded_prompt,
     build_supplemental_prompt,
     extract_cited_ids,
@@ -136,6 +146,7 @@ class ChatService:
         llm=None,
         sessions: InMemorySessionStore | None = None,
         messages: InMemoryMessageStore | None = None,
+        agent=None,
     ) -> None:
         from app.chat.sessions import message_store, session_store
 
@@ -148,6 +159,9 @@ class ChatService:
         self._llm = llm or DeterministicStubLLM()
         self._sessions = sessions or session_store
         self._messages = messages or message_store
+        # Optional :class:`app.chat.agent.LessonAgent`. ``None`` (the default,
+        # and every test that does not opt in) means the classic pipeline only.
+        self._agent = agent
 
     def _retrieval(self):
         """Bind the awaitable retrieval seam.
@@ -302,6 +316,39 @@ class ChatService:
                 grounded=False,
             )
 
+        # Intent runs after the scope check (an unauthorised session still fails
+        # closed) and before everything else. A greeting has no course answer:
+        # sending it through retrieval produced a cited "answer" to "hi", and
+        # sending it through the general-knowledge fallback produced an invented
+        # lesson for "who are you". A captured frame always means a real
+        # question about the screen, so it is never smalltalk.
+        if self._agent is not None and self._pending_frontier(allowed, t_ms) is None:
+            resp = await self._agent_answer(
+                session=session,
+                message=message,
+                mode=mode,
+                t_ms=t_ms,
+                allowed=allowed,
+                focus_resource_id=focus_resource_id,
+                live_frame=live_frame,
+                no_frame_note=no_frame_note,
+            )
+            if resp is not None:
+                return resp
+
+        intent = classify_intent(message) if live_frame is None else None
+        if intent == SMALLTALK:
+            history = self._messages.user_texts(session_id, limit=5)
+            return await self._conversational_answer(session_id, message, history)
+        # Study / overview requests ("what questions can the prof ask me") are
+        # about the covered material as a whole. They take quiz / summarize
+        # mode -- both strict-T and both barred from the general-knowledge
+        # fallback -- unless the learner already picked a non-default mode.
+        coverage_query = False
+        if intent in INTENT_MODES and mode == "qa":
+            mode = INTENT_MODES[intent]
+            coverage_query = True
+
         pending = self._pending_frontier(allowed, t_ms)
         if pending is not None:
             self._persist(session_id, message, PROCESSING_PENDING_TEXT, [])
@@ -316,7 +363,11 @@ class ChatService:
             )
 
         history = self._messages.user_texts(session_id, limit=5)
-        rewritten = rewrite_query(message, history)
+        # The literal meta-question has no semantic overlap with the lesson, so a
+        # coverage request retrieves with a content query instead. Retrieval is
+        # still strict-T gated and scope-intersected; only the query text and k
+        # change.
+        rewritten = COVERAGE_QUERY if coverage_query else rewrite_query(message, history)
 
         # Present-tense questions ("what is on screen right now?") ask about the
         # playhead, not about the course. Retrieval answers them from material
@@ -336,7 +387,7 @@ class ChatService:
             session.course_id,
             allowed,
             t_ms,
-            k=8,
+            k=12 if coverage_query else 8,
             focus_resource_id=focus_resource_id,
             prefer_recent=prefer_recent,
         )
@@ -377,7 +428,12 @@ class ChatService:
         #
         # Neither trigger touches retrieval. Supplemental mode adds NO passages
         # and relaxes NO filter; it produces ZERO citations instead.
-        mode_allows_supplemental = mode not in SUPPLEMENTAL_DISABLED_MODES
+        # A message with no subject concept in it ("can you?", "and you?") has
+        # nothing to teach: the fallback would have to invent a topic, which is
+        # how "who are you" once became an unrequested Chain Rule lesson.
+        mode_allows_supplemental = (
+            mode not in SUPPLEMENTAL_DISABLED_MODES and has_subject_content(message)
+        )
         explicit_supplemental = mode_allows_supplemental and is_supplemental_request(message)
 
         visual_lag = visual_through is not None
@@ -423,7 +479,7 @@ class ChatService:
                 return resp
 
         system, user_prompt = build_grounded_prompt(
-            rewritten, passages, mode=mode, history=history
+            message if coverage_query else rewritten, passages, mode=mode, history=history
         )
         result = await self._llm.complete(
             system=system, user_prompt=user_prompt, passages=passages, mode=mode
@@ -584,6 +640,112 @@ class ChatService:
             refused=False,
             live_frame=state,
             mode="supplemental",
+            grounded=False,
+        )
+
+    async def _agent_answer(
+        self,
+        *,
+        session,
+        message: str,
+        mode: str,
+        t_ms: int,
+        allowed: list[str],
+        focus_resource_id: str | None,
+        live_frame,
+        no_frame_note: str | None,
+    ) -> ChatResponse | None:
+        """One agentic turn, or ``None`` to fall back to the classic pipeline.
+
+        The agent only ever reads through time-gated, scope-intersected tools,
+        and :meth:`LessonAgent._validate` has already checked every cited id
+        against what those tools returned. Any provider failure or unsafe
+        answer surfaces here as ``None``.
+        """
+        from app.chat.agent import AgentUnavailableError
+
+        live_passage = None
+        if live_frame is not None:
+            live_passage = live_frame_passage(live_frame)
+            assert_live_frame_at(live_passage, t_ms)
+        history = self._messages.user_texts(session.id, limit=5)
+        from app.config import settings
+
+        try:
+            # One wall-clock budget for the whole tool loop: a queued free-tier
+            # endpoint must degrade to the classic answer, not hang the learner.
+            outcome = await asyncio.wait_for(
+                self._agent.run(
+                    message=message,
+                    mode=mode,
+                    t_ms=t_ms,
+                    course_id=session.course_id,
+                    allowed=allowed,
+                    focus_resource_id=focus_resource_id,
+                    store=self._store,
+                    retrieval=self._retrieval(),
+                    history=history,
+                    live_passage=live_passage,
+                ),
+                timeout=settings.agent_total_timeout_s,
+            )
+        except (AgentUnavailableError, TimeoutError) as exc:
+            log.warning("agent unavailable (%r); using the classic pipeline", exc)
+            return None
+
+        prefix = f"{no_frame_note}\n\n" if no_frame_note else ""
+        state = "live" if live_passage is not None else ("document" if no_frame_note else None)
+        if outcome.kind == "refused":
+            text = prefix + REFUSAL_TEXT
+            self._persist(session.id, message, text, [])
+            return ChatResponse(
+                answer=text, citations=[], refused=True, live_frame=state,
+                mode="grounded", grounded=False,
+            )
+        # Dedupe in cited order; citations come only from validated passages.
+        cited = list({p.chunk_id: p for p in outcome.cited}.values())
+        citations = [_passage_to_citation(p) for p in cited]
+        answer = prefix + strip_citation_markers(outcome.text)
+        self._persist(session.id, message, answer, [c.model_dump() for c in citations])
+        log.info(
+            "agent answer served (kind=%s, tool_calls=%d, citations=%d)",
+            outcome.kind, outcome.tool_calls, len(citations),
+        )
+        return ChatResponse(
+            answer=answer,
+            citations=citations,
+            refused=False,
+            live_frame=state,
+            mode=outcome.kind,
+            grounded=outcome.kind == "grounded",
+        )
+
+    async def _conversational_answer(
+        self, session_id: str, message: str, history: Sequence[str]
+    ) -> ChatResponse:
+        """Reply to a greeting / thanks / "who are you": no retrieval, no citations.
+
+        Nothing about the lesson is claimed, so there is nothing to ground. Any
+        marker the model emits anyway is stripped, and a declined or failed
+        provider call falls back to a fixed introduction rather than an error.
+        """
+        system, user_prompt = build_conversational_prompt(message, history)
+        try:
+            result = await self._llm.complete(
+                system=system, user_prompt=user_prompt, passages=[], mode="qa"
+            )
+            text = strip_citation_markers((result.text or "").strip())
+        except Exception:  # noqa: BLE001 -- any provider error; a greeting must not fail
+            log.warning("conversational reply failed; using the fixed introduction")
+            text = ""
+        if not text or text == REFUSAL_TEXT:
+            text = CONVERSATIONAL_FALLBACK_TEXT
+        self._persist(session_id, message, text, [])
+        return ChatResponse(
+            answer=text,
+            citations=[],
+            refused=False,
+            mode="conversational",
             grounded=False,
         )
 

@@ -598,6 +598,49 @@ class ChromaVectorStore:
 
         return self._select_with_coverage(eligible, k)
 
+    def passages_between(
+        self,
+        *,
+        course_id: str,
+        resource_scope: list[str],
+        current_time_ms: int,
+        from_ms: int,
+        to_ms: int,
+        focus_resource_id: str | None = None,
+        limit: int = 120,
+    ) -> list[RetrievedPassage]:
+        """Time-gated passages overlapping ``[from_ms, to_ms]``, in lesson order.
+
+        The read behind the agent's ``get_lesson_content`` tool. No embedding is
+        spent. The gate is the SAME ``build_where`` clause the vector query
+        uses, evaluated at ``min(to_ms, T)`` -- so asking for a range past the
+        playhead returns only what ends at or before it -- and every row is
+        re-checked with :meth:`_passes_strict_t` against ``T`` itself.
+        """
+        t_ms = int(current_time_ms)
+        upto = min(int(to_ms), t_ms)
+        if upto < 0:
+            return []
+        where = build_where(
+            course_id=course_id,
+            resource_scope=resource_scope,
+            current_time_ms=upto,
+            focus_resource_id=focus_resource_id,
+        )
+        got = self._collection.get(where=where, include=["documents", "metadatas"])
+        out: list[RetrievedPassage] = []
+        for doc, meta in zip(got.get("documents") or [], got.get("metadatas") or []):
+            passage = self._to_passage(doc, meta or {}, 0.0)
+            if passage is None or passage.source_type not in TIME_GATED_SOURCE_TYPES:
+                continue
+            if not self._passes_strict_t(passage, t_ms) or passage.end_ms > upto:
+                continue
+            if passage.end_ms < int(from_ms):
+                continue
+            out.append(passage)
+        out.sort(key=lambda p: (p.start_ms or 0, p.end_ms or 0, p.chunk_id))
+        return out[: max(int(limit), 0)]
+
     @staticmethod
     def _select_with_coverage(
         eligible: list[RetrievedPassage], k: int

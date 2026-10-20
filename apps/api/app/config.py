@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     # Local faster-whisper is the fallback when Groq fails. Its model needs
     # more RAM than a 512 MB free instance has; turn it off there.
     local_whisper_fallback: bool = True
+    # Agentic chat: an OpenRouter model answers by calling time-gated tools
+    # (search_lesson / get_lesson_content). Empty key = the classic pipeline.
+    # Any agent failure (quota, timeout, bad tool call) falls back to it too.
+    openrouter_api_key: str = ""
+    openrouter_model: str = "nvidia/nemotron-3.5-super-vl:free"
+    agent_max_steps: int = 4
+    agent_timeout_s: float = 30.0  # per provider call
+    agent_total_timeout_s: float = 60.0  # whole tool loop, then classic fallback
 
     def expected_embedding_dim(self) -> int:
         """Vector width every chunk and every query must agree on.

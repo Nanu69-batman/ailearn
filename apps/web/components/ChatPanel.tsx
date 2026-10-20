@@ -97,6 +97,7 @@ export default function ChatPanel({
   // is reported and nothing is substituted in its place.
   const [frameError, setFrameError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -139,9 +140,33 @@ export default function ChatPanel({
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, sending]);
 
-  async function handleSend(e: React.FormEvent): Promise<void> {
+  // Auto-grow the textarea up to ~6 lines, then scroll inside it.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const lineHeight = parseFloat(getComputedStyle(el).lineHeight) || 20;
+    const max = lineHeight * 6 + 16;
+    el.style.height = `${Math.min(el.scrollHeight, max)}px`;
+    el.style.overflowY = el.scrollHeight > max ? "auto" : "hidden";
+  }, [input]);
+
+  function handleSubmit(e: React.FormEvent): void {
     e.preventDefault();
-    const text = input.trim();
+    void send(input);
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>): void {
+    // Enter sends; Shift+Enter inserts a newline. Ignore Enter mid-IME
+    // composition so CJK input is not sent half-typed.
+    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      void send(input);
+    }
+  }
+
+  async function send(raw: string): Promise<void> {
+    const text = raw.trim();
     if (!text || sending) return;
     const userMsg: ChatMessage = {
       id: newId(),
@@ -211,11 +236,8 @@ export default function ChatPanel({
             });
       }
 
-      // Refusal kinds are not interchangeable. `scope_empty` means the session
-      // grant does not cover this material (stale grant) — the backend copy for
-      // that is already honest and correct, so prepending "watched content yet"
-      // would contradict it. Only low-evidence refusals get that prefix.
-      const scopeEmpty = (res as { scope_empty?: boolean }).scope_empty === true;
+      // A refusal is signalled by the bubble's style (kind "refused"), not by
+      // prepended copy: the backend's refusal text is already honest about why.
       const pending = res.processing_pending === true;
       const pendingNote =
         pending && typeof res.processed_through_ms === "number"
@@ -226,12 +248,10 @@ export default function ChatPanel({
       const assistantMsg: ChatMessage = {
         id: newId(),
         role: "assistant",
-        content:
-          res.refused && !scopeEmpty && !pending && res.visual_pending !== true
-            ? `I can't answer from watched content yet.\n\n${res.answer}`
-            : `${res.answer}${pendingNote}`,
+        content: `${res.answer}${pendingNote}`,
         citations: res.citations,
         created_at: new Date().toISOString(),
+        kind: res.refused ? "refused" : res.mode,
       };
       setMessages((prev) => [...prev, assistantMsg]);
     } catch (err) {
@@ -280,9 +300,20 @@ export default function ChatPanel({
 
   return (
     <section className="flex flex-col rounded-xl border border-gray-200 bg-white p-4 shadow-sm" aria-label="Chat with video">
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-base font-semibold text-gray-900">Ask this video</h2>
-        {offline && <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-xs text-amber-600">offline mock</span>}
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <div
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 text-sm font-semibold text-white shadow-sm"
+            aria-hidden="true"
+          >
+            M
+          </div>
+          <div className="min-w-0">
+            <h2 className="text-base font-semibold leading-tight text-gray-900">Malai · AI tutor</h2>
+            <p className="truncate text-xs text-gray-500">Answers come from what you&apos;ve watched so far</p>
+          </div>
+        </div>
+        {offline && <span className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-xs text-amber-600">offline mock</span>}
       </div>
 
       <ModeSelector value={mode} onChange={setMode} disabled={sending} />
@@ -317,7 +348,13 @@ export default function ChatPanel({
         </div>
       )}
       {(historyState === "ready" || messages.length > 0) && (
-        <MessageList messages={messages} loading={sending} onSeek={onSeek} />
+        <MessageList
+          messages={messages}
+          loading={sending}
+          onSeek={onSeek}
+          onSuggest={(text) => void send(text)}
+          suggestDisabled={sending || sessionExpired}
+        />
       )}
 
       {sendError && !sessionExpired && (
@@ -336,17 +373,19 @@ export default function ChatPanel({
         </div>
       )}
 
-      <form className="mt-3 flex flex-col gap-2" onSubmit={(e) => void handleSend(e)}>
-        <div className="flex gap-2">
+      <form className="mt-3 flex flex-col gap-2" onSubmit={handleSubmit}>
+        <div className="flex items-end gap-2">
           <label className="sr-only" htmlFor="chat-input">
             Ask a question about the video
           </label>
-          <input
+          <textarea
             id="chat-input"
-            className="flex-1 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-800 placeholder-gray-400 outline-none transition focus:border-violet-400 focus:bg-white focus:ring-2 focus:ring-violet-200"
-            type="text"
+            ref={inputRef}
+            rows={1}
+            className="flex-1 resize-none overflow-hidden rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm leading-5 text-gray-800 placeholder-gray-400 outline-none transition focus:border-violet-400 focus:bg-white focus:ring-2 focus:ring-violet-200"
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
             placeholder="Pause, then ask… e.g. what did that term mean?"
             disabled={sending}
             autoComplete="off"
@@ -359,7 +398,7 @@ export default function ChatPanel({
         {/* Trigger #1 of the live frame: the explicit button. It LATCHES (it
             does not send by itself) so the learner can still type the question,
             and it forces a capture regardless of the wording. Trigger #2 is
-            `isFrameQuestion` inside handleSend. Rendered only when a capture is
+            `isFrameQuestion` inside send(). Rendered only when a capture is
             actually possible: a document has no video element, and offering a
             frame button there would promise something that does not exist. */}
         {captureFrame && (

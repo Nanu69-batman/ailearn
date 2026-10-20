@@ -106,6 +106,8 @@ def describe_active_providers() -> dict[str, str]:
     from app.config import settings
 
     llm = "gemini" if settings.llm_api_key else "stub"
+    if settings.openrouter_api_key:
+        llm = f"agent:{settings.openrouter_model} (fallback {llm})"
     store = "chroma"
     sessions = (
         "in-memory" if settings.use_in_memory else "in-memory (postgres-backed planned)"
@@ -116,6 +118,7 @@ def describe_active_providers() -> dict[str, str]:
 def get_service() -> ChatService:
     if _service_override is not None:
         return _service_override
+    from app.chat.agent import get_agent
     from app.chat.llm import get_llm_provider
     from app.ingestion.embedder import get_embedder
 
@@ -125,6 +128,7 @@ def get_service() -> ChatService:
         llm=get_llm_provider(),
         sessions=session_store,
         messages=message_store,
+        agent=get_agent(),
     )
 
 

@@ -260,6 +260,14 @@ export interface ChatResponse {
   citations: Citation[];
   refused: boolean;
   /**
+   * Where the answer came from: "grounded" (retrieved lesson passages),
+   * "supplemental" (general knowledge, not from the video) or
+   * "conversational" (small talk). Optional: older backends and mocks omit it.
+   */
+  mode?: AnswerMode;
+  /** True when the answer is backed by retrieved lesson passages. */
+  grounded?: boolean;
+  /**
    * What the live-frame path did, or absent when no frame was involved.
    *
    * "live" — the learner's captured frame was described and injected as
@@ -296,12 +304,18 @@ export interface LiveFrameCapture {
 
 export type MessageRole = "user" | "assistant";
 
+export type AnswerMode = "grounded" | "supplemental" | "conversational";
+
+/** Client-side provenance of an assistant message; absent for loaded history. */
+export type MessageKind = AnswerMode | "refused";
+
 export interface ChatMessage {
   id: string;
   role: MessageRole;
   content: string;
   citations: Citation[];
   created_at: string;
+  kind?: MessageKind;
 }
 
 export class ApiError extends Error {
