@@ -213,6 +213,26 @@ for the new one. That benchmark did not check what else was using the CPU, so qu
 the 2x figure. Inside the app the vision lane shares the same CPU, so in-app
 times are higher; an in-app re-time has not been done yet.
 
+**Hosted transcription (Groq).** With `GROQ_API_KEY` set, the same cut-out
+window audio is sent as WAV to Groq's `whisper-large-v3-turbo`, a much larger
+and more accurate model than local `tiny`. Segment times come back relative to
+the window and are shifted to video time, then clipped to the window exactly as
+before. Segments the model rates as probably silence are dropped (it has no
+silence skipping and otherwise invents text such as "Thank you."). A rate-limit
+reply is retried twice; any failure falls back to local Whisper and the job
+records the error, so a window is never silently left empty.
+
+| One 2-minute window, demo video | Time |
+|---|---|
+| Local Whisper `tiny`, old call | 28-30 s |
+| Local Whisper `tiny`, window-only call | 14-18 s |
+| Groq `whisper-large-v3-turbo` (decode + upload + reply) | **2.4-3.4 s** |
+
+Measured on four windows (0:00, 2:00, 4:00 and the 55 s last window, which took
+1.3 s), one run each. It frees the local CPU for frame work, and it is what
+makes a small cloud host workable. Trade-off: lecture audio is sent to a third
+party.
+
 ## 7. Honest degradation: stated, never inferred
 
 Several bugs came from the system quietly doing less than it claimed:
@@ -257,4 +277,5 @@ Several bugs came from the system quietly doing less than it claimed:
 | Time to first usable answers (stream) | first 6 minutes of video | measured on demo video |
 | Transcript-first / overlapped lanes speed-up | not measured yet | tests only, fakes |
 | Whisper time for one 2-minute window | about 29 s down to about 15 s | measured, two runs each, loaded machine |
+| Groq transcription, one 2-minute window | 2.4-3.4 s | measured, 3 full windows, one run each |
 | Tests | 428 passing | measured |
