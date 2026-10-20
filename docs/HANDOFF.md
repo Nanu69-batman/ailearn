@@ -260,6 +260,9 @@ cd apps/web; npm run dev -- --port 3000
 |---|---|
 | `PROJECT.md` (repo root) | current architecture, feature inventory, decision log, roadmap |
 | `docs/HANDOFF.md` | this file — verified state, probes, gotchas |
+| `docs/TODO.md` | open engineering tasks, prioritised |
+| `docs/TECHNIQUES.md` | presentation notes with measured numbers |
+| `docs/SCALING_PLAN.md` | plan for LMS module + concurrent users (not implemented) |
 | `docs/adr/ADR-001-lms-integration-scalability.md` | LMS boundary + scaling decision (history) |
 | `docs/adr/ADR-002-retrieval-stack-library-migration.md` | library / persistence migration decision (history) |
 | `docs/api.md` | **stale** — old port and route list; the HMAC payload spec is still right |
