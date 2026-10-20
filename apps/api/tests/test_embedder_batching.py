@@ -512,7 +512,7 @@ def test_job_payload_reports_the_embedding_stage_and_counts():
     embedding, and no count inside the slow phase.
     """
     from app.ingestion import jobs as jobs_mod
-    from app.ingestion.jobs import job_payload, new_job
+    from app.ingestion.jobs import new_job
 
     job = new_job("course_1", "res_abc")
 
@@ -540,7 +540,7 @@ def test_the_ingest_reports_each_stage_it_passes_through(monkeypatch):
     minute of a long video looks identical.
     """
     from app.ingestion import jobs as jobs_mod
-    from app.ingestion.jobs import job_payload, new_job
+    from app.ingestion.jobs import new_job
 
     stages: list[str] = []
     original = jobs_mod.note_stage
