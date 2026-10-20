@@ -23,7 +23,8 @@ flowchart LR
     D[("Container disk<br/>media and documents")]
   end
   P[("Pinecone serverless<br/>vectors, cosine")]
-  G["Gemini API<br/>LLM, embeddings, vision"]
+  O["OpenRouter API<br/>Nemotron tutor agent"]
+  G["Gemini API<br/>fallback LLM, embeddings, vision"]
   Q["Groq API<br/>whisper-large-v3-turbo"]
 
   B --> W
@@ -33,6 +34,7 @@ flowchart LR
   B -->|"GET /resources/{id}/media (Range)"| A
   A --> P
   A --> D
+  A --> O
   A --> G
   A --> Q
 ```
@@ -43,7 +45,8 @@ flowchart LR
 | API (FastAPI) | Render web service, Docker, free tier (`render.yaml`, `apps/api/deploy/render/Dockerfile`) | Vercel cannot host it: the function bundle limit is 250 MB, while faster-whisper, PyAV and chromadb are larger, and ingest jobs run in the background for minutes. One process, because jobs and sessions live in memory |
 | Vectors | Pinecone serverless (`VECTOR_STORE=pinecone`) | Render's free disk is wiped on restart, so the index lives outside the container. The same `build_where` scope + strict-T filter runs in Pinecone, and every match is re-checked against it in Python. Local dev uses Chroma on disk (`VECTOR_STORE=chroma`) |
 | Files | Container disk | A hackathon trade-off. The demo video is baked into the image, so it is always there. Files uploaded on the hosted site last until the next restart. The media route serves them with HTTP Range |
-| LLM / embeddings / vision | Gemini `gemini-3.5-flash-lite`, `gemini-embedding-2` (3072-d) | One provider for answers, vectors and frame descriptions |
+| Tutor agent | OpenRouter, `nvidia/nemotron-3.5-super-vl:free` | Free, reliable tool calling with a 1M context. Optional: with no `OPENROUTER_API_KEY`, the classic pipeline answers every question |
+| LLM / embeddings / vision | Gemini `gemini-3.5-flash-lite`, `gemini-embedding-2` (3072-d) | One provider for fallback answers, vectors and frame descriptions |
 | Speech to text | Groq `whisper-large-v3-turbo`, with local faster-whisper as fallback | About 3 s per 2-minute window on Groq, against 14-18 s for local `tiny` (measured, see [EVALUATION.md](EVALUATION.md)). This is what makes a small CPU host workable |
 
 Free-tier protection on the API: `MAX_UPLOAD_MB`, `MAX_VIDEO_MINUTES` (read from
@@ -116,6 +119,42 @@ flowchart TD
   CIT -->|"no"| RF["Refuse, no citations"]
   CIT -->|"yes"| OK["Answer + validated citations<br/>(ms range, transcript or visual)"]
 ```
+
+### The agentic tutor (first choice when `OPENROUTER_API_KEY` is set)
+
+The diagram above is the **classic pipeline**. When an OpenRouter key is set,
+the tutor agent (`app/chat/agent.py`) handles the question first, after the same
+session and scope checks:
+
+```mermaid
+flowchart TD
+  Q2["Question at T, scope already intersected"] --> AG["Nemotron, Malai tutor persona<br/>OpenAI-format tool calling"]
+  AG -->|"search_lesson(query)"| T1["Gated vector search, k=6<br/>end_ms <= T, scope filter"]
+  AG -->|"get_lesson_content(from, to)"| T2["Passages in a time range<br/>clamped to min(to, T), in lesson order"]
+  T1 --> AG
+  T2 --> AG
+  AG --> VAL{"Validate the final reply"}
+  VAL -->|"no tools, no subject words<br/>(hi, who are you)"| CONV["mode=conversational<br/>no citations"]
+  VAL -->|"every cited id was returned<br/>by a tool this turn"| GR["mode=grounded<br/>validated citations"]
+  VAL -->|"labelled Not from the video<br/>(qa mode only)"| SUP["mode=supplemental<br/>no citations"]
+  VAL -->|"unknown id, uncited, timeout,<br/>quota, provider error"| FB["Classic pipeline above"]
+```
+
+- **The model chooses tools; code chooses what it sees.** Both tools run through
+  the same scope and strict-T gate as the classic path. A request for
+  `get_lesson_content(0, 99999)` returns only what has played.
+- **Repairs before falling back.** If the model answers a subject question
+  without calling a tool, it gets one retry with `tool_choice="required"`. If it
+  used tools but cited nothing, it gets one cite-repair turn. Only after that
+  does the classic pipeline take over.
+- **Budgets.** At most 4 tool steps, 30 s per provider call and 60 s for the
+  whole loop. A reply cut off at the token limit has any unfinished
+  `[chunk_id=...` removed and asks the learner to say "continue".
+- **Without the agent**, a regex intent router (`app/chat/intent.py`) keeps
+  the classic path from going wrong:
+  - Small talk gets a short conversational reply with no retrieval.
+  - "What questions can the prof ask?" becomes quiz mode.
+  - "What have we covered?" becomes summarize mode, over a coverage query.
 
 "Ask about this frame" (`POST /chat/live-frame`) adds one step before the query.
 The captured JPEG is described by Gemini, and the description joins the pool as a

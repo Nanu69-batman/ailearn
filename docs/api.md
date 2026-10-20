@@ -96,7 +96,7 @@ not widen the scope); `mode` — string, optional: `qa` (default) ·
 `explain_simple` · `analogy` · `summarize` · `compare` · `quiz`.
 `200` response: `answer`, `citations[]`, `refused`, `scope_empty`,
 `live_frame` (`"live"` | `"document"` | null), `mode` (`"grounded"` |
-`"supplemental"`), `grounded` (bool), `processing_pending` +
+`"supplemental"` | `"conversational"`), `grounded` (bool), `processing_pending` +
 `processed_through_ms` (the playhead is past the processed part of a stream-mode
 video, so the answer is an honest "not processed yet"), and `visual_pending` +
 `visual_through_ms` (the transcript is indexed, but the on-screen descriptions
@@ -116,6 +116,9 @@ for this part are still being produced):
 `mode: "supplemental"` appears only when the lesson has not covered the question
 and the assistant teaches it from general knowledge. The answer text labels it
 as not from the video, and it carries zero citations.
+
+`mode: "conversational"` is a reply to small talk, such as "hi" or "who are
+you". It has no retrieval, no citations and no lesson content.
 
 Citation fields: `chunk_id` (always present); `source_type` (`video` · `pdf` ·
 `pptx` · `image` · `note` · `code`); `modality` (`"transcript"` | `"visual"` |

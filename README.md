@@ -33,6 +33,16 @@ minutes takes up to a minute while it wakes.
 
 ## What makes it different
 
+- **An agentic tutor whose tools cannot see the future.** Malai, the tutor,
+  is a tool-calling model (NVIDIA Nemotron via OpenRouter). It decides
+  whether to `search_lesson` for a concept or to read a stretch of the lecture
+  with `get_lesson_content(from, to)`, for example to write exam questions on
+  everything watched so far. It never decides what it may see: both tools clamp
+  to the playhead and the granted scope in code, and every id it cites must be
+  one a tool returned in that turn. Greetings and "who are you" get a short
+  conversational reply with no citations. Any agent failure, such as a quota
+  limit, a timeout or an invented citation, falls back to the classic pipeline
+  below. The tutor never serves an unchecked answer.
 - **No spoilers, enforced by the retrieval layer.** A video passage is kept only
   when `end_ms <= T`, where `T` is the playhead. The filter is inside the vector
   query and is checked again in Python. A passage with no known end is dropped.
@@ -78,7 +88,8 @@ flowchart LR
   U -->|"REST: chat, ingest, media"| A["FastAPI API<br/>Docker on Render"]
   A --> V[("Pinecone<br/>vector index")]
   A --> S[("Container disk<br/>videos, PDFs, PPTX, images")]
-  A --> G["Gemini<br/>answers, embeddings, frame descriptions"]
+  A --> O["OpenRouter Nemotron<br/>agentic tutor (tool calls)"]
+  A --> G["Gemini<br/>fallback answers, embeddings, frame descriptions"]
   A --> Q["Groq Whisper<br/>speech to text"]
 ```
 
@@ -92,7 +103,8 @@ invariants are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 | Web | Next.js 15, React 19, Tailwind CSS v3, react-markdown + remark-math + rehype-katex |
 | API | Python, FastAPI, Pydantic v2, uvicorn |
 | Retrieval | Pinecone serverless (hosted) or Chroma on disk (local), LangChain text splitters |
-| LLM | Gemini `gemini-3.5-flash-lite` |
+| Tutor agent | `nvidia/nemotron-3.5-super-vl:free` via OpenRouter, OpenAI-format tool calling |
+| LLM (fallback pipeline) | Gemini `gemini-3.5-flash-lite` |
 | Embeddings | Gemini `gemini-embedding-2` (3072-d), batched 64 texts per call |
 | Vision | Gemini (frame and image descriptions, live frames) |
 | Speech to text | Groq `whisper-large-v3-turbo`, with local faster-whisper as fallback |
@@ -147,6 +159,9 @@ To load the sample lecture, see [docs/DATASET.md](docs/DATASET.md).
 | `EMBEDDING_API_KEY` | empty | Gemini key for embeddings (same value). With no key the app uses an offline hashing embedder (1536-d) |
 | `LLM_MODEL` | `gemini-3.5-flash-lite` | Answer model |
 | `EMBEDDING_MODEL` | `gemini-embedding-2` | Embedding model (3072-d) |
+| `OPENROUTER_API_KEY` | empty | Enables the agentic tutor. With no key, every question goes through the classic Gemini pipeline |
+| `OPENROUTER_MODEL` | `nvidia/nemotron-3.5-super-vl:free` | Tutor model. It must support tool calling |
+| `AGENT_TOTAL_TIMEOUT_S` | `60` | Time budget for the whole tool loop. After it, the classic pipeline answers |
 | `GROQ_API_KEY` | empty | Hosted transcription. With no key, local faster-whisper is used |
 | `GROQ_TRANSCRIBE_MODEL` | `whisper-large-v3-turbo` | Groq model |
 | `CORS_ORIGIN` | `http://localhost:3000` | The single allowed browser origin (`https://ailearn-theta.vercel.app` when hosted) |
@@ -223,6 +238,9 @@ Current results and what each test file protects are listed in
 - **State-changing routes (upload, delete, subjects, position) have no auth.**
   Only chat and history are bound to a signed session. See
   [docs/TODO.md](docs/TODO.md).
+- **The free tutor model is rate-limited.** OpenRouter's free tier allows about
+  50 requests a day, and each question uses 2 or 3. Agent answers take about
+  5-20 s. When the limit is reached, answers come from the Gemini pipeline.
 - **Small eval set, offline embedder.** The golden set has 25 items, and its
   numbers come from the offline hashing embedder, not Gemini. Concurrent load
   has not been measured. One 11-minute lecture has been exercised end to end.
