@@ -19,6 +19,7 @@ web client polls ``/ingestion/jobs/{id}``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 import threading
@@ -27,11 +28,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.ingestion import audio as audio_mod
+from app.ingestion import embedder as embedder_mod
 from app.ingestion import images as images_mod
 from app.ingestion import visual as visual_mod
 from app.ingestion import youtube as yt_mod
 from app.ingestion.chunking import Chunk, TextSegment, chunk_segment
-from app.ingestion.documents import extract
+from app.ingestion.documents import extract, extract_pdf_pass
 from app.ingestion.duration import media_duration_ms
 
 log = logging.getLogger(__name__)
@@ -51,6 +53,11 @@ class IngestJob:
     error: str | None = None
     course_id: str | None = None
     detail: dict = field(default_factory=dict)
+    #: The stage the ingest is currently in. Kept *out* of
+    #: ``detail`` because the detail is the ingest report and the
+    #: stage is where the job is -- two different facts about the
+    #: same job, and merging them made ``detail`` untestable.
+    stage: str | None = None
 
 
 _JOBS: dict[str, IngestJob] = {}
@@ -81,6 +88,81 @@ def update_job(job_id: str, **fields) -> None:
 def clear_jobs() -> None:
     with _LOCK:
         _JOBS.clear()
+
+
+# ---------------------------------------------------------------------------
+# Progress: which stage, and how far through it
+# ---------------------------------------------------------------------------
+#
+# A 7-minute video ingest legitimately takes minutes. What made it *look*
+# broken was that nothing said where it was: the payload stayed
+# ``status: "processing"`` for the whole run, so transcription, visual
+# description and embedding were indistinguishable from a freeze. These
+# helpers record the stage and, inside the embedding stage, a running count.
+
+#: The ingest stage names a caller may see. Stable strings: the web client
+#: discriminates on them.
+STAGE_EXTRACTING = "extracting"
+STAGE_TRANSCRIBING = "transcribing"
+STAGE_DESCRIBING = "describing"
+STAGE_EMBEDDING = "embedding"
+
+
+#: The job currently executing on a worker thread. Stage reporting inside
+#: ``ingest_media`` has no job id of its own -- it is several call frames below
+#: ``run_ingest`` -- and threading one through every ingest entry point would
+#: change five public signatures for a progress string. One process-global,
+#: set for the duration of ``run_ingest``, is the honest cost.
+_ACTIVE_JOB: dict[str, str] = {}
+
+
+def note_stage(stage: str, **fields) -> None:
+    """Record ``stage`` on the in-flight ingest job, if there is one."""
+    job_id = _ACTIVE_JOB.get("job_id")
+    if job_id:
+        set_stage(job_id, stage, **fields)
+
+
+def set_stage(job_id: str, stage: str, **fields) -> None:
+    """Record the current stage on a job. Never raises, never blocks.
+
+    Progress reporting is a courtesy to the caller watching a spinner, so it
+    must not be able to fail an ingest that is otherwise succeeding.
+    """
+    try:
+        with _LOCK:
+            job = _JOBS.get(job_id)
+            if job is None:
+                return
+            detail = dict(job.detail or {})
+            job.stage = stage
+            detail.update(fields)
+            job.detail = detail
+    except Exception:  # see docstring
+        log.debug("could not record stage %r for job %s", stage, job_id, exc_info=True)
+
+
+@contextlib.contextmanager
+def embedding_progress(job_id: str):
+    """Publish ``embedded N/total`` on a job for the duration of a chunk write.
+
+    Installed around the *whole* ingest rather than just the embedding call, so
+    a caller polling ``GET /ingestion/jobs/{id}`` sees a counter that moves
+    rather than a status stuck at ``processing``. Restores the previous sink on
+    exit, including on failure, so a crashed ingest cannot leave a stale sink
+    publishing into a finished job.
+    """
+
+    def _sink(done: int, total: int) -> None:
+        set_stage(
+            job_id, STAGE_EMBEDDING, embedded=done, embedding_total=total
+        )
+
+    previous = embedder_mod.set_embedding_progress(_sink)
+    try:
+        yield
+    finally:
+        embedder_mod.set_embedding_progress(previous)
 
 
 #: Titles are display labels, not storage keys: an absurdly long name is a
@@ -389,12 +471,23 @@ def ingest_document(
 ) -> dict:
     """Document ingest. Never time-gated, so no duration lookup happens.
 
-    ``title`` follows the same rule as :func:`ingest_media`: it is the name the
-    learner uploaded, passed explicitly by upload callers because ``path`` is
-    the staged ``{resource_id}.{ext}`` asset.
+    ``title`` follows the same rule as :func:`ingest_media`: it is the name
+    the learner uploaded, passed explicitly by upload callers because
+    ``path`` is the staged ``{resource_id}.{ext}`` asset.
+
+    A PDF goes through the *report* form of extraction, not the segments
+    form, because a document that could not be read has to be reported as
+    such: "no text layer and no OCR" is a failure, and it must not arrive
+    as a cheerful zero-chunk success. The report is carried onto the
+    payload so the gap reaches the job record instead of a log line.
     """
     path = Path(path)
-    segments = extract(path, source_type)
+    report = None
+    if source_type == "pdf":
+        report = extract_pdf_pass(path)
+        segments = report.segments
+    else:
+        segments = extract(path, source_type)
     chunks = build_chunks(
         resource_id=resource_id,
         course_id=course_id,
@@ -403,7 +496,14 @@ def ingest_document(
         title=_resolve_title(path, title),
     )
     written = _store().add(chunks)
-    return {"document_chunks": written, "total_chunks": written}
+    out = {"document_chunks": written, "total_chunks": written}
+    if report is not None:
+        out["document_status"] = report.status
+        out["text_chars"] = report.text_chars
+        out["ocr_status"] = report.ocr.status
+        out["ocr_reason"] = report.ocr.reason
+        out["warnings"] = list(report.warnings)
+    return out
 
 
 def ingest_image(
@@ -514,10 +614,19 @@ def ingest_youtube(
 
 
 def run_ingest(job: IngestJob, work) -> None:
-    """Execute ``work()`` on a worker thread, recording the outcome on the job."""
+    """Execute ``work()`` on a worker thread, recording the outcome on the job.
+
+    Stage progress is published throughout, not only at the end. The embedder
+    reports ``embedded N/total`` as it goes, so a caller polling
+    ``GET /ingestion/jobs/{id}`` sees a moving counter during the (sometimes
+    multi-minute) chunk write instead of an undifferentiated ``processing``.
+    """
     update_job(job.job_id, status="processing", error=None)
+    set_stage(job.job_id, STAGE_EXTRACTING)
+    _ACTIVE_JOB["job_id"] = job.job_id
     try:
-        report = work()
+        with embedding_progress(job.job_id):
+            report = work()
     except Exception as exc:
         log.exception("ingest job %s failed", job.job_id)
         update_job(
@@ -526,7 +635,13 @@ def run_ingest(job: IngestJob, work) -> None:
             error=f"{type(exc).__name__}: {exc}",
         )
         return
-    update_job(job.job_id, status="done", detail=report)
+    finally:
+        _ACTIVE_JOB.pop("job_id", None)
+    # Merge rather than replace: the stage/counter fields describe how the
+    # ingest got there, and replacing them with the report alone would erase
+    # the only evidence of where the time went.
+    merged = {**(job.detail or {}), **(report or {})}
+    update_job(job.job_id, status="done", detail=merged)
 
 
 def schedule(job: IngestJob, work) -> None:
@@ -561,6 +676,19 @@ def job_payload(job: IngestJob) -> dict:
     detail = job.detail or {}
     for key in ("visual_status", "visual_coverage_pct", "visual_span_pct", "image_no"):
         if key in detail:
+            payload[key] = detail[key]
+    # The document pass report. A PDF with no text layer and no OCR is a
+    # failed read, and the job record has to say so -- the same reason the
+    # visual status is carried above.
+    for key in ("document_status", "text_chars", "ocr_status", "ocr_reason"):
+        if key in detail:
+            payload[key] = detail[key]
+    # Stage + the embedding counter. Additive and omitted unless the ingest
+    # actually recorded them, so the frozen four-key contract is untouched.
+    if job.stage is not None:
+        payload["stage"] = job.stage
+    for key in ("embedded", "embedding_total"):
+        if detail.get(key) is not None:
             payload[key] = detail[key]
     if detail.get("warnings"):
         payload["warnings"] = list(detail["warnings"])

@@ -39,7 +39,7 @@ The hackathon brief requires the system to be "designed for integration with an 
 
 - **Retrieval quality:** scoped retrieval must not change recall for permitted sources. Validate: golden queries scoped to a learner with partial permissions still return correct chunks; zero chunks outside the learner's scope.
 - **Grounding:** permissions reasoning unchanged; citation validation still enforced. Validate: same eval gates (leakage 0, refusal ≥ 95%) under multi-learner scopes.
-- **Latency:** p50/p95 measured per stage under load (see Validation Plan §13). No latency claim until measured.
+- **Latency:** p50/p95 measured per stage under load (method: `docs/deployment-guide.md` §6, "Scale-out triggers", row "Chat p95 latency" — k6/Locust 25/50/100 concurrent learners with per-stage logs). No latency claim until measured.
 - **Scalability:** load test with concurrent learners (e.g., 25/50/100 simulated users issuing questions) against the stateless API; record throughput and p95. DB pool sizing (PgBouncer or SQLAlchemy pool limits) verified. State that scale-out is limited by the Postgres instance and define trigger points (e.g., sustained p95 > budget, vector query CPU saturation) for migrating the `VectorStore` implementation to a specialized backend.
 - **Cost:** connection pooling, small top-k, and caching of repeated retrievals (by `(resource_id, T bucket, query hash)` with short TTL) reduce per-query spend; actual numbers measured, not asserted.
 

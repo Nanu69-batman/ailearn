@@ -32,5 +32,11 @@ dist/
 # server logs (dev uvicorn / next output artifacts)
 *.log
 *.tsbuildinfo
-*.out
-*.err
+
+# presentation deck artefacts (removed from the project on request).
+# The whole build/ and ppt/ trees are ignored so a regenerated deck cannot
+# silently land in git. The app's .pptx INGESTION support is unrelated and
+# stays: python-pptx, extract_pptx(), and .pptx in the upload accept list.
+build/
+ppt/
+PPT_CONTENT.md

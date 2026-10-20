@@ -33,10 +33,10 @@ making every citation traceable back to a specific moment in a specific video.
 
 | Area | `[SHIPPED]` | `[PLANNED]` | `[KNOWN LIMITATION]` |
 |---|---|---|---|
-| Grounding | Strict timestamp gate (`end_ms <= T`), grounded vs supplemental answering | Longer-form anti-spoiler coverage | Supplemental answers are not citations-checkable by design |
+| Grounding | Strict timestamp gate (`end_ms <= T`) | Grounded vs Supplemental answering | Over-rigid refusal shape |
 | Evidence | Citation modality tag, citation validation | Postgres + pgvector (sessions are in memory) | Sessions do not survive a restart |
 | Visual | Live frame capture, full-coverage frame sampling | Delete-resource endpoint | Visual pass untested past 11 min |
-| Ingest | Video, PDF, PPTX, image, batched embedding | Incremental/resumable ingest for long files | 7-min video took over 7 min to ingest |
+| Ingest | Video, PDF, PPTX, image | True batched embedding (in progress, uncommitted) | 7-min video took over 7 min to ingest |
 | Web | LaTeX rendering, session-grant recovery | Persistence layer | Unsigned launch is localhost-demo only |
 | Coverage | 2 videos end to end | Long-form and multi-subject matrix | No long-form, no multi-page, no scale |
 
@@ -220,8 +220,8 @@ index or an overshooting timeline out of the index.*
 | 8 | Subject-scoped resources, direct file upload | `[SHIPPED]` | Upload lands in a subject, not an orphan course. |
 | 9 | Session-grant recovery | `[SHIPPED]` | A session whose granted materials changed re-mints on load instead of refusing forever. |
 | 10 | `scope_empty` | `[SHIPPED]` | Separates "your grant does not cover this" from "you have not watched enough", so the UI stops blaming the learner for a stale grant. |
-| 11 | Grounded vs Supplemental answering | `[SHIPPED]` | When the lecture has not covered a question, answer from first principles and **label** it as not-from-video with zero citations. Forward-looking anti-spoiler suppression. Teaching-assistant register. In progress, may land today. |
-| 12 | Batched embedding | `[SHIPPED]` | Batches the embedding call instead of one request per chunk. See decision D2. |
+| 11 | Grounded vs Supplemental answering | `[PLANNED]` | When the lecture has not covered a question, answer from first principles and **label** it as not-from-video with zero citations. Forward-looking anti-spoiler suppression. Teaching-assistant register. In progress, may land today. |
+| 12 | True batched embedding | `[PLANNED]` | Currently uncommitted work in the working tree. See decision D2. |
 | 13 | Delete-resource endpoint | `[PLANNED]` | `purge_resource` exists and removes chunks plus the staged asset, but has no HTTP surface and does not detach from subjects. Needs a course-ownership check and subject detach first. |
 | 14 | Postgres + pgvector | `[PLANNED]` | Sessions are in memory today. |
 
@@ -302,7 +302,7 @@ Two things we refused to outsource:
 expose a gate we control, and product policy we cannot edit is not a policy.
 
 **Trade-off:** more of our own code to test, in exchange for invariants we can
-actually assert. The 299-test suite is the price.
+actually assert. The 276-test suite is the price.
 
 ### D2. Batching for ingestion cost and latency
 
@@ -311,7 +311,7 @@ actually assert. The 299-test suite is the price.
 Measured: ingesting a 7-minute video took over 7 minutes, dominated by
 embedding. Root cause: `batchEmbedContents` given N texts returns **one pooled
 vector** for the lot, not N vectors. The embedder discovered this and fell
-back to one HTTP call per chunk, roughly 260 sequential calls for an 11-minute
+back to one HTTP call per chunk, roughly 253 sequential calls for an 11-minute
 video. Against the Gemini free tier's 100 requests/min floor, that is a hard
 floor of about 2.5 minutes for embeddings alone.
 
@@ -362,7 +362,7 @@ Cheap correctness beats clever accuracy.
 
 **`[SHIPPED]`**
 
-A 10-minute lecture produces roughly 260 chunks across two modalities (the demo video indexed 263: 89 transcript + 174 visual). You
+A 10-minute lecture produces roughly 253 chunks across two modalities. You
 cannot hand a video to a long-context window; there is no such endpoint, only
 text. You would have to transcribe and caption it first, which is the same work,
 minus the index. On top of that, long-context is more expensive per query and
@@ -461,7 +461,7 @@ All measured, with conditions stated.
 
 | Metric | Value | Condition |
 |---|---|---|
-| Backend tests | **299 pass** | full pytest run, ruff clean |
+| Backend tests | **276 pass** | full pytest run, ruff clean |
 | Frontend types | clean | `tsc --noEmit` |
 | Frontend build | pass | `npm run build` |
 | Contract check | **PASS, 77 assertions** | `npm run contract-check` |
@@ -482,11 +482,11 @@ Stated, not softened.
 
 1. **Over-rigid grounding.** Uncovered questions get refusal-shaped
    non-answers. This is the direct cost of D5 and D6, and it is being fixed
-   with Supplemental answering (feature 11, `[SHIPPED]`). Until it lands, the
+   with Supplemental answering (feature 11, `[PLANNED]`). Until it lands, the
    honest limitation is: the tutor is better at saying "not yet" than at saying
    "here is the idea anyway, and it is not from your lecture".
 2. **Ingest is slow.** >7 minutes for a 7-minute video, dominated by
-   embedding. Batched embedding addresses the call count; the wall clock is still bound by the free-tier rate limit.
+   per-chunk embedding. Batched embedding is in progress and uncommitted.
 3. **Scale is untested.** Two videos. No long-form, no multi-page documents at
    scale, no multi-subject matrix, no load testing.
 4. **Sessions do not persist.** In memory. Postgres + pgvector is planned.
@@ -509,8 +509,8 @@ Ordered by what unblocks the most honest behaviour, not by what is easiest.
 
 | Priority | Item | Tag | Why now |
 |---|---|---|---|
-| 1 | ~~Grounded vs Supplemental answering~~ | `[SHIPPED]` | Turns the worst limitation into the product's best feature. Anti-spoiler suppression must land with it. |
-| 2 | ~~True batched embedding~~ | `[SHIPPED]` | Unblocks ingest for anything longer than 11 minutes. |
+| 1 | Grounded vs Supplemental answering | `[PLANNED]` | Turns the worst limitation into the product's best feature. Anti-spoiler suppression must land with it. |
+| 2 | True batched embedding | `[PLANNED]` | Unblocks ingest for anything longer than 11 minutes. |
 | 3 | Postgres + pgvector | `[PLANNED]` | Sessions and vectors outlive restarts. |
 | 4 | Delete-resource endpoint with subject detach | `[PLANNED]` | Ownership check first, detach second, endpoint last. |
 | 5 | Coverage matrix: long-form video, multi-page PDF, second subject | `[PLANNED]` | Turns "two videos" into evidence. |
@@ -595,12 +595,12 @@ Do not trust it. Run these.
 
 | Claim | Command |
 |---|---|
-| 299 tests, ruff clean | `pytest` in `apps/api` |
+| 276 tests, ruff clean | `pytest` in `apps/api` |
 | Frontend types and build | `tsc --noEmit`, `npm run build` in `apps/web` |
 | Contract check, 77 assertions | `npm run contract-check` in `apps/web` |
 | Strict-T refusal at T=2s | live probe, section 6 |
 | Visual coverage 100% | the `VisualPassReport` on the ingest job |
-| Batched embedding | one HTTP call per batch rather than per chunk; see decision D2 |
+| Batched embedding | **not verifiable yet**, uncommitted |
 
 If a row in this document disagrees with a command, the command wins and this
 document is wrong.

@@ -1,6 +1,13 @@
 # Deployment Guide — AI Learning Assistant MVP (Prototype)
 
-Target topology (§9 plan, `research-deployment.md`): **Vercel (web) + Render (API, Docker) + Neon (Postgres + pgvector) + R2/S3 (video)**. Code and config only — no live deploy is performed by this guide.
+> **Scope note.** This guide describes the *target* production topology
+> (Vercel + Render + Neon/Postgres + R2). The runtime today is FastAPI on port
+> 8123 with a local Chroma store and in-memory sessions, so the Neon/Postgres
+> and `DATABASE_URL` steps only apply after the pgvector migration
+> (`docs/adr/ADR-002-retrieval-stack-library-migration.md`). The demo checklist
+> and the rollback steps are still the ones to follow.
+
+Target topology (`research-deployment.md` §1): **Vercel (web) + Render (API, Docker) + Neon (Postgres + pgvector) + R2/S3 (video)**. Code and config only — no live deploy is performed by this guide.
 
 ## 0. Prerequisites
 
@@ -59,7 +66,7 @@ Target topology (§9 plan, `research-deployment.md`): **Vercel (web) + Render (A
 
 ## 6. Scale-out triggers (when to leave prototype)
 
-Stay on single-instance + single Neon DB until **measured** load says otherwise (`IMPLEMENTATION_PLAN.md` §14). Promote when any trigger fires, in this order: API replicas (stateless — safe) → PgBouncer/pool tuning → read replicas → dedicated ingestion worker → retrieval cache `(resource_id, T bucket, query-hash)` short TTL → `VectorStore` swap to Qdrant/OpenSearch. Record each move in an ADR update.
+Stay on single-instance + single Neon DB until **measured** load says otherwise (`docs/adr/ADR-001-lms-integration-scalability.md`, "Scaling Boundary"). Promote when any trigger fires, in this order: API replicas (stateless — safe) → PgBouncer/pool tuning → read replicas → dedicated ingestion worker → retrieval cache `(resource_id, T bucket, query-hash)` short TTL → `VectorStore` swap to Qdrant/OpenSearch. Record each move in an ADR update.
 
 | Signal | How measured | Threshold to act |
 |---|---|---|

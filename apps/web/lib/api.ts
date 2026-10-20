@@ -1,6 +1,6 @@
 /**
  * Typed API client for the AI Learning Assistant backend.
- * Contract (IMPLEMENTATION_PLAN.md §3):
+ * Contract (docs/api.md):
  *   POST /lms/session -> { session_id, session_token, learner_id, course_id }
  *   POST /chat        -> { answer, citations[], refused } (needs session_token:
  *                        body field + X-Session-Token header; 401 = expired)

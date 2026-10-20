@@ -22,3 +22,9 @@ pypdf>=4.0
 python-pptx>=0.6
 youtube-transcript-api>=0.6
 ruff>=0.6
+
+# Optional OCR for scanned / image-only documents (app/ingestion/ocr.py).
+# Deliberately NOT listed: torch, transformers, vLLM, SGLang, pymupdf and
+# accelerate. Unlimited-OCR needs ~6GB VRAM for its 3B weights in bfloat16,
+# so it is an operator-installed extra, gated behind OCR_BACKEND (off by
+# default) and imported lazily inside the function that uses it.
