@@ -198,6 +198,98 @@ def transcribe_with_whisper(
     return out
 
 
+GROQ_TRANSCRIBE_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+#: Groq's free-tier upload cap is 25 MB; stay under it with headroom.
+GROQ_MAX_UPLOAD_BYTES = 24 * 1024 * 1024
+#: Whisper marks likely-silence segments; above this they are dropped, since
+#: the hosted model has no VAD and invents text ("Thank you.") on silence.
+GROQ_NO_SPEECH_DROP = 0.8
+GROQ_RETRIES = 2
+
+
+def _wav_bytes(samples) -> bytes:
+    """16 kHz mono float32 samples -> 16-bit PCM WAV."""
+    import io
+    import wave
+
+    import numpy as np
+
+    pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2").tobytes()
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(_WHISPER_SR)
+        w.writeframes(pcm)
+    return buf.getvalue()
+
+
+def transcribe_with_groq(
+    path: str,
+    *,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
+) -> list[TranscriptSegment]:
+    """Transcribe via Groq's hosted Whisper. Times are ABSOLUTE video time.
+
+    Only the window's audio is uploaded (decoded locally, sent as WAV), and
+    segment times come back relative to it, so the window start is added back.
+    Raises on any failure; :func:`transcribe` falls back to local Whisper.
+    """
+    import time
+
+    import httpx
+
+    from app.config import settings
+
+    offset_s = (start_ms or 0) / 1000.0
+    end_s = end_ms / 1000.0 if end_ms is not None else None
+    audio = _decode_window(path, offset_s, end_s)
+    if audio.size == 0:
+        return []
+    body = _wav_bytes(audio)
+    if len(body) > GROQ_MAX_UPLOAD_BYTES:
+        raise ValueError(f"audio is {len(body)} bytes, over the Groq upload cap")
+
+    data = {
+        "model": settings.groq_transcribe_model,
+        "response_format": "verbose_json",
+        "timestamp_granularities[]": "segment",
+        "temperature": "0",
+    }
+    headers = {"Authorization": f"Bearer {settings.groq_api_key}"}
+    for attempt in range(GROQ_RETRIES + 1):
+        resp = httpx.post(
+            GROQ_TRANSCRIBE_URL,
+            headers=headers,
+            data=data,
+            files={"file": ("window.wav", body, "audio/wav")},
+            timeout=120.0,
+        )
+        if resp.status_code == 429 and attempt < GROQ_RETRIES:
+            wait = float(resp.headers.get("retry-after") or 5)
+            log.warning("groq 429, retrying in %.0fs", wait)
+            time.sleep(min(wait, 30.0))
+            continue
+        # Never log the response body wholesale: it can echo request details.
+        if resp.status_code != 200:
+            raise RuntimeError(f"groq transcription HTTP {resp.status_code}")
+        break
+
+    out = []
+    for s in resp.json().get("segments") or []:
+        text = str(s.get("text") or "").strip()
+        if not text or float(s.get("no_speech_prob") or 0.0) > GROQ_NO_SPEECH_DROP:
+            continue
+        out.append(
+            TranscriptSegment(
+                float(s["start"]) + offset_s, float(s["end"]) + offset_s, text
+            )
+        )
+    log.info("groq(%s) produced %d segment(s) for %s", settings.groq_transcribe_model, len(out), path)
+    return out
+
+
 def _gemini_client():
     from google import genai
 
@@ -401,23 +493,36 @@ def transcribe(
         duration_ms = media_duration_ms(path)
     duration_s = duration_ms / 1000.0 if duration_ms else None
 
+    from app.config import settings
+
     windowed = start_ms is not None or end_ms is not None
     primary: list[TranscriptSegment] = []
     whisper_error: str | None = None
-    try:
-        if windowed:
-            primary = transcribe_with_whisper(path, start_ms=start_ms, end_ms=end_ms)
+    groq_error: str | None = None
+    used_groq = False
+    if settings.groq_api_key:
+        try:
+            primary = transcribe_with_groq(path, start_ms=start_ms, end_ms=end_ms)
             primary = _clip_to_window(primary, start_ms, end_ms, duration_ms)
-        else:
-            primary = transcribe_with_whisper(path)
-    except Exception as exc:  # noqa: BLE001 - fallback is the whole point
-        whisper_error = f"{type(exc).__name__}: {exc}"
-        log.warning("faster-whisper unavailable for %s (%s)", path, whisper_error)
+            used_groq = True
+        except Exception as exc:  # noqa: BLE001 - local Whisper is the fallback
+            groq_error = f"{type(exc).__name__}: {exc}"
+            log.warning("groq transcription failed for %s (%s); using local whisper", path, groq_error)
+    if not used_groq:
+        try:
+            if windowed:
+                primary = transcribe_with_whisper(path, start_ms=start_ms, end_ms=end_ms)
+                primary = _clip_to_window(primary, start_ms, end_ms, duration_ms)
+            else:
+                primary = transcribe_with_whisper(path)
+        except Exception as exc:  # noqa: BLE001 - fallback is the whole point
+            whisper_error = f"{type(exc).__name__}: {exc}"
+            log.warning("faster-whisper unavailable for %s (%s)", path, whisper_error)
 
     secondary: list[TranscriptSegment] = []
     # Windowed runs skip Gemini entirely: it needs a whole-file upload, which
     # is unaffordable per window.
-    if allow_gemini and not windowed:
+    if allow_gemini and not windowed and not used_groq:
         try:
             raw = transcribe_with_gemini(path, duration_s=duration_s)
             verdict = reconcile_gemini_timeline(raw, duration_s)
@@ -431,10 +536,15 @@ def transcribe(
 
     chosen = primary or secondary
     signals = {
-        "engine": "whisper" if primary else ("gemini" if secondary else "none"),
+        "engine": (
+            ("groq" if used_groq else "whisper")
+            if primary
+            else ("gemini" if secondary else "none")
+        ),
         "whisper_segments": len(primary),
         "gemini_segments": len(secondary),
         "whisper_error": whisper_error,
+        "groq_error": groq_error,
         "duration_ms": duration_ms,
         "timestamp_agreement": timestamp_agreement(primary, secondary),
     }

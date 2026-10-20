@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     llm_model: str = "gemini-3.5-flash-lite"
     embedding_api_key: str = ""
     embedding_model: str = "gemini-embedding-2"
+    # Hosted transcription. Empty key = local faster-whisper only.
+    groq_api_key: str = ""
+    groq_transcribe_model: str = "whisper-large-v3-turbo"
     yt_data_dir: str = "data/assets/youtube"
     yt_max_minutes: int = 45
     cors_origin: str = "http://localhost:3000"

@@ -133,3 +133,74 @@ def test_overflow_guard_trips():
         jobs.build_chunks(resource_id="r", course_id="c", source_type="video",
                           visual=[_vis(0), _vis(1), _vis(2)], max_chunks=2)
     assert jobs.window_max_chunks(120_000, 240_000) == 120_000
+
+
+class _Resp:
+    def __init__(self, status, payload=None, headers=None):
+        self.status_code, self._payload, self.headers = status, payload, headers or {}
+
+    def json(self):
+        return self._payload
+
+
+def _groq_setup(monkeypatch, responses):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "groq_api_key", "test-key")
+    monkeypatch.setattr(
+        audio_mod, "_decode_window", lambda p, s, e: np.zeros(16_000, dtype=np.float32)
+    )
+    posts = []
+
+    def fake_post(url, **kw):
+        posts.append(kw)
+        return responses.pop(0)
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    return posts
+
+
+def test_groq_window_offsets_to_video_time_and_drops_silence(monkeypatch):
+    payload = {
+        "segments": [
+            {"start": 1.0, "end": 4.0, "text": " hello ", "no_speech_prob": 0.01},
+            {"start": 5.0, "end": 6.0, "text": "Thank you.", "no_speech_prob": 0.95},
+            {"start": 118.0, "end": 126.0, "text": "past end", "no_speech_prob": 0.0},
+        ]
+    }
+    posts = _groq_setup(monkeypatch, [_Resp(200, payload)])
+    monkeypatch.setattr(
+        audio_mod, "transcribe_with_whisper",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no local whisper")),
+    )
+    segs, signals = audio_mod.transcribe(
+        "a.mp4", duration_ms=DUR, start_ms=120_000, end_ms=240_000
+    )
+    assert [(s.start_s, s.end_s, s.text) for s in segs] == [(121.0, 124.0, "hello")]
+    assert signals["engine"] == "groq"
+    assert posts[0]["data"]["response_format"] == "verbose_json"
+    assert posts[0]["headers"]["Authorization"] == "Bearer test-key"
+
+
+def test_groq_failure_falls_back_to_local_whisper(monkeypatch):
+    _groq_setup(monkeypatch, [_Resp(500)])
+    local = [audio_mod.TranscriptSegment(130.0, 135.0, "local")]
+    monkeypatch.setattr(audio_mod, "transcribe_with_whisper", lambda *a, **k: local)
+    segs, signals = audio_mod.transcribe(
+        "a.mp4", duration_ms=DUR, start_ms=120_000, end_ms=240_000
+    )
+    assert [s.text for s in segs] == ["local"]
+    assert signals["engine"] == "whisper"
+    assert "500" in signals["groq_error"]
+
+
+def test_groq_retries_429_then_succeeds(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    ok = _Resp(200, {"segments": [{"start": 0.0, "end": 2.0, "text": "x"}]})
+    posts = _groq_setup(monkeypatch, [_Resp(429, headers={"retry-after": "1"}), ok])
+    segs, signals = audio_mod.transcribe(
+        "a.mp4", duration_ms=DUR, start_ms=0, end_ms=120_000
+    )
+    assert len(posts) == 2 and signals["engine"] == "groq" and segs[0].text == "x"

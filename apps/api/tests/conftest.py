@@ -26,6 +26,14 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _no_hosted_transcription(monkeypatch):
+    """Never call Groq from tests, even when the developer's .env has a key."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "groq_api_key", "")
+
+
+@pytest.fixture(autouse=True)
 def _isolate_process_global_state():
     """Give every test a clean, consistent view of the module-level singletons."""
     from app.chat import router as chat_router
