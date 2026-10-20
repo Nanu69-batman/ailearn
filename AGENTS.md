@@ -116,7 +116,15 @@ If a criterion cannot be verified, say so explicitly rather than implying succes
 
 ```
 apps/api/          FastAPI backend — chat, ingestion, retrieval, eval, cache
-apps/api/tests/    112 tests, must stay green
+apps/api/tests/    334 tests collected, must stay green
+```
+
+Verification notes: check the suite **collects** (no collection errors), not just
+that it passes. Use the interpreter
+`C:\Users\Nimish-2\AppData\Local\Programs\Python\Python314\python.exe`
+(PATH `python` is 3.13 and lacks pytest/uvicorn).
+
+```text
 apps/web/          Next.js 15 + Tailwind v3 frontend
 docs/HANDOFF.md    Current state, next task, known issues  ← read first
 test-data/         Course files used for ingestion

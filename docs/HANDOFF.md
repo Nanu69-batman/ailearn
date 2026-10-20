@@ -18,7 +18,7 @@ Ports: API `8123`, web `3000`. Start both with `run.bat` at the repo root.
 **Use this interpreter:** `C:\Users\Nimish-2\AppData\Local\Programs\Python\Python314\python.exe`
 — plain `python` on PATH is 3.13 and has no pytest or uvicorn.
 
-The working tree is clean. `run.bat` selects the interpreter by probing
+The working tree is clean apart from `apps/api/app/ingestion/embedder.py` (modified) and `apps/api/tests/test_embedder_batching.py` (untracked). `run.bat` selects the interpreter by probing
 candidates and keeping the first that passes `import uvicorn, chromadb`, so
 it does not depend on that path being right on another machine.
 
@@ -106,12 +106,12 @@ There is no `/demo` page.
 11. **True batched embedding** (`app/ingestion/embedder.py`). `batchEmbedContents`
     returns 1 pooled vector for N texts, so the old path fell back to one HTTP request
     per chunk — ~257 sequential calls for an 11-minute video, which is why ingest took
-    minutes. `embedContent` now sends one `Content` per text in a batch of up to 64.
-    **Measured: 253 texts in 7 HTTP calls instead of 257 (36.7x fewer).** The quota is
+    minutes. `embedContent` now sends one `Content` per text in a batch of up to 100.
+    **253 texts -> 3 calls of <=100 at the current batch size (the earlier 7-call figure was measured at a smaller batch size), vs 257 sequential before.** The quota is
     100 *requests*/min, so this also removes the ~2.5-minute quota floor. Order is
     load-bearing — the store zips vectors against chunks positionally — so the returned
     count is asserted against the count sent, and `_verify_order_once` proves the
-    order against the real model once per instance.
+    order against the real model once per instance. Test coverage for batching is being added in tests/test_embedder_batching.py; until it lands the batching logic is untested.
 
 ## 6. Bugs found and fixed — do not reintroduce
 
