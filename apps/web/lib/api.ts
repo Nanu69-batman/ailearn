@@ -803,6 +803,34 @@ export function getSubject(subjectId: string): Promise<Subject> {
   return apiFetch<Subject>(`/subjects/${encodeURIComponent(subjectId)}`);
 }
 
+export interface CreateSubjectRequest {
+  name: string;
+  description?: string;
+}
+
+/** POST /subjects -> 201 with the created Subject. */
+export function createSubject(body: CreateSubjectRequest): Promise<Subject> {
+  return apiFetch<Subject>("/subjects", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export interface DeleteSubjectResponse {
+  deleted: string;
+}
+
+/**
+ * DELETE /subjects/{id}. Removes the grouping only; the indexed resources
+ * stay indexed.
+ */
+export function deleteSubject(subjectId: string): Promise<DeleteSubjectResponse> {
+  return apiFetch<DeleteSubjectResponse>(
+    `/subjects/${encodeURIComponent(subjectId)}`,
+    { method: "DELETE" },
+  );
+}
+
 /**
  * The materials attached to ONE subject -> `{ resources: [...] }`.
  *

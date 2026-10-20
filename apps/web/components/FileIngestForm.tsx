@@ -8,6 +8,7 @@ import {
   type IngestJob,
   type IngestMode,
 } from "../lib/api";
+import { jobProgress, type IngestProgress } from "./IngestProgress";
 
 export interface IngestedFile {
   resourceId: string;
@@ -22,6 +23,10 @@ interface FileIngestFormProps {
   disabled?: boolean;
   /** Subject pages scope the ingest so the server auto-attaches it. */
   subjectId?: string;
+  /** Drop the card chrome + heading (used inside the Add-content dialog). */
+  embedded?: boolean;
+  /** Snapshot of the in-flight job, or null when idle. Must be stable. */
+  onProgress?: (progress: IngestProgress | null) => void;
 }
 
 /** `submitting` is split out from `polling`: the upload and the transcode
@@ -36,29 +41,6 @@ const POLL_INTERVAL_MS = 2000;
  * not to declare failure early.
  */
 const POLL_TIMEOUT_MS = 30 * 60 * 1000;
-
-function formatMs(ms: number): string {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
-}
-
-/** Progress from processed_through_ms/duration_ms, else windows, else null. */
-function jobProgress(j: IngestJob | null): { pct: number; text: string } | null {
-  if (!j) return null;
-  const win =
-    j.windows_total && j.windows_total > 0
-      ? `${j.windows_done ?? 0} of ${j.windows_total} windows, `
-      : "";
-  if (j.duration_ms && j.duration_ms > 0 && j.processed_through_ms !== undefined) {
-    const pct = Math.min(100, Math.round((j.processed_through_ms / j.duration_ms) * 100));
-    return { pct, text: `${win}${pct}% (${formatMs(j.processed_through_ms)} of ${formatMs(j.duration_ms)})` };
-  }
-  if (j.windows_total && j.windows_total > 0) {
-    const pct = Math.min(100, Math.round(((j.windows_done ?? 0) / j.windows_total) * 100));
-    return { pct, text: `${win}${pct}%` };
-  }
-  return null;
-}
 
 const ACCEPT = "video/*,.pdf,.pptx,.png,.jpg,.jpeg,.webp";
 
@@ -121,6 +103,8 @@ export default function FileIngestForm({
   onReady,
   disabled,
   subjectId,
+  embedded,
+  onProgress,
 }: FileIngestFormProps) {
   const [file, setFile] = useState<File | null>(null);
   const [phase, setPhase] = useState<Phase>("idle");
@@ -268,36 +252,121 @@ export default function FileIngestForm({
   const isVideo = file !== null && kindOf(file) === "video";
   const progress = jobProgress(jobInfo);
   const busy = phase === "uploading" || phase === "polling";
+  const statusText =
+    phase === "uploading"
+      ? `Uploading ${file?.name ?? "file"} (${formatBytes(file?.size ?? 0)})…`
+      : `${jobStatus ? `${jobStatus} · ` : ""}${formatElapsed(elapsedMs)} elapsed — ${processingNote(elapsedMs)}`;
+
+  // Report upward so the subject page can show a pending card while the
+  // dialog is closed. Derived from state, never a second source of truth.
+  const fileName = file?.name ?? "File";
+  useEffect(() => {
+    if (!onProgress) return;
+    if (phase === "idle") {
+      onProgress(null);
+      return;
+    }
+    onProgress({
+      source: "file",
+      label: fileName,
+      phase:
+        phase === "error"
+          ? "error"
+          : phase === "uploading"
+            ? "uploading"
+            : "processing",
+      pct: progress?.pct ?? null,
+      detail:
+        phase === "error" ? (jobError ?? "Could not load this file.") : statusText,
+    });
+  }, [onProgress, phase, fileName, progress?.pct, statusText, jobError]);
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
-      <h2 className="text-base font-semibold text-gray-900">
-        Upload a file
-      </h2>
-      <p className="mt-1 text-sm text-gray-500">
-        Drop in a video, PDF, PPTX, or an image — we extract the text and make
-        it askable.
-      </p>
-      <form className="mt-4 flex flex-col gap-3 sm:flex-row" onSubmit={(e) => void handleSubmit(e)}>
-        <label className="sr-only" htmlFor="file-upload">
-          Course file
+    <div
+      className={
+        embedded ? "" : "rounded-2xl border border-gray-200 bg-white p-5 shadow-sm"
+      }
+    >
+      {!embedded && (
+        <>
+          <h2 className="text-base font-semibold text-gray-900">
+            Upload a file
+          </h2>
+          <p className="mt-1 text-sm text-gray-500">
+            Drop in a video, PDF, PPTX, or an image — we extract the text and
+            make it askable.
+          </p>
+        </>
+      )}
+      <form
+        className={`${embedded ? "" : "mt-4 "}flex flex-col gap-3`}
+        onSubmit={(e) => void handleSubmit(e)}
+      >
+        <label
+          htmlFor="file-upload"
+          className={`flex flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed px-4 py-6 text-center transition focus-within:border-violet-400 focus-within:ring-2 focus-within:ring-violet-200 ${
+            busy || disabled
+              ? "cursor-not-allowed border-gray-200 bg-gray-50 opacity-60"
+              : file
+                ? "cursor-pointer border-violet-300 bg-violet-50/50"
+                : "cursor-pointer border-gray-200 bg-gray-50 hover:border-violet-300 hover:bg-violet-50/40"
+          }`}
+        >
+          <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-white text-violet-600 shadow-sm" aria-hidden="true">
+            <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 16V4" />
+              <path d="m7 9 5-5 5 5" />
+              <path d="M20 16v3a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-3" />
+            </svg>
+          </span>
+          {file ? (
+            <span className="text-sm">
+              <span className="font-medium text-gray-900">{file.name}</span>
+              <span className="text-gray-500"> · {formatBytes(file.size)}</span>
+            </span>
+          ) : (
+            <span className="text-sm text-gray-600">
+              <span className="font-medium text-violet-700">Choose a file</span>{" "}
+              to upload
+            </span>
+          )}
+          <span className="text-xs text-gray-400">
+            Video, PDF, PPTX, PNG, JPG or WEBP
+          </span>
+          <span className="sr-only">Course file</span>
+          <input
+            id="file-upload"
+            className="sr-only"
+            type="file"
+            accept={ACCEPT}
+            disabled={busy || disabled}
+            aria-invalid={clientError ? true : undefined}
+            aria-describedby={clientError ? "file-upload-error" : undefined}
+            onChange={(e) => {
+              setFile(e.target.files?.[0] ?? null);
+              if (clientError) setClientError(null);
+            }}
+          />
         </label>
-        <input
-          id="file-upload"
-          className="flex-1 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-800 file:mr-3 file:rounded-lg file:border-0 file:bg-violet-50 file:px-3 file:py-1 file:text-sm file:font-medium file:text-violet-700 outline-none transition focus:border-violet-400 focus:bg-white focus:ring-2 focus:ring-violet-200"
-          type="file"
-          accept={ACCEPT}
-          disabled={busy || disabled}
-          aria-invalid={clientError ? true : undefined}
-          aria-describedby={clientError ? "file-upload-error" : undefined}
-          onChange={(e) => {
-            setFile(e.target.files?.[0] ?? null);
-            if (clientError) setClientError(null);
-          }}
-        />
+
+        {isVideo && (
+          <fieldset className="flex flex-col gap-1.5 rounded-xl border border-gray-100 bg-gray-50 p-3 text-sm text-gray-700" disabled={busy || disabled}>
+            <legend className="sr-only">Video processing</legend>
+            <span className="text-xs font-medium text-gray-500" aria-hidden="true">Video processing</span>
+            <label className="flex items-center gap-2">
+              <input type="radio" name="ingest-mode" className="accent-violet-600" checked={mode === "full"} onChange={() => setMode("full")} />
+              Process everything now
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="radio" name="ingest-mode" className="accent-violet-600" checked={mode === "stream"} onChange={() => setMode("stream")} />
+              Stream: first ~6 minutes now, the rest as you watch
+            </label>
+          </fieldset>
+        )}
+
         <button
           type="submit"
-          className="rounded-xl bg-violet-600 px-5 py-2 text-sm font-medium text-white transition hover:bg-violet-700 disabled:opacity-40"
+          className="self-end rounded-xl bg-violet-600 px-5 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-violet-700 disabled:opacity-40"
           disabled={busy || disabled || file === null}
         >
           {phase === "uploading"
@@ -308,20 +377,6 @@ export default function FileIngestForm({
         </button>
       </form>
 
-      <fieldset className="mt-3 flex flex-col gap-1 text-sm text-gray-700" disabled={busy || disabled}>
-        <legend className="mb-1 text-xs font-medium text-gray-500">
-          Video processing{file !== null && !isVideo ? " (videos only; ignored for this file)" : ""}
-        </legend>
-        <label className="flex items-center gap-2">
-          <input type="radio" name="ingest-mode" checked={mode === "full"} onChange={() => setMode("full")} />
-          Process everything now (wait for the progress bar)
-        </label>
-        <label className="flex items-center gap-2">
-          <input type="radio" name="ingest-mode" checked={mode === "stream"} onChange={() => setMode("stream")} />
-          Stream: first ~6 minutes now, the rest as you watch
-        </label>
-      </fieldset>
-
       {clientError && (
         <div id="file-upload-error" className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-600" role="alert">
           {clientError}
@@ -329,32 +384,37 @@ export default function FileIngestForm({
       )}
 
       {busy && (
-        <div className="mt-3 flex items-center gap-3 rounded-xl border border-gray-200 bg-gray-50 p-3 text-sm text-gray-500" role="status">
-          <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-violet-400 border-t-transparent" aria-hidden="true" />
-          {phase === "uploading" ? (
-            <span>
-              Uploading {file?.name} ({formatBytes(file?.size ?? 0)})…
+        <div className="mt-3 rounded-xl border border-violet-100 bg-violet-50/60 p-3 text-sm text-gray-600" role="status">
+          <div className="flex items-center gap-3">
+            <span className="inline-block h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-violet-400 border-t-transparent" aria-hidden="true" />
+            <span className="min-w-0 flex-1">
+              {phase === "polling" && (
+                <span className="font-medium text-gray-800">Processing {file?.name} · </span>
+              )}
+              {statusText}
             </span>
-          ) : (
-            <span>
-              Processing {file?.name}
-              {jobStatus ? ` (${jobStatus})` : ""} · {formatElapsed(elapsedMs)}{" "}
-              elapsed — {processingNote(elapsedMs)}
-            </span>
-          )}
+            <button
+              type="button"
+              className="rounded-lg border border-gray-200 bg-white px-3 py-1 text-xs text-gray-500 hover:bg-gray-50"
+              onClick={() => cancel()}
+            >
+              Cancel
+            </button>
+          </div>
           {phase === "polling" && progress && (
-            <span className="flex items-center gap-2">
-              <progress className="h-2 w-32" value={progress.pct} max={100} />
+            <div className="mt-2 flex items-center gap-2 text-xs text-gray-500">
+              <div
+                className="h-1.5 flex-1 overflow-hidden rounded-full bg-violet-100"
+                role="progressbar"
+                aria-valuenow={progress.pct}
+                aria-valuemin={0}
+                aria-valuemax={100}
+              >
+                <div className="h-full rounded-full bg-violet-600 transition-all" style={{ width: `${progress.pct}%` }} />
+              </div>
               {progress.text}
-            </span>
+            </div>
           )}
-          <button
-            type="button"
-            className="ml-auto rounded-lg border border-gray-200 bg-white px-3 py-1 text-xs text-gray-500 hover:bg-gray-50"
-            onClick={() => cancel()}
-          >
-            Cancel
-          </button>
         </div>
       )}
 

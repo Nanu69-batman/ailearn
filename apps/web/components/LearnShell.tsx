@@ -448,7 +448,7 @@ export default function LearnShell({ children }: { children: ReactNode }) {
 
         <div className="flex min-w-0 flex-1 flex-col">
           {/* Top bar */}
-          <header className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-gray-200 bg-white px-4 py-3 sm:px-6">
+          <header className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-gray-200/80 bg-white/85 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-white/70 sm:px-6">
             <div className="flex items-center gap-3">
               {/* Below `md` the sidebar is `hidden`, so this is the only way to
                   reach the nav on a phone. Hidden from `md` up, where the
@@ -486,7 +486,7 @@ export default function LearnShell({ children }: { children: ReactNode }) {
                     e.preventDefault();
                     router.push(subjectPath(subjectId));
                   }}
-                  className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium text-gray-600 shadow-sm transition hover:border-violet-300 hover:bg-gray-50 hover:text-gray-900"
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium text-gray-600 shadow-sm transition hover:border-violet-300 hover:bg-gray-50 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
                 >
                   ← Back to subject
                 </a>
@@ -500,7 +500,7 @@ export default function LearnShell({ children }: { children: ReactNode }) {
                     e.preventDefault();
                     router.push(SUBJECTS_PATH);
                   }}
-                  className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium text-gray-600 shadow-sm transition hover:border-violet-300 hover:bg-gray-50 hover:text-gray-900"
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium text-gray-600 shadow-sm transition hover:border-violet-300 hover:bg-gray-50 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
                 >
                   ← All subjects
                 </a>
@@ -508,7 +508,8 @@ export default function LearnShell({ children }: { children: ReactNode }) {
               <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 text-base font-bold text-white md:hidden">
                 M
               </span>
-              <h1 className="text-lg font-bold text-gray-900">Malai Pioneer</h1>
+              {/* Brand label, not a heading: each page owns its own <h1>. */}
+              <span className="text-lg font-bold tracking-tight text-gray-900">Malai Pioneer</span>
             </div>
             <div className="hidden flex-1 justify-center sm:flex">
               <label className="sr-only" htmlFor="top-search">Search</label>
@@ -520,20 +521,20 @@ export default function LearnShell({ children }: { children: ReactNode }) {
               />
             </div>
             <div className="flex items-center gap-4">
-              <button type="button" aria-label="Notifications" className="relative rounded-full p-2 text-gray-500 transition hover:bg-gray-100 hover:text-gray-800">
+              <button type="button" aria-label="Notifications" className="relative rounded-full p-2 text-gray-500 transition hover:bg-gray-100 hover:text-gray-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5">
                   <path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a1 1 0 01-3.4 0" />
                 </svg>
                 <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-violet-500" />
               </button>
               <div className="flex items-center gap-2">
-                <span className="flex h-9 w-9 items-center justify-center rounded-full bg-violet-100 text-sm font-bold text-violet-700">N</span>
+                <span className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-violet-100 to-indigo-100 text-sm font-bold text-violet-700 ring-2 ring-white">N</span>
                 <span className="hidden text-sm font-medium text-gray-800 sm:inline">Nimish</span>
               </div>
             </div>
           </header>
 
-          <main className="flex-1 px-4 py-6 sm:px-6">{children}</main>
+          <main className="flex-1 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">{children}</main>
         </div>
       </div>
     </div>

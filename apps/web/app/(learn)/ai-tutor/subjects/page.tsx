@@ -15,14 +15,11 @@ export const metadata = {
  */
 export default function SubjectIndexPage() {
   return (
-    <div className="flex flex-col gap-6">
-      <header className="flex flex-col gap-1">
-        <h1 className="text-2xl font-bold text-gray-900">AI Tutor</h1>
-        <p className="text-sm text-gray-500">
-          Pick a subject to watch its content and ask questions about it.
-        </p>
-      </header>
-      <SubjectList description="Only subjects the backend knows about are shown." />
+    <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
+      <SubjectList
+        title="AI Tutor"
+        description="Pick a subject to watch its content and ask questions about it."
+      />
     </div>
   );
 }

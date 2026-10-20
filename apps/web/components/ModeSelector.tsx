@@ -23,11 +23,11 @@ export default function ModeSelector({ value, onChange, disabled }: ModeSelector
       {MODES.map((m) => (
         <label
           key={m.value}
-          className={
+          className={`cursor-pointer select-none rounded-full border px-3 py-1 text-xs font-medium transition has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-violet-300 ${
             value === m.value
-              ? "cursor-pointer rounded-full border border-violet-300 bg-violet-50 px-3 py-1 text-xs font-medium text-violet-700"
-              : "cursor-pointer rounded-full border border-gray-200 bg-white px-3 py-1 text-xs text-gray-500 transition hover:bg-gray-100"
-          }
+              ? "border-violet-600 bg-violet-600 text-white shadow-sm shadow-violet-600/20"
+              : "border-gray-200 bg-white text-gray-600 hover:border-violet-200 hover:bg-violet-50 hover:text-violet-700"
+          } ${disabled ? "cursor-not-allowed opacity-60" : ""}`}
           title={m.hint}
         >
           <input

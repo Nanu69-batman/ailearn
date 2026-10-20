@@ -1,6 +1,4 @@
-import Link from "next/link";
 import SubjectList from "@/components/SubjectList";
-import { SUBJECTS_PATH } from "@/lib/learn";
 
 export const metadata = {
   title: "Dashboard — AI Learning Assistant",
@@ -17,22 +15,12 @@ export const metadata = {
  */
 export default function DashboardPage() {
   return (
-    <div className="flex flex-col gap-6">
-      <header className="flex flex-col gap-1">
-        <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
-        <p className="text-sm text-gray-500">
-          Everything the AI Tutor has indexed for you. Open a subject below, or
-          go straight to{" "}
-          <Link
-            className="font-medium text-violet-700 underline"
-            href={SUBJECTS_PATH}
-          >
-            the subject list
-          </Link>
-          .
-        </p>
-      </header>
-      <SubjectList description="Subjects come from the backend and are listed exactly as they exist there." />
+    <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
+      <SubjectList
+        greeting
+        title="Your subjects"
+        description="Everything Malai has indexed for you, grouped by subject. Open one to watch, read and ask questions grounded in your own materials."
+      />
     </div>
   );
 }

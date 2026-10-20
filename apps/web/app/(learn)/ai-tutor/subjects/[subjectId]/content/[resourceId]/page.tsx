@@ -17,21 +17,17 @@ import {
   type LiveFrameCapture,
 } from "@/lib/api";
 import {
-  CHAT_LAYOUT_OPTIONS,
   SAMPLE_CLIP_ID,
   SUBJECTS_PATH,
   contentPath,
   firstParam,
-  readChatLayout,
   readCompletion,
   resourceIcon,
   resourceKindLabel,
   sampleClipSelected,
   subjectPath,
   toSelected,
-  writeChatLayout,
   writeCompletion,
-  type ChatLayout,
   type Selected,
 } from "@/lib/learn";
 
@@ -64,35 +60,33 @@ export default function ContentPage() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const ytHandleRef = useRef<YouTubePlayerHandle | null>(null);
   const [pausedAtMs, setPausedAtMs] = useState(0);
-  const [chatLayoutPref, setChatLayoutPref] = useState<ChatLayout>("bottom");
-  const [isWide, setIsWide] = useState(false);
+  /**
+   * Display-only copy of the playhead, whole seconds, for the "Malai can see
+   * up to" chip. It is NOT what the tutor is sent — every chat request still
+   * reads the live player via getCurrentTimeMs() below. Rounded to seconds so
+   * the page re-renders about once a second, not on every timeupdate.
+   */
+  const [playheadMs, setPlayheadMs] = useState(0);
+  const onTimeChange = useCallback((ms: number): void => {
+    setPlayheadMs(Math.floor(ms / 1000) * 1000);
+  }, []);
+  const handlePauseAt = useCallback(
+    (ms: number): void => {
+      setPausedAtMs(ms);
+      onTimeChange(ms);
+    },
+    [onTimeChange],
+  );
   /** Resource ids the user explicitly ticked. Nothing else marks work done. */
   const [completedIds, setCompletedIds] = useState<string[]>([]);
-
-  // Mobile always uses the bottom layout, whatever was persisted.
-  const chatLayout: ChatLayout = isWide ? chatLayoutPref : "bottom";
-
-  useEffect(() => {
-    setChatLayoutPref(readChatLayout());
-  }, []);
 
   useEffect(() => {
     setCompletedIds(readCompletion(subjectId ?? ""));
   }, [subjectId]);
 
   useEffect(() => {
-    if (typeof window.matchMedia !== "function") return;
-    const mq = window.matchMedia("(min-width: 1024px)");
-    const sync = (): void => setIsWide(mq.matches);
-    sync();
-    mq.addEventListener("change", sync);
-    return () => mq.removeEventListener("change", sync);
-  }, []);
-
-  const chooseChatLayout = useCallback((value: ChatLayout): void => {
-    setChatLayoutPref(value);
-    writeChatLayout(value);
-  }, []);
+    setPlayheadMs(0);
+  }, [resourceId]);
 
   const toggleCompleted = useCallback(
     (id: string): void => {
@@ -264,7 +258,7 @@ export default function ContentPage() {
 
   if (subjectId === null) {
     return (
-      <div className="rounded-xl border border-amber-200 bg-amber-50 p-6 shadow-sm" role="alert">
+      <div className="rounded-2xl border border-amber-200 bg-amber-50 p-6 shadow-sm" role="alert">
         <p className="font-semibold text-amber-800">
           This content link is missing its subject.
         </p>
@@ -293,7 +287,7 @@ export default function ContentPage() {
 
   if (resourcesState === "error") {
     return (
-      <div className="rounded-xl border border-red-200 bg-red-50 p-6 shadow-sm" role="alert">
+      <div className="rounded-2xl border border-red-200 bg-red-50 p-6 shadow-sm" role="alert">
         <p className="font-semibold text-red-600">
           Could not load this subject&apos;s content.
         </p>
@@ -319,7 +313,7 @@ export default function ContentPage() {
       ? "its original file is no longer available, so it cannot be played"
       : "no resource with this id exists in this subject";
     return (
-      <div className="rounded-xl border border-amber-200 bg-amber-50 p-6 shadow-sm">
+      <div className="rounded-2xl border border-amber-200 bg-amber-50 p-6 shadow-sm">
         <p className="font-semibold text-amber-800">
           This content isn&apos;t available.
         </p>
@@ -340,161 +334,126 @@ export default function ContentPage() {
     );
   }
 
-  return (
-    <div
-      className={
-        chatLayout === "right"
-          ? "grid grid-cols-1 gap-6 lg:grid-cols-[250px_minmax(0,1fr)_minmax(320px,380px)]"
-          : "grid grid-cols-1 gap-6 lg:grid-cols-[250px_minmax(0,1fr)_230px]"
-      }
-    >
-      {/* Subject content tree.
-          TODO(backend): `GET /courses/{id}/resources` returns a flat
-          resource list with no unit/module hierarchy, so this list is
-          derived from the ingested resources themselves rather than
-          from a course tree. Once the backend exposes the real tree
-          (unit -> ordered lessons -> resource ids), render that here
-          and keep the same id-based completion map. */}
-      <aside className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm" aria-label="Subject content">
-        <h2 className="mb-1 text-sm font-semibold uppercase tracking-wide text-gray-500">Subject Content</h2>
-        <p className="mb-3 text-[11px] leading-snug text-gray-400">
-          Tick an item to mark it done. Nothing is marked complete automatically.
-        </p>
-        {/* Loading and error are handled above, so by this point the list has
-            resolved and may legitimately be empty. */}
-        {resources.length === 0 ? (
-          <p className="rounded-lg border border-dashed border-gray-200 px-3 py-2 text-xs text-gray-400">
-            No subject content available yet — no resources have been ingested
-            for this subject.
-          </p>
-        ) : (
-          <ul className="flex flex-col gap-1">
-            {resources.map((r) => {
-              const isDone = completedIds.includes(r.id);
-              const isCurrent = activeResourceId === r.id;
-              return (
-                <li key={r.id}>
-                  <label
-                    className={
-                      isCurrent
-                        ? "flex cursor-pointer items-center gap-2 rounded-lg bg-violet-50 px-2 py-1.5 text-xs font-medium text-violet-700"
-                        : "flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-gray-600 hover:bg-gray-50"
-                    }
-                    aria-current={isCurrent ? "true" : undefined}
-                  >
-                    <input
-                      type="checkbox"
-                      className="h-3.5 w-3.5 shrink-0 accent-violet-600"
-                      checked={isDone}
-                      onChange={() => toggleCompleted(r.id)}
-                    />
-                    <span className="min-w-0 flex-1 break-words">{r.title ?? r.id}</span>
-                    {isCurrent && (
-                      <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-violet-600">
-                        Viewing
-                      </span>
-                    )}
-                  </label>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-        {/* Hub return control, kept as-is in spirit: it goes back to the
-            subject page, now via navigation rather than a state reset. */}
-        <button
-          type="button"
-          className="mt-4 w-full rounded-lg border border-gray-200 px-3 py-1.5 text-xs text-gray-500 transition hover:bg-gray-50"
-          onClick={backToSubject}
-        >
-          ← All videos
-        </button>
-      </aside>
+  const isMedia = selected.kind !== "pdf";
+  const doneCount = resources.filter((r) => completedIds.includes(r.id)).length;
 
-      {/* Center: player (+ chat when layout = bottom) */}
-      <div className="flex min-w-0 flex-col gap-6">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-2">
+  return (
+    <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-5">
+      {/* Header: breadcrumb, back, title, tutor boundary chip */}
+      <header className="flex flex-wrap items-end justify-between gap-x-4 gap-y-3">
+        <div className="min-w-0 flex-1">
+          <nav aria-label="Breadcrumb" className="mb-2 flex min-w-0 items-center gap-1.5 text-xs font-medium text-gray-500">
+            <Link href={SUBJECTS_PATH} className="shrink-0 transition hover:text-violet-700">
+              Subjects
+            </Link>
+            <span aria-hidden="true" className="text-gray-300">/</span>
+            <Link href={subjectPath(subjectId)} className="min-w-0 truncate transition hover:text-violet-700">
+              {subject?.name ?? "Subject"}
+            </Link>
+            <span aria-hidden="true" className="text-gray-300">/</span>
+            <span className="min-w-0 truncate text-gray-400" aria-current="page">
+              {selected.title}
+            </span>
+          </nav>
+          <div className="flex min-w-0 items-center gap-3">
             <button
               type="button"
               onClick={backToSubject}
-              className="shrink-0 rounded-lg border border-gray-200 bg-white px-2.5 py-1 text-xs font-medium text-gray-600 transition hover:border-violet-300 hover:bg-gray-50"
+              aria-label="Back to subject"
+              title="Back to subject"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-gray-200 bg-white text-gray-600 shadow-sm transition hover:border-violet-300 hover:bg-violet-50 hover:text-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
             >
-              ← Back
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
+                <path d="M12.5 4.5 7 10l5.5 5.5" />
+              </svg>
             </button>
-            <h2 className="min-w-0 truncate text-sm font-semibold text-gray-900">
+            <h1 className="min-w-0 truncate text-xl font-semibold tracking-tight text-gray-900 sm:text-2xl">
               {selected.title}
-            </h2>
-          </div>
-          <div
-            className="hidden shrink-0 items-center gap-1 rounded-lg border border-gray-200 bg-white p-1 shadow-sm lg:flex"
-            role="group"
-            aria-label="Chat layout"
-          >
-            <span className="px-1.5 text-[11px] font-medium uppercase tracking-wide text-gray-400">
-              Chat
-            </span>
-            {CHAT_LAYOUT_OPTIONS.map((opt) => (
-              <button
-                key={opt.value}
-                type="button"
-                title={opt.hint}
-                aria-pressed={chatLayout === opt.value}
-                onClick={() => chooseChatLayout(opt.value)}
-                className={
-                  chatLayout === opt.value
-                    ? "rounded-md bg-violet-600 px-2.5 py-1 text-xs font-medium text-white"
-                    : "rounded-md px-2.5 py-1 text-xs font-medium text-gray-500 transition hover:bg-gray-100 hover:text-gray-800"
-                }
-              >
-                {opt.label}
-              </button>
-            ))}
+            </h1>
           </div>
         </div>
-
-        {selected.kind === "youtube" ? (
-          <YouTubePlayer
-            ref={ytHandleRef}
-            youtubeId={selected.youtubeId}
-            title={selected.title}
-            onPauseAt={setPausedAtMs}
-          />
-        ) : selected.kind === "pdf" ? (
-          <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm" role="note">
-            <h3 className="mb-2 text-lg font-semibold text-gray-900">{selected.title}</h3>
-            <p className="text-sm text-gray-500">
-              This is a document resource — its questions are answered through
-              the chat panel with page citations. Ask a question below.
-            </p>
+        {isMedia && (
+          <div
+            className="flex shrink-0 items-center gap-2 rounded-full border border-violet-200 bg-violet-50 py-1.5 pl-2.5 pr-3.5 text-xs font-medium text-violet-800 shadow-sm"
+            role="status"
+            aria-live="off"
+            title="The tutor only answers from what has played up to the current playhead."
+          >
+            <span className="relative flex h-2 w-2" aria-hidden="true">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-violet-400 opacity-60" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-violet-600" />
+            </span>
+            Malai can see up to{" "}
+            <span className="font-semibold tabular-nums text-violet-900">{fmtClock(playheadMs)}</span>
           </div>
-        ) : (
-          <VideoPlayer
-            src={selected.src}
-            videoRef={videoRef}
-            onPauseAt={setPausedAtMs}
-          />
         )}
-        {selected.kind === "file" && procThrough !== null && procState !== "ready" && (
-          <p className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-sm text-violet-800" role="status">
-            Processed through {fmtClock(procThrough)}
-            {proc?.duration ? ` of ${fmtClock(proc.duration)}` : ""}.{" "}
-            {proc?.visual != null && proc.visual < procThrough
-              ? `On-screen descriptions are ready through ${fmtClock(proc.visual)} (still processing). `
-              : ""}
-            {procState === "failed"
-              ? ""
-              : procState === "queued" || procState === "running"
-                ? "Processing the next part now…"
-                : "The rest is processed as you watch."}
-          </p>
-        )}
-        {selected.kind === "file" && procState === "failed" && (
-          <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
-            Processing stopped: {proc?.error ?? "the server could not process the next part."}
-          </p>
-        )}
-        {chatLayout === "bottom" && (
+      </header>
+
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(340px,1fr)] lg:items-start">
+        {/* Player + processing status */}
+        <section className="flex min-w-0 flex-col gap-3 lg:col-start-1 lg:row-start-1" aria-label="Lesson">
+          {selected.kind === "youtube" ? (
+            <YouTubePlayer
+              ref={ytHandleRef}
+              youtubeId={selected.youtubeId}
+              title={selected.title}
+              onPauseAt={handlePauseAt}
+              onTimeChange={onTimeChange}
+            />
+          ) : selected.kind === "pdf" ? (
+            <div className="flex items-start gap-4 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm" role="note">
+              <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-violet-50 text-xl" aria-hidden="true">
+                📄
+              </span>
+              <div>
+                <h2 className="mb-1 text-lg font-semibold text-gray-900">{selected.title}</h2>
+                <p className="text-sm text-gray-500">
+                  This is a document resource — its questions are answered through
+                  the chat panel with page citations. Ask Malai a question.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <VideoPlayer
+              src={selected.src}
+              videoRef={videoRef}
+              onPauseAt={handlePauseAt}
+              onTimeChange={onTimeChange}
+            />
+          )}
+          {isMedia && (
+            <p className="px-1 text-xs text-gray-500">
+              Malai answers only from what you&apos;ve watched so far. Click a
+              timestamp in an answer to jump there. Shortcuts: Space/K play ·
+              ←/→ 5s · J/L 10s · M mute · F fullscreen.
+            </p>
+          )}
+          {selected.kind === "file" && procThrough !== null && procState !== "ready" && (
+            <p className="rounded-2xl border border-violet-200 bg-violet-50 px-4 py-2.5 text-sm text-violet-800" role="status">
+              Processed through {fmtClock(procThrough)}
+              {proc?.duration ? ` of ${fmtClock(proc.duration)}` : ""}.{" "}
+              {proc?.visual != null && proc.visual < procThrough
+                ? `On-screen descriptions are ready through ${fmtClock(proc.visual)} (still processing). `
+                : ""}
+              {procState === "failed"
+                ? ""
+                : procState === "queued" || procState === "running"
+                  ? "Processing the next part now…"
+                  : "The rest is processed as you watch."}
+            </p>
+          )}
+          {selected.kind === "file" && procState === "failed" && (
+            <p className="rounded-2xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700" role="alert">
+              Processing stopped: {proc?.error ?? "the server could not process the next part."}
+            </p>
+          )}
+        </section>
+
+        {/* Chat: right column on desktop, directly under the video on mobile */}
+        <aside
+          className="min-w-0 lg:sticky lg:top-20 lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:self-start"
+          aria-label="Malai tutor chat"
+        >
           <ChatPanel
             sessionId={session.session_id}
             sessionToken={session.session_token}
@@ -505,31 +464,39 @@ export default function ContentPage() {
             offline={offline}
             onRejoin={reset}
           />
-        )}
-      </div>
+        </aside>
 
-      {/* Right column: chat (layout = right) + real ingested sources */}
-      <aside className="flex flex-col gap-4" aria-label="Sources and topics">
-        {chatLayout === "right" && (
-          <div className="lg:sticky lg:top-20 lg:self-start">
-            <ChatPanel
-              sessionId={session.session_id}
-              sessionToken={session.session_token}
-              videoId={selected.resourceId}
-              getCurrentTimeMs={getCurrentTimeMs}
-              captureFrame={captureFrame}
-              onSeek={handleSeek}
-              offline={offline}
-              onRejoin={reset}
-            />
+        {/* Course materials: completion ticks + open + ingest status.
+            TODO(backend): `GET /subjects/{id}/resources` returns a flat
+            resource list with no unit/module hierarchy, so this list is
+            derived from the ingested resources themselves rather than
+            from a course tree. Once the backend exposes the real tree
+            (unit -> ordered lessons -> resource ids), render that here
+            and keep the same id-based completion map. */}
+        <section
+          className="min-w-0 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm sm:p-5 lg:col-start-1 lg:row-start-2"
+          aria-label="Subject content"
+        >
+          <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="text-sm font-semibold text-gray-900">Course materials</h2>
+            {resources.length > 0 && (
+              <span className="text-xs text-gray-400">
+                {doneCount} of {resources.length} marked done
+              </span>
+            )}
           </div>
-        )}
-        <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-500">Sources</h2>
-          {resources.length > 0 ? (
-            <ul className="flex flex-col gap-1.5">
+          {/* Loading and error are handled above, so by this point the list has
+              resolved and may legitimately be empty. */}
+          {resources.length === 0 ? (
+            <p className="rounded-xl border border-dashed border-gray-200 px-3 py-3 text-xs text-gray-400">
+              No subject content available yet — no resources have been ingested
+              for this subject.
+            </p>
+          ) : (
+            <ul className="flex flex-col gap-1">
               {resources.map((r) => {
                 const s = toSelected(r);
+                const isDone = completedIds.includes(r.id);
                 const isCurrent = activeResourceId === r.id;
                 const statusStyle =
                   r.status === "done"
@@ -541,15 +508,31 @@ export default function ContentPage() {
                         : "border-gray-200 bg-gray-50 text-gray-500";
                 const body = (
                   <>
-                    <span className="shrink-0" aria-hidden="true">{resourceIcon(r)}</span>
+                    <span
+                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-sm ${
+                        isCurrent ? "bg-violet-600 text-white" : "bg-gray-100"
+                      }`}
+                      aria-hidden="true"
+                    >
+                      {resourceIcon(r)}
+                    </span>
                     <span className="min-w-0 flex-1">
-                      <span className="block break-words text-xs font-medium text-gray-800">
+                      <span
+                        className={`block break-words text-sm font-medium ${
+                          isCurrent ? "text-violet-800" : "text-gray-800"
+                        } ${isDone ? "line-through decoration-gray-300" : ""}`}
+                      >
                         {r.title ?? r.id}
                       </span>
                       <span className="block text-[11px] text-gray-400">
                         {resourceKindLabel(r)}
                       </span>
                     </span>
+                    {isCurrent && (
+                      <span className="shrink-0 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-violet-700">
+                        Viewing
+                      </span>
+                    )}
                     {r.status && (
                       <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium ${statusStyle}`}>
                         {r.status}
@@ -558,18 +541,29 @@ export default function ContentPage() {
                   </>
                 );
                 const rowClass =
-                  "flex w-full items-start gap-2 rounded-lg border border-transparent px-2 py-1.5 text-left transition";
+                  "flex min-w-0 flex-1 items-center gap-3 rounded-xl px-2 py-2 text-left transition";
                 return (
-                  <li key={r.id}>
+                  <li
+                    key={r.id}
+                    className={`flex items-center gap-2 rounded-xl pl-2 ${
+                      isCurrent ? "bg-violet-50 ring-1 ring-violet-200" : ""
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 shrink-0 cursor-pointer rounded accent-violet-600"
+                      checked={isDone}
+                      onChange={() => toggleCompleted(r.id)}
+                      aria-label={`Mark "${r.title ?? r.id}" as done`}
+                      title="Mark as done"
+                    />
                     {s ? (
                       <button
                         type="button"
                         onClick={() => openResource(r.id)}
                         aria-current={isCurrent ? "true" : undefined}
                         title={`Open ${resourceKindLabel(r)}`}
-                        className={`${rowClass} hover:border-violet-200 hover:bg-violet-50 focus:outline-none focus:ring-2 focus:ring-violet-300 ${
-                          isCurrent ? "border-violet-200 bg-violet-50" : ""
-                        }`}
+                        className={`${rowClass} hover:bg-violet-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300`}
                       >
                         {body}
                       </button>
@@ -586,15 +580,14 @@ export default function ContentPage() {
                 );
               })}
             </ul>
-          ) : (
-            <p className="text-xs text-gray-500">No sources ingested yet</p>
           )}
           <p className="mt-3 text-[11px] leading-snug text-gray-400">
-            Titles and statuses come from the ingested course resources. Page/slide
-            numbers appear only in chat citations.
+            Tick an item to mark it done — nothing is marked complete
+            automatically. Titles and statuses come from the ingested course
+            resources.
           </p>
-        </div>
-      </aside>
+        </section>
+      </div>
     </div>
   );
 }
