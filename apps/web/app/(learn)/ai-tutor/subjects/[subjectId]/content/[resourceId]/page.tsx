@@ -214,6 +214,7 @@ export default function ContentPage() {
   // every heartbeat answer so the learner can see windows being processed.
   const [proc, setProc] = useState<{
     through: number | null;
+    visual: number | null;
     duration: number | null;
     state: string;
   } | null>(null);
@@ -235,6 +236,7 @@ export default function ContentPage() {
         .then((r) => {
           setProc({
             through: r.processed_through_ms ?? null,
+            visual: r.visual_through_ms ?? null,
             duration: r.duration_ms ?? null,
             state: r.status,
           });
@@ -475,6 +477,9 @@ export default function ContentPage() {
           <p className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-sm text-violet-800" role="status">
             Processed through {fmtClock(procThrough)}
             {proc?.duration ? ` of ${fmtClock(proc.duration)}` : ""}.{" "}
+            {proc?.visual != null && proc.visual < procThrough
+              ? `On-screen descriptions are ready through ${fmtClock(proc.visual)} (still processing). `
+              : ""}
             {procState === "queued" || procState === "running"
               ? "Processing the next part now…"
               : "The rest is processed as you watch."}

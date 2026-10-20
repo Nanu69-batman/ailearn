@@ -274,6 +274,9 @@ export interface ChatResponse {
   /** True when the question is past the processed part of a stream-mode video. */
   processing_pending?: boolean;
   processed_through_ms?: number | null;
+  /** True when on-screen (frame) descriptions lag behind the transcript. */
+  visual_pending?: boolean;
+  visual_through_ms?: number | null;
 }
 
 export type LiveFrameState = "live" | "document";
@@ -689,6 +692,7 @@ export interface PositionResponse {
   status: "queued" | "running" | "idle" | "ready";
   job_id?: string;
   processed_through_ms: number;
+  visual_through_ms?: number | null;
   duration_ms: number;
 }
 

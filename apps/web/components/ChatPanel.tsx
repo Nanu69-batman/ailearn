@@ -227,7 +227,7 @@ export default function ChatPanel({
         id: newId(),
         role: "assistant",
         content:
-          res.refused && !scopeEmpty && !pending
+          res.refused && !scopeEmpty && !pending && res.visual_pending !== true
             ? `I can't answer from watched content yet.\n\n${res.answer}`
             : `${res.answer}${pendingNote}`,
         citations: res.citations,
