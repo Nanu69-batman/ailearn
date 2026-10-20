@@ -18,7 +18,8 @@ Ports: API `8123`, web `3000`. Start both with `run.bat` at the repo root.
 **Use this interpreter:** `C:\Users\Nimish-2\AppData\Local\Programs\Python\Python314\python.exe`
 — plain `python` on PATH is 3.13 and has no pytest or uvicorn.
 
-The working tree is clean apart from `apps/api/app/ingestion/embedder.py` (modified) and `apps/api/tests/test_embedder_batching.py` (untracked). `run.bat` selects the interpreter by probing
+The working tree carries uncommitted changes in `apps/api/app/ingestion/embedder.py`,
+`apps/api/tests/test_embedder_batching.py` and this file. `run.bat` selects the interpreter by probing
 candidates and keeping the first that passes `import uvicorn, chromadb`, so
 it does not depend on that path being right on another machine.
 
@@ -110,10 +111,15 @@ There is no `/demo` page.
     in *texts*/min, so a 100-text call spends the whole allowance and the order self-check
     or a concurrent query tips the next call over — 64 leaves headroom).
     **253 texts -> 4 calls of <=64, vs 257 sequential before.** The quota is
-    100 *requests*/min, so this also removes the ~2.5-minute quota floor. Order is
+    100 *texts*/min, so batching cannot lift the ~2.5-minute floor on its own —
+    what it removes is the request count and the 429s that came with it. A local
+    token bucket (`_TextQuota`) paces the calls so the ingest spends the quota's
+    own time instead of colliding with it. Order is
     load-bearing — the store zips vectors against chunks positionally — so the returned
     count is asserted against the count sent, and `_verify_order_once` proves the
-    order against the real model once per instance. Test coverage for batching is being added in tests/test_embedder_batching.py; until it lands the batching logic is untested.
+    order against the real model once per instance. `tests/test_embedder_batching.py`
+    covers the batching, the alignment guards, the pooling fallback, the quota pacing
+    and the backoff.
 
 ## 6. Bugs found and fixed — do not reintroduce
 
@@ -187,7 +193,7 @@ a fully green suite. **Live probes are mandatory before claiming success.**
 4. `Set-Content` on a tracked source file truncates it. Append, or `git checkout --`.
 5. Chunk deletes must be scoped by **exact `resource_id` equality** — never by course,
    prefix, or time range.
-6. Gemini free tier: 100 embeddings/min, 15 req/min. `429 RESOURCE_EXHAUSTED` is
+6. Gemini free tier: 100 embedding *texts*/min, 15 req/min. `429 RESOURCE_EXHAUSTED` is
    expected under load. Wait ~90 s, retry once, never retry-loop.
 7. Multiple agents killing uvicorn on 8123 mid-ingest corrupt a job. Sequence restarts.
 8. `POST /lms/session` requires `learner_id`, `course_id`, `resource_id`, `resource_scope`,
@@ -218,8 +224,8 @@ cd apps/web; npm run dev -- --port 3000
   it does **not** detach from subjects. Exposing it needs a course-ownership check
   *and* subject detach first.
 - **Ingest is faster but still paced by the free tier.** Embedding is now genuinely
-  batched (7 HTTP calls instead of 257 for an 11-minute video), but the Gemini free
-  tier allows 100 embed requests/min and ~15 vision requests/min, so the 164-frame
+  batched (4 calls of <=64 instead of 257 for an 11-minute video), but the Gemini free
+  tier allows 100 embed *texts*/min and ~15 vision requests/min, so the 164-frame
   description pass is deliberately serialised with a 4s floor between calls. That
   pacing is the dominant cost of a fresh ingest now, and it is quota, not code. A paid
   tier removes it.

@@ -33,11 +33,11 @@ answers with a parallel array of embeddings. Two separate mistakes made a
    trips.
 
 With one ``Content`` per text (:func:`contents_for`) the same chunks go out
-in three round trips. What remains is the provider's quota, which no amount
-of batching can beat: at 100 texts/minute a 253-chunk video cannot be
-embedded in less than ~2.5 minutes. So this module *paces* its calls against
-a local model of that quota (:class:`_TextQuota`) instead of discovering the
-limit by being throttled into a 60-second backoff after every call that
+in four round trips, 64 texts to a call. What remains is the provider's quota,
+which no amount of batching can beat: at 100 texts/minute a 253-chunk video
+cannot be embedded in less than ~2.5 minutes. So this module *paces* its calls
+against a local model of that quota (:class:`_TextQuota`) instead of discovering
+the limit by being throttled into a 60-second backoff after every call that
 arrived too eagerly.
 """
 
