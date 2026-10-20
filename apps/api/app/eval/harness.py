@@ -1,7 +1,7 @@
 """Offline evaluation harness for the golden QA set (Phase 6 eval assets).
 
 Runs fully offline: fixture chunks are built programmatically, retrieval uses
-``InMemoryVectorStore`` + ``HashingEmbedder`` (no DB, no network), and every
+a temporary ``ChromaVectorStore`` + ``HashingEmbedder`` (no network), and every
 retrieved set is checked by the eval-strict leakage detector below.
 
 Eval-strict leakage rule (identical to the production gate since the
@@ -35,6 +35,7 @@ import asyncio
 import json
 import re
 import statistics
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,66 +45,16 @@ from app.eval.fixture import (
     FIXTURE_COURSE_ID,
     build_fixture_chunks,
 )
+from app.ingestion.embedder import HashingEmbedder
+from app.retrieval.service import RetrievalService, RetrievedPassage
+from app.retrieval.store import ChromaVectorStore
 
-# ---------------------------------------------------------------------------
-# TODO(library-rebuild) -- harness source is preserved, not deleted.
-#
-# The three imports below originally read:
-#
-#     from app.ingestion.embedder import HashingEmbedder
-#     from app.retrieval.service import RetrievalService, RetrievedPassage
-#     from app.retrieval.store import VIDEO_SOURCE_TYPES, InMemoryVectorStore
-#
-# The hand-built ingestion/retrieval stack they depended on was deleted in the
-# teardown that cleared the tree for a library rebuild (ADR-002). Rather than
-# delete the measurement capability, this harness is kept intact and every call
-# site below still works verbatim -- but construction now raises, loudly.
-#
-# Two obligations carried forward to whoever rewires this:
-#
-# 1. `production_gap_rate` MUST be re-pointed at the real store. It currently
-#    reports 0 while measuring only `InMemoryVectorStore` + `HashingEmbedder`.
-#    After the rebuild it must report `gap_mode=postgres` (or the Chroma
-#    equivalent) vs `gap_mode=inmemory` in its own output, so a fixture-backed
-#    zero can never be mistaken for a production-backed zero. See ADR-002 §7
-#    "The metric that must not go stale" -- a false assurance is worse than no
-#    metric.
-# 2. The strict-T gate must be present in BOTH harness passes. `apply_strict_cutoff`
-#    (pre-ranking) and the eval-strict re-assertion (post-ranking) are the
-#    harness's mirror of the production gate; the production gate itself is
-#    `end_ms IS NOT NULL AND end_ms <= T`. See ADR-002 §5.1.
-#
-# `DEFAULT_THRESHOLD` was already unvalidated (see this module's docstring) and
-# must be re-tuned against the golden set once real retrieval scores exist.
-# ---------------------------------------------------------------------------
-_REBUILD_HINT = (
-    "app.eval.harness requires the rebuilt retrieval/ingestion stack "
-    "(see docs/adr/ADR-002-retrieval-stack-library-migration.md). "
-)
-
-
-def _pending(name: str):
-    def _raise(*_args, **_kwargs):
-        raise NotImplementedError(
-            f"{_REBUILD_HINT}`{name}` has no implementation. Rebuild it, then "
-            "restore the original import in this module."
-        )
-
-    return _raise
-
-
-HashingEmbedder = _pending("HashingEmbedder")
-RetrievalService = _pending("RetrievalService")
-InMemoryVectorStore = _pending("InMemoryVectorStore")
-
-# Type-only usage (annotations are strings under `from __future__ import
-# annotations`), so no runtime object is needed -- kept as a placeholder name so
-# the dataclass annotations above stay readable.
-RetrievedPassage = type("RetrievedPassage", (), {})
-
-# Still a real value: the harness tests `passage.source_type in
-# VIDEO_SOURCE_TYPES`, and the set is policy data, not retrieval mechanism.
+# Policy data: the harness tests `passage.source_type in VIDEO_SOURCE_TYPES`.
 VIDEO_SOURCE_TYPES: frozenset[str] = frozenset({"video", "video_transcript"})
+
+#: Reported in the scoreboard so a fixture-backed zero can never be mistaken for
+#: a production-backed one. The parity pass runs against the real Chroma store.
+GAP_MODE = "chroma"
 
 DEFAULT_K = 5
 DEFAULT_THRESHOLD = 0.08
@@ -234,7 +185,7 @@ def resolve_gold_chunk_ids(item: dict, chunks) -> list[str]:
                 and chunk.slide_no == src.get("slide")
             )
             if video_match or pdf_match or ppt_match:
-                wanted.append(chunk.id)
+                wanted.append(chunk.chunk_id)
     return wanted
 
 
@@ -335,15 +286,24 @@ async def _evaluate_async(
     threshold: float = DEFAULT_THRESHOLD,
 ) -> tuple[list[ItemResult], dict]:
     embedder = HashingEmbedder()
-    chunks = build_fixture_chunks(embedder)
-    raw_service = RetrievalService(
-        store=InMemoryVectorStore(chunks), embedder=embedder
+    chunks = build_fixture_chunks()
+    with tempfile.TemporaryDirectory(
+        prefix="eval-chroma-", ignore_cleanup_errors=True  # Windows holds Chroma file locks
+    ) as tmp:
+        return await _evaluate_with_tmp(items, chunks, embedder, tmp, k, threshold)
+
+
+async def _evaluate_with_tmp(items, chunks, embedder, tmp, k, threshold):
+    raw_store = ChromaVectorStore(
+        path=Path(tmp) / "full", embedder=embedder, collection="eval_full"
     )
-    resource_of = {c.id: c.resource_id for c in chunks}
-    text_of = {c.id: c.text for c in chunks}
+    raw_store.add(chunks)
+    raw_service = RetrievalService(store=raw_store, embedder=embedder)
+    resource_of = {c.chunk_id: c.resource_id for c in chunks}
+    text_of = {c.chunk_id: c.text for c in chunks}
     results: list[ItemResult] = []
     gap_items = 0
-    for item in items:
+    for n_stores, item in enumerate(items):
         pause_at_ms = int(item["pause_at_ms"])
         gold_ids = resolve_gold_chunk_ids(item, chunks)
         # Scored pipeline: strict visibility scoping BEFORE ranking, then the
@@ -351,9 +311,11 @@ async def _evaluate_async(
         # assertion re-checks the final set. Anything failing the assertion is
         # a harness/implementation bug, never prompt behavior.
         visible = apply_strict_cutoff(chunks, pause_at_ms, ALLOWED_RESOURCES)
-        service = RetrievalService(
-            store=InMemoryVectorStore(visible), embedder=embedder
+        vis_store = ChromaVectorStore(
+            path=Path(tmp) / f"vis{n_stores}", embedder=embedder, collection="eval_vis"
         )
+        vis_store.add(visible)
+        service = RetrievalService(store=vis_store, embedder=embedder)
         started = time.perf_counter()
         retrieved = await service.retrieve(
             item["question"],
@@ -401,6 +363,7 @@ async def _evaluate_async(
             )
         )
     scoreboard = compute_scoreboard(results)
+    scoreboard["gap_mode"] = GAP_MODE
     scoreboard["production_gap_items"] = gap_items
     scoreboard["production_gap_rate"] = (gap_items / len(results)) if results else 0.0
     return results, scoreboard

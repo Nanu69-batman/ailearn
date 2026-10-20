@@ -5,34 +5,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-# TODO(library-rebuild): originally
-# `from app.ingestion.models import Chunk, text_hash`. That module was deleted in
-# the teardown clearing the tree for the library rebuild (ADR-002). The fixture
-# source is preserved verbatim; both constructors below raise until the rebuild
-# defines the chunk model and its stable content hash again.
-#
-# NOTE: the replacement chunk model MUST keep an `end_ms` field and the harness
-# MUST keep filtering on `end_ms <= pause_at_ms`. The strict-T gate is product
-# policy (ADR-002 §5.1), not retrieval mechanism, and its removal here would
-# silently disable the eval's spoiler detection.
-_REBUILD_HINT = (
-    "app.eval.fixture requires the rebuilt chunk model "
-    "(see docs/adr/ADR-002-retrieval-stack-library-migration.md). "
-)
-
-
-def _pending(name: str):
-    def _raise(*_args, **_kwargs):
-        raise NotImplementedError(
-            f"{_REBUILD_HINT}`{name}` has no implementation. It must keep an "
-            "`end_ms` field so the strict-T gate survives."
-        )
-
-    return _raise
-
-
-Chunk = _pending("Chunk")
-text_hash = _pending("text_hash")
+from app.ingestion.chunking import Chunk
 
 FIXTURE_COURSE_ID = "course_fixture"
 RES_VIDEO = "res_video"
@@ -249,30 +222,26 @@ PPT_SLIDES: list[tuple[int, str]] = [
 def _chunk_id(resource_id: str, segment_key: str, text: str) -> str:
     """Deterministic chunk id, mirroring the ingestion jobs scheme."""
     return hashlib.sha1(
-        (resource_id + "|" + segment_key + "|" + text_hash(text)).encode("utf-8")
+        (resource_id + "|" + segment_key + "|" + hashlib.sha1(text.encode("utf-8")).hexdigest()).encode("utf-8")
     ).hexdigest()
 
 
-def build_fixture_chunks(embedder=None) -> list[Chunk]:
+def build_fixture_chunks() -> list[Chunk]:
     """Build fixture chunks directly (no file parsing, no DB).
 
-    One chunk per video segment / PDF page / PPT slide. When an embedder is
-    supplied, embeddings are attached with its model name.
+    One chunk per video segment / PDF page / PPT slide. Embedding happens when
+    the chunks are added to the store.
     """
-    embed_model = embedder.name if embedder is not None else "hashing-v1"
     chunks: list[Chunk] = []
     for start_ms, end_ms, text in VIDEO_SEGMENTS:
         cleaned = text.strip()
         chunks.append(
             Chunk(
-                id=_chunk_id(RES_VIDEO, f"t{start_ms}-{end_ms}", cleaned),
+                chunk_id=_chunk_id(RES_VIDEO, f"t{start_ms}-{end_ms}", cleaned),
                 resource_id=RES_VIDEO,
                 course_id=FIXTURE_COURSE_ID,
                 source_type="video",
-                chunk_index=len(chunks),
                 text=cleaned,
-                text_hash=text_hash(cleaned),
-                embed_model=embed_model,
                 video_id=VIDEO_ID,
                 start_ms=start_ms,
                 end_ms=end_ms,
@@ -282,14 +251,11 @@ def build_fixture_chunks(embedder=None) -> list[Chunk]:
         cleaned = text.strip()
         chunks.append(
             Chunk(
-                id=_chunk_id(RES_PDF, f"p{page_no}", cleaned),
+                chunk_id=_chunk_id(RES_PDF, f"p{page_no}", cleaned),
                 resource_id=RES_PDF,
                 course_id=FIXTURE_COURSE_ID,
                 source_type="pdf",
-                chunk_index=len(chunks),
                 text=cleaned,
-                text_hash=text_hash(cleaned),
-                embed_model=embed_model,
                 page_no=page_no,
             )
         )
@@ -297,20 +263,14 @@ def build_fixture_chunks(embedder=None) -> list[Chunk]:
         cleaned = text.strip()
         chunks.append(
             Chunk(
-                id=_chunk_id(RES_PPT, f"s{slide_no}", cleaned),
+                chunk_id=_chunk_id(RES_PPT, f"s{slide_no}", cleaned),
                 resource_id=RES_PPT,
                 course_id=FIXTURE_COURSE_ID,
                 source_type="pptx",
-                chunk_index=len(chunks),
                 text=cleaned,
-                text_hash=text_hash(cleaned),
-                embed_model=embed_model,
                 slide_no=slide_no,
             )
         )
-    if embedder is not None:
-        for chunk in chunks:
-            chunk.embedding = embedder.embed(chunk.text)
     return chunks
 
 

@@ -221,11 +221,12 @@ cd apps/web; npm run dev -- --port 3000
   description pass is deliberately serialised with a 4s floor between calls. That
   pacing is the dominant cost of a fresh ingest now, and it is quota, not code. A paid
   tier removes it.
-- **The eval harness cannot run today.** `app/eval/harness.py` still imports
-  `InMemoryVectorStore` / `HashingEmbedder`, which the library rebuild removed; those
-  imports are stubbed to `_pending(...)`, so `python -m app.eval.harness` fails until
-  they are re-pointed at the Chroma store. The numbers in `docs/eval-results/`
-  therefore describe the pre-rebuild stack and are not reproducible as they stand.
+- **The eval harness runs again** (`python -m app.eval.harness`, from `apps/api`),
+  against a temporary `ChromaVectorStore` + offline `HashingEmbedder`, and reports
+  `gap_mode: chroma`. Current results: `docs/eval-results/chroma-2026-10-20.json`
+  (leakage 0, production gap 0). `baseline*.json` / `smoke*.json` there are
+  pre-rebuild and not comparable. `DEFAULT_THRESHOLD=0.08` is non-binding on Chroma
+  cosine scores and still untuned.
 - **YouTube ingest cannot be verified in this environment** (captions/download
   unavailable).
 - **Sessions are in-memory.** Postgres + pgvector is the planned migration — see
