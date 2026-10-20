@@ -1,0 +1,14 @@
+{
+  "subjects": {
+    "sub_06dea46b30bf4ee7": {
+      "id": "sub_06dea46b30bf4ee7",
+      "name": "Engineering Mathematics",
+      "description": "Partial derivatives and multivariable calculus",
+      "course_id": "demo",
+      "resource_ids": [
+        "res_2e629d682a3d"
+      ],
+      "created_at": "2026-10-08T13:45:34.429427+00:00"
+    }
+  }
+}

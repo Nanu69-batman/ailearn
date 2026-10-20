@@ -42,6 +42,16 @@ def get_shared_store():
         return _STORE
     with _LOCK:
         if _STORE is None:
+            from app.config import settings
+
+            if settings.vector_store == "pinecone":
+                from app.retrieval.pinecone_store import PineconeVectorStore
+
+                _STORE = PineconeVectorStore(
+                    api_key=settings.pinecone_api_key, index_name=settings.pinecone_index
+                )
+                return _STORE
+
             from app.retrieval.store import ChromaVectorStore
 
             path = default_chroma_path()

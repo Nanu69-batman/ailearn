@@ -37,6 +37,18 @@ class Settings(BaseSettings):
     max_upload_mb: int = 0
     max_video_minutes: int = 0
     max_uploads_per_hour: int = 0
+    # Hosted backends. Defaults keep everything on local disk (dev + tests).
+    vector_store: str = "chroma"  # "chroma" | "pinecone"
+    pinecone_api_key: str = ""
+    pinecone_index: str = "ailearn"
+    storage: str = "local"  # "local" | "r2" (mirror data/ files to R2)
+    r2_account_id: str = ""
+    r2_access_key_id: str = ""
+    r2_secret_access_key: str = ""
+    r2_bucket: str = ""
+    # Local faster-whisper is the fallback when Groq fails. Its model needs
+    # more RAM than a 512 MB free instance has; turn it off there.
+    local_whisper_fallback: bool = True
 
     def expected_embedding_dim(self) -> int:
         """Vector width every chunk and every query must agree on.

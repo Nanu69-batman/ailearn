@@ -1,0 +1,10 @@
+# Render builds apps/api/deploy/render/Dockerfile with the repo root as
+# context; send only what that Dockerfile copies.
+**
+!apps/api/requirements.txt
+!apps/api/app/**
+!apps/api/migrations/**
+!apps/api/deploy/seed/**
+!test-data/Partial-derivatives.mp4
+**/__pycache__
+**/.env

@@ -508,6 +508,11 @@ def transcribe(
         except Exception as exc:  # noqa: BLE001 - local Whisper is the fallback
             groq_error = f"{type(exc).__name__}: {exc}"
             log.warning("groq transcription failed for %s (%s); using local whisper", path, groq_error)
+    if not used_groq and not settings.local_whisper_fallback:
+        # No fallback on this deployment: fail the window loudly. Returning an
+        # empty transcript would let the frontier skip speech that was never
+        # transcribed.
+        raise RuntimeError(f"transcription failed: {groq_error or 'GROQ_API_KEY is not set'}")
     if not used_groq:
         try:
             if windowed:
