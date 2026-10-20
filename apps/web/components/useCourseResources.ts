@@ -9,7 +9,7 @@
  * single-route version did.
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   formatApiError,
   getCourseResources,
@@ -23,6 +23,8 @@ export interface CourseResources {
   resources: CourseResource[];
   state: ResourcesState;
   error: string | null;
+  /** Re-runs the load (e.g. after a delete). */
+  reload: () => void;
 }
 
 /** Loads a resource list by opaque id. */
@@ -46,6 +48,8 @@ export function useCourseResources({
   const [resources, setResources] = useState<CourseResource[]>([]);
   const [state, setState] = useState<ResourcesState>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [nonce, setNonce] = useState(0);
+  const reload = useCallback((): void => setNonce((n) => n + 1), []);
 
   useEffect(() => {
     if (!enabled) return;
@@ -70,7 +74,7 @@ export function useCourseResources({
     return () => {
       cancelled = true;
     };
-  }, [courseId, enabled, load]);
+  }, [courseId, enabled, load, nonce]);
 
-  return { resources, state, error };
+  return { resources, state, error, reload };
 }

@@ -11,7 +11,12 @@ import FileIngestForm, {
 } from "@/components/FileIngestForm";
 import { useLearnSession } from "@/components/LearnSessionProvider";
 import { useCourseResources } from "@/components/useCourseResources";
-import { isApiConfigured, getSubjectResources } from "@/lib/api";
+import {
+  isApiConfigured,
+  getSubjectResources,
+  deleteResource,
+  formatApiError,
+} from "@/lib/api";
 import {
   SUBJECTS_PATH,
   contentPath,
@@ -36,19 +41,50 @@ export default function SubjectPage() {
   const router = useRouter();
   const subjectId = firstParam(params.subjectId);
 
-  const { session, offline } = useLearnSession();
+  const { session, offline, subject, refreshResources } = useLearnSession();
   const apiLive = isApiConfigured() && !offline;
   const enabled = Boolean(session) && apiLive && subjectId !== null;
   // Subject-scoped, not course-scoped: `subjectId` is not a course id, so
   // `/courses/{subjectId}/resources` matched nothing and every attached
   // material rendered as "no videos". Falling back to `subject.course_id`
   // would be worse — two subjects on one course would show identical lists.
-  const { resources, state: resourcesState, error: resourcesError } =
-    useCourseResources({
+  const {
+    resources,
+    state: resourcesState,
+    error: resourcesError,
+    reload,
+  } = useCourseResources({
       courseId: subjectId ?? "",
       enabled,
       load: getSubjectResources,
     });
+
+  // The delete route is course-scoped; the subject id is not a course id. The
+  // real course id comes from the subject record the provider already loaded.
+  const courseId = subject?.course_id ?? null;
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const handleDelete = useCallback(
+    async (resourceId: string): Promise<void> => {
+      if (!courseId) return;
+      setDeletingId(resourceId);
+      setDeleteError(null);
+      try {
+        await deleteResource(courseId, resourceId);
+        setConfirmingId(null);
+        reload();
+        // Drop the stored grant so the next chat re-mints without this id.
+        refreshResources();
+      } catch (err) {
+        setDeleteError(formatApiError(err));
+      } finally {
+        setDeletingId(null);
+      }
+    },
+    [courseId, reload, refreshResources],
+  );
 
   const open = useCallback(
     (resourceId: string): void => {
@@ -231,6 +267,50 @@ export default function SubjectPage() {
                             : "Watch"}
                     </button>
                   </div>
+                  {apiLive && courseId && (
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      {confirmingId === r.id ? (
+                        <>
+                          <button
+                            type="button"
+                            disabled={deletingId === r.id}
+                            className="rounded-lg bg-red-600 px-3 py-1 text-xs font-medium text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+                            onClick={() => void handleDelete(r.id)}
+                          >
+                            {deletingId === r.id ? "Deleting…" : "Confirm delete"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={deletingId === r.id}
+                            className="rounded-lg border border-gray-200 bg-white px-3 py-1 text-xs text-gray-600 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+                            onClick={() => {
+                              setConfirmingId(null);
+                              setDeleteError(null);
+                            }}
+                          >
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={deletingId !== null}
+                          className="rounded-lg border border-gray-200 bg-white px-3 py-1 text-xs text-gray-600 transition hover:border-red-200 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-60"
+                          onClick={() => {
+                            setConfirmingId(r.id);
+                            setDeleteError(null);
+                          }}
+                        >
+                          Delete
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {confirmingId === r.id && deleteError && (
+                    <p className="text-xs text-red-600" role="alert">
+                      Could not delete: {deleteError}
+                    </p>
+                  )}
                 </li>
               );
             })}

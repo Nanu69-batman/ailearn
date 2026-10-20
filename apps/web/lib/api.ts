@@ -678,6 +678,24 @@ export function getCourseResources(
   );
 }
 
+export interface DeleteResourceResponse {
+  resource_id: string;
+  deleted: boolean;
+  detached_from: string[];
+  asset_removed: boolean;
+}
+
+/** DELETE /courses/{course_id}/resources/{resource_id}; 404 if not owned. */
+export function deleteResource(
+  courseId: string,
+  resourceId: string,
+): Promise<DeleteResourceResponse> {
+  return apiFetch<DeleteResourceResponse>(
+    `/courses/${encodeURIComponent(courseId)}/resources/${encodeURIComponent(resourceId)}`,
+    { method: "DELETE" },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Subjects (apps/api/app/subjects/schemas.py).
 //   GET /subjects -> { subjects: [{ id, name, description, course_id,

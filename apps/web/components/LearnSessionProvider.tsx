@@ -70,6 +70,12 @@ export interface LearnSession {
   setSession: (session: StoredSession, offline: boolean) => void;
   /** Explicit user-initiated reset (expired-session banner). */
   reset: () => void;
+  /**
+   * Re-read the active scope's listing and drop the stored grant ids, so a
+   * resource deleted elsewhere cannot linger in the learner's session grant.
+   * The revalidation effect then re-mints against the current set.
+   */
+  refreshResources: () => void;
 }
 
 const LearnSessionContext = createContext<LearnSession | null>(null);
@@ -190,6 +196,12 @@ export default function LearnSessionProvider({
   const [resourceIdsSettled, setResourceIdsSettled] = useState(false);
 
   /** Read inside `setSession`, which must stay referentially stable. */
+  const [resourcesNonce, setResourcesNonce] = useState(0);
+  const refreshResources = useCallback((): void => {
+    clearStoredMintedResourceIds();
+    setResourcesNonce((n) => n + 1);
+  }, []);
+
   const subjectIdRef = useRef<string | null>(subjectId);
   subjectIdRef.current = subjectId;
 
@@ -262,7 +274,7 @@ export default function LearnSessionProvider({
     return () => {
       cancelled = true;
     };
-  }, [scopeId, subjectId]);
+  }, [scopeId, subjectId, resourcesNonce]);
 
   /**
    * Revalidate a rehydrated grant against the materials on screen.
@@ -306,8 +318,16 @@ export default function LearnSessionProvider({
   ]);
 
   const value = useMemo<LearnSession>(
-    () => ({ session, offline, restored, subject, setSession, reset }),
-    [session, offline, restored, subject, setSession, reset],
+    () => ({
+      session,
+      offline,
+      restored,
+      subject,
+      setSession,
+      reset,
+      refreshResources,
+    }),
+    [session, offline, restored, subject, setSession, reset, refreshResources],
   );
 
   return (
