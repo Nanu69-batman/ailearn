@@ -80,6 +80,47 @@ it is written. Two modes, chosen at upload:
 360000 (6:00) after the third window with visual coverage 100%. Before the
 speed-ups below, one window took roughly 3.5 minutes end to end.
 
+## 4b. Transcript first, visuals after, overlapped and read ahead
+
+**Problem.** Even with windows, each window waited for both the transcript and
+the slow vision pass before anything was usable.
+
+**Technique.** Each 2-minute window is split into two stages that are written
+separately:
+
+- **Stage T (transcript):** speech to text, chunk, embed, store. Fast, so the
+  window is askable early.
+- **Stage V (visuals):** frame descriptions, chunk, embed, store. Slower.
+
+Three pieces make this work:
+
+1. **Two frontiers.** `processed_through_ms` is the transcript frontier and
+   `visual_through_ms` is the visual one. Resources that predate the visual
+   marker are treated as complete, never as "visuals pending".
+2. **Overlapped lanes.** One transcript worker and one vision worker run at the
+   same time, so window N+1's transcript is produced while window N's frames are
+   still being described. They use different resources (local Whisper and the
+   Gemini API). Results are meant to be identical to running the stages one
+   after another, and a failure in either lane fails the job instead of being
+   hidden.
+3. **Reading further ahead.** The position heartbeat now keeps up to two
+   windows (4 minutes) of transcript ahead of the playhead, plus a catch-up job
+   for visuals. The resource only reports `ready` when both frontiers reach the
+   end of the video.
+
+**Honesty rules.**
+- If a question falls between the two frontiers, it is answered normally from
+  the transcript. If that gives too little evidence, the refusal says the
+  on-screen content is still being processed, and it does not fall back to
+  general knowledge.
+- Chunk ids for the two stages never collide, and a re-run can delete only one
+  stage's chunks for a window by exact resource id and time range.
+- The strict `end_ms <= T` gate is unchanged.
+
+**Status.** Covered by unit tests with fake Whisper and Gemini clients (428
+tests passing). **Not yet timed on the real stack**, so there is no speed-up
+figure for it; do not quote one.
+
 ## 5. Cheaper embeddings: true batching sized to the quota
 
 **Problem.** The embedding call returns *one pooled vector* for many texts, so
@@ -187,4 +228,5 @@ Several bugs came from the system quietly doing less than it claimed:
 | Vision time for one 2-minute window | 114.9 s down to 54.6 s | measured, one run each, noisy |
 | Frame bytes per call | down about 59% | measured |
 | Time to first usable answers (stream) | first 6 minutes of video | measured on demo video |
-| Tests | 417 passing | measured |
+| Transcript-first / overlapped lanes speed-up | not measured yet | tests only, fakes |
+| Tests | 428 passing | measured |
