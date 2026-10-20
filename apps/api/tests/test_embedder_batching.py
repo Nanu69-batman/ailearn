@@ -512,7 +512,7 @@ def test_job_payload_reports_the_embedding_stage_and_counts():
     embedding, and no count inside the slow phase.
     """
     from app.ingestion import jobs as jobs_mod
-    from app.ingestion.jobs import new_job
+    from app.ingestion.jobs import job_payload, new_job
 
     job = new_job("course_1", "res_abc")
 
