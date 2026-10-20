@@ -210,6 +210,19 @@ export default function ContentPage() {
   const hbResourceId = selected?.kind === "file" ? selected.resourceId : null;
   const hbRes = resources.find((r) => r.id === hbResourceId);
   const hbEligible = Boolean(hbRes) && (!hbRes?.status || hbRes.status === "partial");
+  // Latest processing state: seeded from the resource list, then refreshed by
+  // every heartbeat answer so the learner can see windows being processed.
+  const [proc, setProc] = useState<{
+    through: number | null;
+    duration: number | null;
+    state: string;
+  } | null>(null);
+  const procThrough = proc?.through ?? hbRes?.processed_through_ms ?? null;
+  const procState = proc?.state ?? (hbRes?.status === "partial" ? "partial" : "ready");
+  const fmtClock = (ms: number): string => {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
+  };
   useEffect(() => {
     const el = videoRef.current;
     if (!el || !hbResourceId || !hbCourseId || !apiLive || !hbEligible) return;
@@ -220,6 +233,11 @@ export default function ContentPage() {
       last = Date.now();
       reportPosition(hbCourseId, hbResourceId, Math.floor(el.currentTime * 1000))
         .then((r) => {
+          setProc({
+            through: r.processed_through_ms ?? null,
+            duration: r.duration_ms ?? null,
+            state: r.status,
+          });
           if (r.status === "ready") done = true;
         })
         .catch(() => undefined);
@@ -452,6 +470,15 @@ export default function ContentPage() {
             videoRef={videoRef}
             onPauseAt={setPausedAtMs}
           />
+        )}
+        {selected.kind === "file" && procThrough !== null && procState !== "ready" && (
+          <p className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-sm text-violet-800" role="status">
+            Processed through {fmtClock(procThrough)}
+            {proc?.duration ? ` of ${fmtClock(proc.duration)}` : ""}.{" "}
+            {procState === "queued" || procState === "running"
+              ? "Processing the next part now…"
+              : "The rest is processed as you watch."}
+          </p>
         )}
         {chatLayout === "bottom" && (
           <ChatPanel

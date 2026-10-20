@@ -132,6 +132,7 @@ export default function FileIngestForm({
   const [jobInfo, setJobInfo] = useState<IngestJob | null>(null);
   const [partialNote, setPartialNote] = useState(false);
   const cancelRef = useRef(false);
+  const announcedRef = useRef(false);
   const timersRef = useRef<number[]>([]);
 
   function clearTimers(): void {
@@ -169,15 +170,35 @@ export default function FileIngestForm({
         if (cancelRef.current) return;
         setJobStatus(job.status);
         setJobInfo(job);
-        if (job.status === "done") {
-          clearTimers();
-          setPhase("idle");
-          setPartialNote(job.mode === "stream");
+        // Stream mode: the backend attaches the video to its subject after
+        // the first window, so it is askable then. Announce it once and
+        // keep polling so the progress bar keeps moving.
+        if (
+          job.mode === "stream" &&
+          job.status !== "failed" &&
+          (job.windows_done ?? 0) >= 1 &&
+          !announcedRef.current
+        ) {
+          announcedRef.current = true;
+          setPartialNote(true);
           onReady({
             resourceId: job.resource_id,
             fileName,
             imageNo: job.image_no ?? null,
           });
+        }
+        if (job.status === "done") {
+          clearTimers();
+          setPhase("idle");
+          setPartialNote(job.mode === "stream");
+          if (!announcedRef.current) {
+            announcedRef.current = true;
+            onReady({
+              resourceId: job.resource_id,
+              fileName,
+              imageNo: job.image_no ?? null,
+            });
+          }
           return;
         }
         if (job.status === "failed") {
@@ -221,6 +242,7 @@ export default function FileIngestForm({
     setPartialNote(false);
     setElapsedMs(0);
     cancelRef.current = false;
+    announcedRef.current = false;
     setPhase("uploading");
     try {
       const res = await ingestFile(
@@ -286,19 +308,19 @@ export default function FileIngestForm({
         </button>
       </form>
 
-      {isVideo && (
-        <fieldset className="mt-3 flex flex-col gap-1 text-sm text-gray-700" disabled={busy || disabled}>
-          <legend className="sr-only">Video processing mode</legend>
-          <label className="flex items-center gap-2">
-            <input type="radio" name="ingest-mode" checked={mode === "full"} onChange={() => setMode("full")} />
-            Process everything now
-          </label>
-          <label className="flex items-center gap-2">
-            <input type="radio" name="ingest-mode" checked={mode === "stream"} onChange={() => setMode("stream")} />
-            Stream (process as you watch)
-          </label>
-        </fieldset>
-      )}
+      <fieldset className="mt-3 flex flex-col gap-1 text-sm text-gray-700" disabled={busy || disabled}>
+        <legend className="mb-1 text-xs font-medium text-gray-500">
+          Video processing{file !== null && !isVideo ? " (videos only; ignored for this file)" : ""}
+        </legend>
+        <label className="flex items-center gap-2">
+          <input type="radio" name="ingest-mode" checked={mode === "full"} onChange={() => setMode("full")} />
+          Process everything now (wait for the progress bar)
+        </label>
+        <label className="flex items-center gap-2">
+          <input type="radio" name="ingest-mode" checked={mode === "stream"} onChange={() => setMode("stream")} />
+          Stream: first ~6 minutes now, the rest as you watch
+        </label>
+      </fieldset>
 
       {clientError && (
         <div id="file-upload-error" className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-600" role="alert">
