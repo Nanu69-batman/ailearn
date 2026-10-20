@@ -107,6 +107,51 @@ def _get_whisper_model(model_size: str):
     return model
 
 
+#: Whisper's expected input: 16 kHz mono float32.
+_WHISPER_SR = 16_000
+
+
+def _decode_window(path: str, start_s: float, end_s: float | None):
+    """Decode ``[start_s, end_s)`` of the audio track as 16 kHz mono float32.
+
+    Seeks to the nearest keyframe at or before ``start_s`` and trims using the
+    decoded frames' own timestamps, so sample 0 of the result is ``start_s``
+    in video time. ``end_s=None`` reads to the end of the file.
+    """
+    import av
+    import numpy as np
+
+    resampler = av.AudioResampler(format="s16", layout="mono", rate=_WHISPER_SR)
+    parts = []
+    first_t: float | None = None
+    with av.open(path) as container:
+        stream = container.streams.audio[0]
+        if start_s > 0:
+            container.seek(int(start_s * av.time_base), backward=True)
+        for frame in container.decode(stream):
+            t = frame.time
+            if t is None:
+                continue
+            if end_s is not None and t >= end_s:
+                break
+            if first_t is None:
+                first_t = t
+            for out in resampler.resample(frame):
+                parts.append(out.to_ndarray().reshape(-1))
+        for out in resampler.resample(None):
+            parts.append(out.to_ndarray().reshape(-1))
+    if not parts or first_t is None:
+        return np.zeros(0, dtype=np.float32)
+    samples = np.concatenate(parts).astype(np.float32) / 32768.0
+    lo = max(0, round((start_s - first_t) * _WHISPER_SR))
+    hi = (
+        len(samples)
+        if end_s is None
+        else max(lo, round((end_s - first_t) * _WHISPER_SR))
+    )
+    return samples[lo:hi]
+
+
 def transcribe_with_whisper(
     path: str,
     *,
@@ -127,16 +172,25 @@ def transcribe_with_whisper(
     # here rather than pinned in requirements because the alternative is a
     # floor on a transitive dependency with no Python 3.14 wheels.
     _shim_pyav_metadata_errors()
-    kwargs: dict = {"beam_size": 5, "vad_filter": True}
-    if start_ms is not None or end_ms is not None:
-        # clip_timestamps keeps segment times ABSOLUTE (no offset math).
-        # faster-whisper takes "start,end" in seconds; end 0 means file end.
-        lo = (start_ms or 0) / 1000.0
-        hi = end_ms / 1000.0 if end_ms is not None else 0
-        kwargs["clip_timestamps"] = f"{lo},{hi}"
-    segments, _info = model.transcribe(path, **kwargs)
+    if start_ms is None and end_ms is None:
+        segments, _info = model.transcribe(path, beam_size=5, vad_filter=True)
+        offset_s = 0.0
+    else:
+        # Decode only the window and transcribe the samples, then shift times
+        # back to ABSOLUTE video time. Passing the file with clip_timestamps
+        # instead decodes the whole file and disables VAD: measured 27.9s vs
+        # 2.5s for one 120s window with the tiny model on a 4-core CPU.
+        # Greedy decoding (beam 1) is what makes the window cheap.
+        offset_s = (start_ms or 0) / 1000.0
+        end_s = end_ms / 1000.0 if end_ms is not None else None
+        audio = _decode_window(path, offset_s, end_s)
+        if audio.size == 0:
+            return []
+        segments, _info = model.transcribe(audio, beam_size=1, vad_filter=True)
     out = [
-        TranscriptSegment(float(s.start), float(s.end), (s.text or "").strip())
+        TranscriptSegment(
+            float(s.start) + offset_s, float(s.end) + offset_s, (s.text or "").strip()
+        )
         for s in segments
         if (s.text or "").strip()
     ]

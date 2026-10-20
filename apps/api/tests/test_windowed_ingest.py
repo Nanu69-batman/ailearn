@@ -4,6 +4,7 @@ import re
 import sys
 import types
 
+import numpy as np
 import pytest
 
 from app.ingestion import audio as audio_mod
@@ -62,18 +63,26 @@ def test_audio_window_cached_model_clip_and_no_gemini(monkeypatch):
         def __init__(self, size, **kw):
             built.append(size)
 
-        def transcribe(self, path, **kw):
-            calls.append(kw)
+        def transcribe(self, audio, **kw):
+            calls.append((audio, kw))
+            # Times are relative to the decoded window, as faster-whisper
+            # reports them for a sample array.
             return iter(
-                [_Seg(130.0, 135.0, "in"), _Seg(10.0, 12.0, "before"),
-                 _Seg(300.0, 301.0, "after")]
+                [_Seg(10.0, 15.0, "in"), _Seg(119.0, 125.0, "straddles end")]
             ), None
+
+    decoded = []
+
+    def fake_decode(path, start_s, end_s):
+        decoded.append((path, start_s, end_s))
+        return np.zeros(16_000, dtype=np.float32)
 
     fake = types.ModuleType("faster_whisper")
     fake.WhisperModel = FakeModel
     monkeypatch.setitem(sys.modules, "faster_whisper", fake)
     monkeypatch.setattr(audio_mod, "_WHISPER_MODELS", {})
     monkeypatch.setattr(audio_mod, "_shim_pyav_metadata_errors", lambda: None)
+    monkeypatch.setattr(audio_mod, "_decode_window", fake_decode)
 
     def boom(*a, **k):
         raise AssertionError("gemini must not be called for a window")
@@ -82,10 +91,14 @@ def test_audio_window_cached_model_clip_and_no_gemini(monkeypatch):
     kw = {"duration_ms": DUR, "allow_gemini": True, "start_ms": 120_000, "end_ms": 240_000}
     segs, _ = audio_mod.transcribe("a.mp4", **kw)
     audio_mod.transcribe("a.mp4", **kw)
+    # Shifted back to absolute video time; the segment ending past the window
+    # end (245s > 240s) is dropped, never kept with an end the gate would trust.
     assert [s.text for s in segs] == ["in"]
-    assert segs[0].start_s == 130.0
+    assert (segs[0].start_s, segs[0].end_s) == (130.0, 135.0)
     assert len(built) == 1
-    assert calls[0]["clip_timestamps"] == "120.0,240.0"
+    assert decoded[0] == ("a.mp4", 120.0, 240.0)
+    assert "clip_timestamps" not in calls[0][1]
+    assert calls[0][1]["beam_size"] == 1
 
 
 def _vis(i):

@@ -186,6 +186,33 @@ Knobs (environment variables): `VISION_CONCURRENCY=3`, `VISUAL_DEDUPE=1`,
 `VISUAL_DEDUPE_CELL_THRESHOLD=1.0`, `VISUAL_DEDUPE_FORCE_KEEP_EVERY=5`,
 `VISUAL_FRAME_MAX_SIDE=768`, `VISUAL_SEND_JPEG_QUALITY=80`.
 
+## 6b. Faster speech-to-text per window
+
+**Problem.** Transcribing one 2-minute window took about 2 minutes in the app,
+with the smallest Whisper model (`tiny`, int8, CPU).
+
+**Cause.** Each window handed Whisper the whole video file plus a time range.
+In that mode Whisper decodes the entire file, turns off its silence skipping,
+and we also used the slower beam search (beam 5).
+
+**Technique.** Decode only the window's audio (seek, then trim using the
+decoded frames' own timestamps), transcribe those samples with greedy decoding
+(beam 1) and silence skipping on, then add the window start back so every
+segment carries its real video time. The decoded window was checked against a
+full-file decode: 0 ms offset on three windows. Segments that run past the
+window end are still dropped, so the timestamp gate sees the same times as before.
+
+**Measured** (same 2-minute window, same machine, other apps running):
+
+| | Old call | New call |
+|---|---|---|
+| Whisper `tiny`, one 120 s window | 28.0-30.4 s | 13.6-17.5 s (about 2x) |
+
+On a quieter machine, a first benchmark measured 27.9 s for the old call and 2.5 s
+for the new one. That benchmark did not check what else was using the CPU, so quote
+the 2x figure. Inside the app the vision lane shares the same CPU, so in-app
+times are higher; an in-app re-time has not been done yet.
+
 ## 7. Honest degradation: stated, never inferred
 
 Several bugs came from the system quietly doing less than it claimed:
@@ -229,4 +256,5 @@ Several bugs came from the system quietly doing less than it claimed:
 | Frame bytes per call | down about 59% | measured |
 | Time to first usable answers (stream) | first 6 minutes of video | measured on demo video |
 | Transcript-first / overlapped lanes speed-up | not measured yet | tests only, fakes |
+| Whisper time for one 2-minute window | about 29 s down to about 15 s | measured, two runs each, loaded machine |
 | Tests | 428 passing | measured |
