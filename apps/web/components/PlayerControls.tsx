@@ -1,7 +1,9 @@
 "use client";
 
 import {
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useRef,
   useState,
@@ -55,6 +57,20 @@ export const INITIAL_SNAPSHOT: PlayerSnapshot = {
 };
 
 export const PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2] as const;
+
+/**
+ * Page-owned fullscreen. When a page provides this, the fullscreen button
+ * hands fullscreen to the page instead of the player container, so the page
+ * can keep its (single, stateful) chat panel on screen beside the video.
+ */
+export interface Immersive {
+  active: boolean;
+  toggle: () => void;
+  chatOpen: boolean;
+  toggleChat: () => void;
+}
+
+export const ImmersiveContext = createContext<Immersive | null>(null);
 
 const HIDE_AFTER_MS = 2500;
 
@@ -114,6 +130,12 @@ const VolumeMuteIcon = () => (
 const FullscreenIcon = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5" aria-hidden="true">
     <path d="M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4" />
+  </svg>
+);
+const ChatIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5" aria-hidden="true">
+    <path d="M20 12a8 8 0 0 1-11.6 7.14L4 20l.86-4.4A8 8 0 1 1 20 12Z" />
+    <path d="M8.5 10.5h7M8.5 13.5h4.5" />
   </svg>
 );
 const ExitFullscreenIcon = () => (
@@ -268,7 +290,9 @@ export default function PlayerFrame({
   const hideTimer = useRef<number | null>(null);
   const [active, setActive] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [ownFullscreen, setOwnFullscreen] = useState(false);
+  const immersive = useContext(ImmersiveContext);
+  const isFullscreen = immersive ? immersive.active : ownFullscreen;
 
   const poke = useCallback((): void => {
     setActive(true);
@@ -285,7 +309,7 @@ export default function PlayerFrame({
 
   useEffect(() => {
     const onChange = (): void => {
-      setIsFullscreen(
+      setOwnFullscreen(
         Boolean(rootRef.current) && document.fullscreenElement === rootRef.current,
       );
     };
@@ -294,6 +318,10 @@ export default function PlayerFrame({
   }, []);
 
   const toggleFullscreen = useCallback((): void => {
+    if (immersive) {
+      immersive.toggle();
+      return;
+    }
     const el = rootRef.current;
     if (!el) return;
     if (document.fullscreenElement) {
@@ -301,7 +329,7 @@ export default function PlayerFrame({
     } else if (typeof el.requestFullscreen === "function") {
       void el.requestFullscreen().catch(() => undefined);
     }
-  }, []);
+  }, [immersive]);
 
   const togglePlay = useCallback((): void => {
     if (state.playing) commands.pause();
@@ -342,6 +370,8 @@ export default function PlayerFrame({
       commands.setMuted(!state.muted);
     } else if (key === "f") {
       toggleFullscreen();
+    } else if (key === "c" && immersive?.active) {
+      immersive.toggleChat();
     } else if (key === "Escape" && menuOpen) {
       setMenuOpen(false);
     } else {
@@ -369,7 +399,7 @@ export default function PlayerFrame({
         if (state.playing) setActive(false);
       }}
       className={`group/player relative isolate overflow-hidden bg-black outline-none focus-visible:ring-2 focus-visible:ring-violet-500 focus-visible:ring-offset-2 ${
-        isFullscreen ? "flex h-screen w-screen items-center justify-center" : "rounded-2xl shadow-xl shadow-gray-900/10 ring-1 ring-gray-900/10"
+        isFullscreen ? "flex h-full w-full items-center justify-center" : "rounded-2xl shadow-xl shadow-gray-900/10 ring-1 ring-gray-900/10"
       } ${controlsEnabled && !visible ? "cursor-none" : ""}`}
     >
       <div className={isFullscreen ? "h-full w-full" : "aspect-video w-full"}>{children}</div>
@@ -518,6 +548,15 @@ export default function PlayerFrame({
                     </div>
                   )}
                 </div>
+                {immersive?.active && (
+                  <IconButton
+                    label={immersive.chatOpen ? "Hide chat (c)" : "Ask Malai (c)"}
+                    pressed={immersive.chatOpen}
+                    onClick={immersive.toggleChat}
+                  >
+                    <ChatIcon />
+                  </IconButton>
+                )}
                 <IconButton
                   label={isFullscreen ? "Exit fullscreen (f)" : "Fullscreen (f)"}
                   onClick={toggleFullscreen}

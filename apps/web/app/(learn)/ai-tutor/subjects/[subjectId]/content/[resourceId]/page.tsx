@@ -8,6 +8,7 @@ import YouTubePlayer, {
   type YouTubePlayerHandle,
 } from "@/components/YouTubePlayer";
 import ChatPanel from "@/components/ChatPanel";
+import { ImmersiveContext, type Immersive } from "@/components/PlayerControls";
 import { useLearnSession } from "@/components/LearnSessionProvider";
 import { useCourseResources } from "@/components/useCourseResources";
 import {
@@ -70,6 +71,57 @@ export default function ContentPage() {
   const onTimeChange = useCallback((ms: number): void => {
     setPlayheadMs(Math.floor(ms / 1000) * 1000);
   }, []);
+
+  /**
+   * Fullscreen with the tutor. The page (not the player) goes fullscreen, and
+   * the player and the ONE ChatPanel are re-laid out as fixed panes. Nothing
+   * remounts, so the chat keeps its history and the player keeps its element,
+   * its time reporting and its frame capture. If the browser refuses the
+   * Fullscreen API (iOS Safari), the same layout still fills the window.
+   */
+  const [immersive, setImmersive] = useState(false);
+  const [immersiveChat, setImmersiveChat] = useState(true);
+  useEffect(() => {
+    const onChange = (): void => {
+      if (!document.fullscreenElement) setImmersive(false);
+    };
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+  useEffect(() => {
+    if (!immersive) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKey = (e: KeyboardEvent): void => {
+      // Esc in the window fallback; native fullscreen handles its own Esc.
+      if (e.key === "Escape" && !document.fullscreenElement) setImmersive(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = prev;
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [immersive]);
+  const immersiveCtx = useMemo<Immersive>(
+    () => ({
+      active: immersive,
+      toggle: () => {
+        if (immersive) {
+          setImmersive(false);
+          if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+          return;
+        }
+        setImmersive(true);
+        const root = document.documentElement;
+        if (typeof root.requestFullscreen === "function") {
+          void root.requestFullscreen().catch(() => undefined);
+        }
+      },
+      chatOpen: immersiveChat,
+      toggleChat: () => setImmersiveChat((o) => !o),
+    }),
+    [immersive, immersiveChat],
+  );
   const handlePauseAt = useCallback(
     (ms: number): void => {
       setPausedAtMs(ms);
@@ -391,7 +443,24 @@ export default function ContentPage() {
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(340px,1fr)] lg:items-start">
         {/* Player + processing status */}
-        <section className="flex min-w-0 flex-col gap-3 lg:col-start-1 lg:row-start-1" aria-label="Lesson">
+        <section
+          className={
+            immersive
+              ? `fixed inset-y-0 left-0 z-[60] flex items-center justify-center bg-black ${
+                  immersiveChat ? "right-0 sm:right-[400px]" : "right-0"
+                }`
+              : "flex min-w-0 flex-col gap-3 lg:col-start-1 lg:row-start-1"
+          }
+          aria-label="Lesson"
+        >
+          {immersive && isMedia && (
+            <div className="pointer-events-none absolute left-4 top-4 z-[70] flex items-center gap-2 rounded-full bg-black/55 py-1.5 pl-2.5 pr-3.5 text-xs font-medium text-white/90 backdrop-blur">
+              <span className="h-2 w-2 rounded-full bg-violet-400" aria-hidden="true" />
+              Malai can see up to{" "}
+              <span className="font-semibold tabular-nums text-white">{fmtClock(playheadMs)}</span>
+            </div>
+          )}
+          <ImmersiveContext.Provider value={immersiveCtx}>
           {selected.kind === "youtube" ? (
             <YouTubePlayer
               ref={ytHandleRef}
@@ -421,14 +490,15 @@ export default function ContentPage() {
               onTimeChange={onTimeChange}
             />
           )}
-          {isMedia && (
+          </ImmersiveContext.Provider>
+          {isMedia && !immersive && (
             <p className="px-1 text-xs text-gray-500">
               Malai answers only from what you&apos;ve watched so far. Click a
               timestamp in an answer to jump there. Shortcuts: Space/K play ·
               ←/→ 5s · J/L 10s · M mute · F fullscreen.
             </p>
           )}
-          {selected.kind === "file" && procThrough !== null && procState !== "ready" && (
+          {!immersive && selected.kind === "file" && procThrough !== null && procState !== "ready" && (
             <p className="rounded-2xl border border-violet-200 bg-violet-50 px-4 py-2.5 text-sm text-violet-800" role="status">
               Processed through {fmtClock(procThrough)}
               {proc?.duration ? ` of ${fmtClock(proc.duration)}` : ""}.{" "}
@@ -442,7 +512,7 @@ export default function ContentPage() {
                   : "The rest is processed as you watch."}
             </p>
           )}
-          {selected.kind === "file" && procState === "failed" && (
+          {!immersive && selected.kind === "file" && procState === "failed" && (
             <p className="rounded-2xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700" role="alert">
               Processing stopped: {proc?.error ?? "the server could not process the next part."}
             </p>
@@ -451,9 +521,28 @@ export default function ContentPage() {
 
         {/* Chat: right column on desktop, directly under the video on mobile */}
         <aside
-          className="min-w-0 lg:sticky lg:top-20 lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:self-start"
+          className={
+            !immersive
+              ? "min-w-0 lg:sticky lg:top-20 lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:self-start"
+              : immersiveChat
+                ? "fixed inset-y-0 right-0 z-[61] w-full overflow-y-auto bg-white shadow-2xl sm:w-[400px] [&>section]:min-h-full [&>section]:rounded-none [&>section]:border-0 [&_[aria-live=polite]]:max-h-[calc(100dvh-220px)]"
+                : "hidden"
+          }
           aria-label="Malai tutor chat"
         >
+          {immersive && (
+            <button
+              type="button"
+              onClick={() => setImmersiveChat(false)}
+              aria-label="Hide chat"
+              title="Hide chat (c)"
+              className="absolute right-3 top-3 z-10 flex h-8 w-8 items-center justify-center rounded-full text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
+            >
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="h-4 w-4" aria-hidden="true">
+                <path d="M5 5l10 10M15 5 5 15" />
+              </svg>
+            </button>
+          )}
           <ChatPanel
             sessionId={session.session_id}
             sessionToken={session.session_token}
