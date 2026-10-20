@@ -312,6 +312,12 @@ def list_subject_resources(subject_id: str) -> list[dict] | None:
                 rid = row.get("id")
                 if rid:
                     found[rid] = {k: row.get(k) for k in _RESOURCE_KEYS}
+                    # Present only for windowed-ingest resources; legacy rows
+                    # keep the exact old shape.
+                    if "processed_through_ms" in row:
+                        found[rid]["processed_through_ms"] = row[
+                            "processed_through_ms"
+                        ]
                     # The registry row never carries asset_name (the course
                     # router decorates it from UPLOAD_DIR) — do the same here
                     # or the web client hides file videos for subjects.

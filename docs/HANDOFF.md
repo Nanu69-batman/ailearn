@@ -120,6 +120,7 @@ There is no `/demo` page.
     order against the real model once per instance. `tests/test_embedder_batching.py`
     covers the batching, the alignment guards, the pooling fallback, the quota pacing
     and the backoff.
+- **Progressive ingest.** `POST /courses/{id}/ingest` takes `mode=full|stream` (default `full`; 422 otherwise; video files only, YouTube unchanged). Windows are 120 s; `stream` does the first 3 then stops partial; `POST /courses/{id}/resources/{rid}/position {t_ms}` queues the next window when `t_ms + 120 s >= frontier` (statuses queued/running/idle/ready; 409 if the media file is gone). Job payload adds `mode, processed_through_ms, duration_ms, windows_done, windows_total`. A window yielding zero chunks cannot advance the frontier. Tests: `tests/test_progressive_ingest.py`.
 
 ## 6. Bugs found and fixed — do not reintroduce
 

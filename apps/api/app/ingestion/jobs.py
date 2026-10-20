@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import logging
 import re
 import threading
@@ -113,14 +114,53 @@ STAGE_EMBEDDING = "embedding"
 #: ``run_ingest`` -- and threading one through every ingest entry point would
 #: change five public signatures for a progress string. One process-global,
 #: set for the duration of ``run_ingest``, is the honest cost.
-_ACTIVE_JOB: dict[str, str] = {}
+#:
+#: Backed by a ContextVar (each worker thread runs in its own context via
+#: ``asyncio.to_thread``), so concurrent window jobs cannot misattribute
+#: stage/embedding progress. The dict-like facade keeps older callers working.
+_ACTIVE_JOB_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "ingest_active_job_id", default=None
+)
+
+
+class _ActiveJob:
+    def get(self, key: str, default=None):
+        return (_ACTIVE_JOB_ID.get() or default) if key == "job_id" else default
+
+    def __setitem__(self, key: str, value: str) -> None:
+        if key == "job_id":
+            _ACTIVE_JOB_ID.set(value)
+
+    def pop(self, key: str, default=None):
+        if key == "job_id":
+            previous = _ACTIVE_JOB_ID.get()
+            _ACTIVE_JOB_ID.set(None)
+            return previous or default
+        return default
+
+
+_ACTIVE_JOB = _ActiveJob()
 
 
 def note_stage(stage: str, **fields) -> None:
     """Record ``stage`` on the in-flight ingest job, if there is one."""
-    job_id = _ACTIVE_JOB.get("job_id")
+    job_id = _ACTIVE_JOB_ID.get()
     if job_id:
         set_stage(job_id, stage, **fields)
+
+
+def note_progress(**fields) -> None:
+    """Merge ``fields`` into the in-flight job's detail without changing stage."""
+    job_id = _ACTIVE_JOB_ID.get()
+    if not job_id:
+        return
+    try:
+        with _LOCK:
+            job = _JOBS.get(job_id)
+            if job is not None:
+                job.detail = {**(job.detail or {}), **fields}
+    except Exception:  # progress is a courtesy
+        log.debug("could not record progress for job %s", job_id, exc_info=True)
 
 
 def set_stage(job_id: str, stage: str, **fields) -> None:
@@ -154,8 +194,13 @@ def embedding_progress(job_id: str):
     """
 
     def _sink(done: int, total: int) -> None:
+        # Resolve the job from the calling thread's context first, so a sink
+        # installed by one job cannot publish into another concurrent job.
         set_stage(
-            job_id, STAGE_EMBEDDING, embedded=done, embedding_total=total
+            _ACTIVE_JOB_ID.get() or job_id,
+            STAGE_EMBEDDING,
+            embedded=done,
+            embedding_total=total,
         )
 
     previous = embedder_mod.set_embedding_progress(_sink)
@@ -493,6 +538,181 @@ def ingest_media(
     return report
 
 
+#: Progressive ingest. A window is a whole number of visual frame intervals so
+#: frame indices partition cleanly across windows.
+WINDOW_MS = 120_000
+INITIAL_WINDOWS = 3
+LOOKAHEAD_MS = 120_000
+assert WINDOW_MS % round(visual_mod.FRAME_INTERVAL_S * 1000) == 0
+
+INGEST_MODES = ("full", "stream")
+
+
+def window_bounds(duration_ms: int) -> list[tuple[int, int]]:
+    """Consecutive ``[start, end)`` windows covering ``[0, duration_ms)`` exactly."""
+    return [
+        (s, min(s + WINDOW_MS, duration_ms)) for s in range(0, max(duration_ms, 0), WINDOW_MS)
+    ]
+
+
+def ingest_media_windows(
+    path: str | Path,
+    *,
+    course_id: str,
+    resource_id: str,
+    video_id: str | None = None,
+    with_visual: bool = True,
+    max_visual_frames: int | None = None,
+    title: str | None | object = _UNSET,
+    mode: str = "full",
+    start_window: int | None = None,
+    n_windows: int | None = None,
+    on_window_done=None,
+) -> dict:
+    """Windowed video ingest: each window is queryable as soon as it is written.
+
+    ``mode="full"`` loops every window from ``start_window`` (default 0);
+    ``mode="stream"`` does ``n_windows`` (default :data:`INITIAL_WINDOWS`) and
+    leaves the resource partial. Per window: transcribe + visual over
+    ``[s, e)``, build chunks with window-safe ordinals, clamp to ``e`` (never
+    past the window, never past the file), stamp ``processed_through_ms`` and
+    ``duration_ms``, delete any prior chunks inside ``[s, e]`` so a re-run
+    leaves no stale chunks, then add. The strict ``end_ms <= T`` gate is not
+    touched here. ``on_window_done(index)`` is called after each window is
+    written.
+    """
+    if mode not in INGEST_MODES:
+        raise ValueError(f"unknown ingest mode {mode!r}")
+    path = Path(path)
+    duration_ms = media_duration_ms(path)
+    if duration_ms is None:
+        raise ValueError(
+            f"cannot determine duration of {path.name}; refusing to ingest "
+            "time-gated content without an authoritative timeline"
+        )
+    resolved_title = _resolve_title(path, title)
+    bounds = window_bounds(duration_ms)
+    first = start_window or 0
+    if n_windows is None and mode == "stream":
+        n_windows = INITIAL_WINDOWS
+    selected = bounds[first:] if n_windows is None else bounds[first : first + n_windows]
+
+    store = _store()
+    processed = selected[0][0] if selected else 0
+    note_progress(
+        mode=mode, duration_ms=duration_ms, processed_through_ms=processed,
+        windows_done=0, windows_total=len(selected),
+    )
+    audio_chunks = visual_chunks = total_chunks = 0
+    warnings: list[str] = []
+    signals: dict = {}
+    v_status: list[str] = []
+    v_cov: list[float] = []
+    v_span: list[float] = []
+    v_expected = v_described = 0
+    max_end = 0
+    for done, (s, e) in enumerate(selected):
+        note_stage(STAGE_TRANSCRIBING)
+        transcript, window_signals = audio_mod.transcribe(
+            path, duration_ms=duration_ms, start_ms=s, end_ms=e
+        )
+        signals = window_signals
+        visual: list[visual_mod.VisualSegment] = []
+        if with_visual:
+            note_stage(STAGE_DESCRIBING)
+            try:
+                report_v = visual_mod.extract_visual_pass(
+                    str(path), duration_ms=duration_ms,
+                    max_frames=max_visual_frames, start_ms=s, end_ms=e,
+                )
+            except Exception as exc:  # noqa: BLE001 - visual is additive to audio
+                log.warning("visual extraction failed for %s [%d,%d): %s", path.name, s, e, exc)
+                warnings.append(f"visual extraction failed: {type(exc).__name__}: {exc}")
+                report_v = visual_mod.VisualPassReport(
+                    expected_indices=visual_mod.window_frame_indices(
+                        duration_ms, start_ms=s, end_ms=e
+                    ),
+                    duration_ms=duration_ms,
+                    failures=[f"{type(exc).__name__}: {exc}"],
+                )
+            visual = report_v.segments
+            warnings.extend(report_v.warnings)
+            v_status.append(report_v.status)
+            v_cov.append(report_v.coverage_pct)
+            v_span.append(report_v.span_pct)
+            v_expected += len(report_v.expected_indices)
+            v_described += len(report_v.covered_indices)
+
+        chunks = build_chunks(
+            resource_id=resource_id, course_id=course_id, source_type="video",
+            transcript=transcript, visual=visual, video_id=video_id,
+            title=resolved_title, index_offset=window_index_offset(s),
+            max_chunks=window_max_chunks(s, e),
+        )
+        chunks = _clamp_to_duration(chunks, duration_ms)
+        bounded: list[Chunk] = []
+        for chunk in chunks:
+            # A window never claims content beyond its own end.
+            if chunk.start_ms is not None and chunk.start_ms >= e:
+                continue
+            if chunk.end_ms is not None and chunk.end_ms > e:
+                chunk.end_ms = e
+            if (
+                chunk.start_ms is not None
+                and chunk.end_ms is not None
+                and chunk.end_ms <= chunk.start_ms
+            ):
+                continue
+            chunk.metadata["processed_through_ms"] = min(e, duration_ms)
+            chunk.metadata["duration_ms"] = duration_ms
+            bounded.append(chunk)
+        if not bounded:
+            log.warning("window [%d,%d) of %s produced no chunks", s, e, resource_id)
+        note_stage(STAGE_EMBEDDING)
+        store.delete_resource_range(resource_id, s, e)
+        written = store.add(bounded)
+        total_chunks += written
+        audio_chunks += sum(1 for c in bounded if c.metadata.get("kind") == "transcript")
+        visual_chunks += sum(1 for c in bounded if c.metadata.get("kind") == "visual")
+        max_end = max([max_end, *(c.end_ms or 0 for c in bounded)])
+        processed = min(e, duration_ms)
+        note_progress(
+            mode=mode, duration_ms=duration_ms, processed_through_ms=processed,
+            windows_done=done + 1, windows_total=len(selected),
+        )
+        if on_window_done is not None:
+            try:
+                on_window_done(first + done)
+            except Exception:
+                log.warning("on_window_done failed", exc_info=True)
+
+    if not with_visual:
+        visual_status = "skipped"
+    else:
+        visual_status = (
+            "complete" if all(x == "complete" for x in v_status)
+            else next(x for x in v_status if x != "complete")
+        )
+    return {
+        "mode": mode,
+        "processed_through_ms": processed,
+        "windows_done": len(selected),
+        "windows_total": len(selected),
+        "audio_chunks": audio_chunks,
+        "visual_chunks": visual_chunks,
+        "total_chunks": total_chunks,
+        "duration_ms": duration_ms,
+        "max_end_ms": max_end,
+        "audio_signals": signals,
+        "visual_status": visual_status,
+        "visual_expected_frames": v_expected,
+        "visual_described_frames": v_described,
+        "visual_coverage_pct": round(sum(v_cov) / len(v_cov), 1) if v_cov else 0.0,
+        "visual_span_pct": round(sum(v_span) / len(v_span), 1) if v_span else 0.0,
+        "warnings": warnings,
+    }
+
+
 def ingest_document(
     path: str | Path,
     *,
@@ -720,6 +940,11 @@ def job_payload(job: IngestJob) -> dict:
     if job.stage is not None:
         payload["stage"] = job.stage
     for key in ("embedded", "embedding_total"):
+        if detail.get(key) is not None:
+            payload[key] = detail[key]
+    for key in (
+        "mode", "processed_through_ms", "duration_ms", "windows_done", "windows_total"
+    ):
         if detail.get(key) is not None:
             payload[key] = detail[key]
     if detail.get("warnings"):

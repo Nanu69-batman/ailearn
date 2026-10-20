@@ -858,7 +858,7 @@ def _fake_ingest_recording_title(wired, monkeypatch):
         wired.add(chunks)
         return {"total_chunks": len(chunks)}
 
-    monkeypatch.setattr(router_mod, "ingest_media", fake_ingest)
+    monkeypatch.setattr(router_mod, "ingest_media_windows", fake_ingest)
     return captured
 
 

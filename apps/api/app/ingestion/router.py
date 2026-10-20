@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import re
 import shutil
+import threading
 import uuid
 from pathlib import Path
 from typing import Annotated
@@ -26,11 +27,14 @@ from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.ingestion.jobs import (
+    INGEST_MODES,
+    LOOKAHEAD_MS,
     MAX_UPLOAD_BYTES,
+    WINDOW_MS,
     get_job,
     ingest_document,
     ingest_image,
-    ingest_media,
+    ingest_media_windows,
     ingest_youtube,
     job_payload,
     new_job,
@@ -184,7 +188,15 @@ async def ingest_file(
     # auto-attached to the subject on success. Omitted -> byte-identical
     # behaviour to before.
     subject_id: Annotated[str | None, Form()] = None,
+    # "full" (default) ingests every window in one job; "stream" ingests only
+    # the first INITIAL_WINDOWS and leaves the rest to /position. Video files
+    # only: documents and images ignore it. YouTube ingest is unchanged.
+    mode: Annotated[str, Form()] = "full",
 ) -> dict:
+    if mode not in INGEST_MODES:
+        raise HTTPException(
+            status_code=422, detail="mode must be 'full' or 'stream'"
+        )
     try:
         source_type = source_type_for(
             file.filename or "", content_type=file.content_type
@@ -231,9 +243,15 @@ async def ingest_file(
 
     if source_type == "video":
         def work() -> dict:
-            report = ingest_media(
+            report = ingest_media_windows(
                 target, course_id=target_course_id, resource_id=resource_id,
-                title=original_name,
+                title=original_name, mode=mode,
+                # Stream: attach as soon as the first window is queryable.
+                on_window_done=(
+                    (lambda i: _attach_to_subject(subject, resource_id) if i == 0 else None)
+                    if mode == "stream"
+                    else None
+                ),
             )
             _attach_to_subject(subject, resource_id)
             return report
@@ -335,6 +353,84 @@ async def list_resources(course_id: str) -> dict:
         if asset is not None:
             entry["asset_name"] = asset.name
     return {"resources": resources}
+
+
+class PositionRequest(BaseModel):
+    t_ms: int = Field(ge=0)
+
+
+#: Serialises "is a window running? -> queue one" so two rapid /position calls
+#: cannot both queue a job for the same window. In-flight state itself is
+#: derived from the job registry (any pending/processing job for the resource).
+_POSITION_LOCK = threading.Lock()
+
+
+def _running_job_for(resource_id: str):
+    from app.ingestion import jobs as jobs_mod
+
+    with jobs_mod._LOCK:
+        for job in jobs_mod._JOBS.values():
+            if job.resource_id == resource_id and job.status in ("pending", "processing"):
+                return job
+    return None
+
+
+@router.post("/courses/{course_id}/resources/{resource_id}/position")
+async def report_position(
+    course_id: str, resource_id: str, body: PositionRequest
+) -> dict:
+    """Playhead report: top up the next window when the learner nears the frontier.
+
+    Stateless: the frontier and duration come from chunk metadata, so this
+    keeps working after a restart. Idempotent: at most one job per resource.
+    """
+    from app.retrieval import registry
+    from app.subjects.store import resource_exists
+
+    if not _SAFE_RESOURCE_ID.fullmatch(resource_id) or not resource_exists(
+        resource_id, course_id
+    ):
+        raise HTTPException(
+            status_code=404,
+            detail=f"unknown resource {resource_id} in course {course_id}",
+        )
+    store = registry.get_shared_store()
+    info = store.processing_frontier(resource_id) or {}
+    frontier = info.get("processed_through_ms")
+    duration = info.get("duration_ms")
+    out = {"processed_through_ms": frontier, "duration_ms": duration}
+    if frontier is None or duration is None or frontier >= duration:
+        return {"status": "ready", **out}
+    if body.t_ms + LOOKAHEAD_MS < frontier:
+        return {"status": "idle", **out}
+
+    with _POSITION_LOCK:
+        running = _running_job_for(resource_id)
+        if running is not None:
+            return {"status": "running", "job_id": running.job_id, **out}
+        asset = resolve_asset(resource_id)
+        if asset is None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"cannot process more of {resource_id}: its media file is not on disk",
+            )
+        title = None
+        try:
+            for entry in store.resources(course_id):
+                if entry.get("id") == resource_id:
+                    title = entry.get("title")
+        except Exception:
+            log.debug("title lookup failed for %s", resource_id, exc_info=True)
+        job = new_job(course_id, resource_id)
+
+        def work() -> dict:
+            return ingest_media_windows(
+                asset, course_id=course_id, resource_id=resource_id, title=title,
+                mode="stream", start_window=frontier // WINDOW_MS, n_windows=1,
+            )
+
+        schedule(job, work)
+    return {"status": "queued", "job_id": job.job_id, **out}
 
 
 @router.delete("/courses/{course_id}/resources/{resource_id}")
