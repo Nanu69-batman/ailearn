@@ -29,7 +29,8 @@ answers with a parallel array of embeddings. Two separate mistakes made a
    253 sequential round trips at roughly 1.5s each. That is the stall in the
    ingest log.
 2. The quota is metered in *texts* per minute, not HTTP calls, so that
-   per-chunk fallback also spent the whole minute budget on round trips.
+   per-chunk fallback was also spending the whole minute budget on round
+   trips.
 
 With one ``Content`` per text (:func:`contents_for`) the same chunks go out
 in three round trips. What remains is the provider's quota, which no amount
@@ -127,18 +128,20 @@ def contents_for(texts: list[str]) -> list:
 #   a protocol limit, not a quota one.
 # * A second 100-text call five seconds later is rejected with ``429
 #   RESOURCE_EXHAUSTED`` and a "retry in ~35s" hint.
-# * 55 calls of *two* texts each over 58 seconds -- 110 texts, 57 HTTP calls
-#   per minute -- all succeed. So the meter counts *texts*, not HTTP calls.
+# * 55 calls of *two* texts each, spread over a minute -- 110 texts -- all
+#   succeed. So the meter counts *texts*, not HTTP calls: a batch is not one
+#   request, and batching does not buy extra quota.
 # * 87 single-text calls in 95 seconds (55 texts/min) never trip it.
-# * Draining the bucket with 100 texts and then asking for one more succeeds
-#   about a second later, at a refill rate of 100 texts/minute.
+# * Draining the window with 100 texts and then asking for one more succeeds
+#   about a second later -- a refill rate of 100 texts/minute.
 #
-# Together those say: a token bucket of 100 texts, refilled continuously at
-# 100 texts/minute. Modelling it locally is what lets a 253-chunk ingest
-# finish in the quota's own time instead of stalling in a 60-second backoff
-# after every call that arrived too eagerly.
+# The meter is therefore a *window of 100 texts per minute*, and a request for
+# more texts than the window holds is refused outright -- the batch is not
+# partially served. Modelling that window locally is what lets a 253-chunk
+# ingest finish in the quota's own time instead of colliding with it and being
+# thrown into a 60-second backoff after every call that arrived too eagerly.
 
-#: Texts the provider allows per minute, and the size of its bucket.
+#: Texts the provider allows per minute.
 QUOTA_TEXTS_PER_MINUTE = 100
 QUOTA_WINDOW_SECONDS = 60.0
 
@@ -170,13 +173,13 @@ def _quota_per_minute() -> int:
 class _TextQuota:
     """A token bucket modelling the provider's per-minute *text* quota.
 
-    The bucket starts full (a fresh key has its whole minute available) and
-    refills continuously at the configured rate. Callers ask how much is
-    available, take what they need, and sleep for the rest.
+    The bucket holds :data:`QUOTA_TEXTS_PER_MINUTE` texts and refills
+    continuously at the same rate. Callers *take* the texts they are about to
+    send, which blocks until the bucket can cover them.
 
     Process-global on purpose: the quota belongs to the API key, not to an
-    embedder instance, and the store creates one embedder per process while
-    the retrieval path creates one per request.
+    embedder instance, and the store creates one embedder per process while the
+    retrieval path creates one per request.
     """
 
     def __init__(
@@ -197,7 +200,7 @@ class _TextQuota:
 
     @property
     def capacity(self) -> float:
-        """How many texts the bucket can hold at once."""
+        """How many texts the bucket holds at once."""
         return self._capacity
 
     def available(self) -> float:
@@ -339,8 +342,9 @@ class GeminiEmbedder:
     #: trips instead of two hundred and fifty-three.
     BATCH_SIZE = 100
 
-    #: Width every returned vector must have. A vector of another width is not
-    #: a slow answer, it is an unindexable one (see :mod:`app.config`).
+    #: Width the configured model is expected to return. A vector of another
+    #: width is not a slow answer, it is an unindexable one (see
+    #: :mod:`app.config`).
     EMBED_WIDTH = GEMINI_EMBED_DIM
 
     #: Attempts and backoff tuned to *this* quota, which measures texts per
@@ -401,27 +405,16 @@ class GeminiEmbedder:
             return []
         self._verify_order_once(len(texts))
         out: list[list[float]] = []
+        if report_progress:
+            # Publish the denominator first, so a caller watching a long
+            # embedding phase sees "0/253" rather than nothing at all.
+            self._progress(0, len(texts))
         for start in range(0, len(texts), self.BATCH_SIZE):
             batch = texts[start : start + self.BATCH_SIZE]
             out.extend(self._embed_batch_checked(batch, offset=start))
             if report_progress:
                 self._progress(len(out), len(texts))
         return out
-
-    def _await_quota(self, texts: int) -> None:
-        """Sleep until the modelled quota can cover ``texts``.
-
-        The wait is for the *whole* batch: a partial batch would either
-        overrun the bucket (a 429, and a 429 may cost the texts it was
-        refused for) or leave the batch split across two round trips for no
-        gain.
-        """
-        waited = embedding_quota().take(texts)
-        if waited > 0:
-            log.info(
-                "embedding quota: waited %.1fs for %d text(s) of headroom",
-                waited, texts,
-            )
 
     def _verify_order_once(self, n_texts: int) -> None:
         """Prove once per instance that a batch's ``i``-th vector is text ``i``.
@@ -438,8 +431,9 @@ class GeminiEmbedder:
         possible (measured mutual cosine 0.53, against 1.0 for a perfect
         match), so a swapped response cannot be mistaken for a correct one.
 
-        Skipped when there is nothing to compare (a single-text query), and
-        skipped again next time so a later batch still gets checked. Raises
+        Skipped when there is nothing to compare (a single-text query). The
+        flag is deliberately *not* set in that case, so a later batch on the
+        same instance still gets checked. Raises
         :class:`EmbeddingAlignmentError` on disagreement.
         """
         if self._order_checked or n_texts < 2:
@@ -502,15 +496,7 @@ class GeminiEmbedder:
         vectors = self._embed_batch(batch)
         got, want = len(vectors), len(batch)
         if got == want:
-            for vector in vectors:
-                if len(vector) != self.EMBED_WIDTH:
-                    raise EmbeddingAlignmentError(
-                        f"embed_content returned a vector of width "
-                        f"{len(vector)}, expected {self.EMBED_WIDTH} (batch "
-                        f"starting at offset {offset}). Refusing to index: a "
-                        f"wrong-width vector cannot be compared with the "
-                        f"chunks it would be attached to."
-                    )
+            self._check_widths(vectors, offset=offset)
             return vectors
         if want > 1 and got == 1:
             log.warning(
@@ -524,6 +510,27 @@ class GeminiEmbedder:
             f"(batch starting at offset {offset}). Refusing to index: pairing "
             f"them positionally would attach wrong vectors to wrong chunks."
         )
+
+    def _check_widths(self, vectors: list[list[float]], *, offset: int) -> None:
+        """Every vector in a batch must be the same width, and the right one.
+
+        A ragged response cannot be zipped against chunks without silently
+        truncating the shorter vectors -- a corrupt index that raises nothing.
+        """
+        widths = {len(v) for v in vectors}
+        if len(widths) > 1:
+            raise EmbeddingAlignmentError(
+                f"embed_content returned vectors of mixed widths {sorted(widths)} "
+                f"(batch starting at offset {offset}). Refusing to index: a "
+                f"ragged response cannot be zipped against chunks."
+            )
+        if widths and widths != {self.EMBED_WIDTH}:
+            raise EmbeddingAlignmentError(
+                f"embed_content returned vectors of width {widths.pop()}, "
+                f"expected {self.EMBED_WIDTH} (batch starting at offset "
+                f"{offset}). Refusing to index: a wrong-width vector cannot "
+                f"be compared with the chunks it would be attached to."
+            )
 
     def _embed_single(self, text: str) -> list[float]:
         """One text, one vector -- the per-text fallback, with its own check."""
@@ -566,20 +573,27 @@ class GeminiEmbedder:
         rest of that batch's texts unembedded and silently short-index them.
         Backoff semantics are :mod:`app.ingestion.backoff`'s, unchanged.
 
-        The quota is reserved *before* the request goes out, so the wait
-        happens here rather than as a 429-then-backoff later. A request the
-        provider refuses still costs quota, so a 429 mid-batch leaves the
-        bucket short; the backoff covers that, and the next batch waits for
-        the refill.
+        The quota is reserved before each *attempt*, not once per call: a
+        refused request still costs the texts it was refused for, so the next
+        attempt has to wait for those to come back.
         """
-        self._await_quota(len(batch))
         return backoff_mod.call_with_retry(
-            lambda: self._embed_once(batch),
+            lambda: self._attempt(batch),
             what=f"embed_content({self._model}, {len(batch)} text(s))",
             max_attempts=self.EMBED_MAX_ATTEMPTS,
             backoff_s=self.EMBED_BACKOFF_S,
             backoff_cap_s=self.EMBED_BACKOFF_CAP_S,
         )
+
+    def _attempt(self, batch: list[str]) -> list[list[float]]:
+        """One quota-paced attempt at a batch."""
+        waited = embedding_quota().take(len(batch))
+        if waited > 0:
+            log.info(
+                "embedding quota: waited %.1fs for %d text(s) of headroom",
+                waited, len(batch),
+            )
+        return self._embed_once(batch)
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         """Embed a document set: batched, quota-paced, and progress-reported.
@@ -594,9 +608,9 @@ class GeminiEmbedder:
     def embed_query(self, text: str) -> list[float]:
         """Embed one query string.
 
-        Not paced: a query is one text and the caller is waiting on it, so it
-        goes straight out and takes the provider's answer for it. It still
-        counts against the modelled quota, because it really does consume it.
+        A query is one text, so it never waits on the quota bucket for long,
+        but it is paced like everything else: it consumes a text of the same
+        window an ingest is drawing from.
         """
         vectors = self._embed([text], report_progress=False)
         return vectors[0]
