@@ -213,8 +213,13 @@ flowchart TD
   without calling a tool, it gets one retry with `tool_choice="required"`. If it
   used tools but cited nothing, it gets one cite-repair turn. Only after that
   does the classic pipeline take over.
-- **Budgets.** At most 4 tool steps, 30 s per provider call and 60 s for the
-  whole loop. A reply cut off at the token limit has any unfinished
+- **Prefetch, then one call.** The server runs the read the model would ask
+  for first (`search_lesson` for a question, `get_lesson_content(0, T)` for a
+  summary or quiz) through the same gates, and hands it over as that tool's
+  result. The model then answers in one call, which on the free endpoint is
+  the difference between one slow round trip and four.
+- **Budgets.** At most 2 model calls (the answer, plus one cite-repair turn),
+  30 s per provider call and 60 s for the whole loop. A reply cut off at the token limit has any unfinished
   `[chunk_id=...` removed and asks the learner to say "continue".
 - **Without the agent**, a regex intent router (`app/chat/intent.py`) keeps
   the classic path from going wrong:
