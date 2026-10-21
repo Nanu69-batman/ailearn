@@ -269,6 +269,29 @@ class LessonAgent:
         except ValueError as exc:
             raise AgentUnavailableError("openrouter returned non-JSON") from exc
 
+    async def complete_text(self, system: str, user_prompt: str, *, json_mode: bool = False) -> str:
+        """One plain completion on the agent's model: no tools, no history."""
+        payload = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0.4,
+            "max_tokens": 4096,
+            "reasoning": {"effort": "low", "exclude": True},
+        }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        data = await self._transport(payload)
+        try:
+            text = data["choices"][0]["message"]["content"] or ""
+        except (KeyError, IndexError, TypeError) as exc:
+            raise AgentUnavailableError("openrouter reply had no message") from exc
+        if not text.strip():
+            raise AgentUnavailableError("openrouter reply was empty")
+        return text
+
     async def run(
         self,
         *,

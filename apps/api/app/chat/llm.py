@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -67,6 +68,21 @@ class DeterministicStubLLM:
             return LLMResult(text=REFUSAL_TEXT, cited_ids=[])
         if not passages:
             return LLMResult(text=REFUSAL_TEXT, cited_ids=[])
+        if mode == "quiz_json":
+            # A structured practice quiz (app.chat.quiz): one subjective
+            # question per passage, quoting it as the model answer.
+            questions = [
+                {
+                    "type": "subjective",
+                    "prompt": "Explain the key point of this part of the lesson.",
+                    "model_answer": p.text[:300],
+                    "key_points": [p.text[:80]],
+                    "explanation": "This is what the passage states.",
+                    "chunk_id": p.chunk_id,
+                }
+                for p in passages[:5]
+            ]
+            return LLMResult(text=json.dumps({"questions": questions}))
         if mode == "quiz":
             first = passages[0]
             lines = ["Quiz based on covered material:"]

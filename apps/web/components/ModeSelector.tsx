@@ -8,7 +8,6 @@ const MODES: Array<{ value: ChatMode; label: string; hint: string }> = [
   { value: "analogy", label: "Analogy", hint: "Concept via analogy" },
   { value: "summarize", label: "Summarize", hint: "Recap learned-so-far" },
   { value: "compare", label: "Compare", hint: "Two concepts side by side" },
-  { value: "quiz", label: "Quiz", hint: "Short check from covered content" },
 ];
 
 interface ModeSelectorProps {

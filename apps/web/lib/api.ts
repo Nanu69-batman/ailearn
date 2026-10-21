@@ -972,3 +972,81 @@ export function formatIngestError(err: unknown, label = "Video"): string {
   }
   return err instanceof Error ? err.message : "Unknown error";
 }
+
+// Practice quizzes — apps/api/app/chat/quiz.py
+//   POST /quiz        -> QuizResponse (MCQ/numerical answers included, shown
+//                        only after the learner submits; graded here, no LLM)
+//   POST /quiz/grade  -> QuizGrade    (subjective answers only)
+
+export type QuizQuestionType = "mcq" | "numerical" | "subjective";
+
+export interface QuizQuestion {
+  id: string;
+  type: QuizQuestionType;
+  prompt: string;
+  options?: string[] | null;
+  answer_index?: number | null;
+  answer?: number | null;
+  tolerance?: number | null;
+  unit?: string | null;
+  model_answer?: string | null;
+  key_points?: string[] | null;
+  explanation: string;
+  citation: Citation;
+}
+
+export interface QuizRequest {
+  session_id: string;
+  video_id?: string;
+  current_time_ms: number;
+  completed_resource_ids?: string[];
+  count?: number;
+  types?: QuizQuestionType[];
+  attempt?: number;
+}
+
+export interface QuizResponse {
+  questions: QuizQuestion[];
+  refused: boolean;
+  message?: string | null;
+  current_time_ms: number;
+}
+
+export interface QuizGrade {
+  score: number;
+  verdict: "correct" | "partial" | "incorrect";
+  feedback: string;
+  missing: string[];
+}
+
+function tokenHeader(sessionToken?: string): Record<string, string> | undefined {
+  const token = sessionToken ?? getStoredSessionToken() ?? undefined;
+  return token ? { "X-Session-Token": token } : undefined;
+}
+
+export function postQuiz(req: QuizRequest, sessionToken?: string): Promise<QuizResponse> {
+  return apiFetch<QuizResponse>("/quiz", {
+    method: "POST",
+    body: JSON.stringify(req),
+    headers: tokenHeader(sessionToken),
+  });
+}
+
+export function gradeQuizAnswer(
+  sessionId: string,
+  question: QuizQuestion,
+  answer: string,
+  sessionToken?: string,
+): Promise<QuizGrade> {
+  return apiFetch<QuizGrade>("/quiz/grade", {
+    method: "POST",
+    body: JSON.stringify({
+      session_id: sessionId,
+      prompt: question.prompt,
+      model_answer: question.model_answer ?? "",
+      key_points: question.key_points ?? [],
+      answer,
+    }),
+    headers: tokenHeader(sessionToken),
+  });
+}

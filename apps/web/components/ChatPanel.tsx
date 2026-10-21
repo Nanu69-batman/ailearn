@@ -22,6 +22,7 @@ import MessageList from "./MessageList";
 import ChatThreads from "./ChatThreads";
 import type { CitationBadgeProps } from "./CitationBadge";
 import ModeSelector from "./ModeSelector";
+import QuizPanel from "./QuizPanel";
 
 interface ChatPanelProps {
   sessionId: string;
@@ -114,6 +115,7 @@ export default function ChatPanel({
   const [historyState, setHistoryState] = useState<"loading" | "ready" | "error">("loading");
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [mode, setMode] = useState<ChatMode>("qa");
+  const [tab, setTab] = useState<"chat" | "quiz">("chat");
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -450,6 +452,38 @@ export default function ChatPanel({
         {offline && <span className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-xs text-amber-600">offline mock</span>}
       </div>
 
+      <div className="mb-3 flex rounded-xl bg-gray-100 p-1" role="tablist" aria-label="Tutor view">
+        {(["chat", "quiz"] as const).map((t) => (
+          <button
+            key={t}
+            type="button"
+            role="tab"
+            aria-selected={tab === t}
+            onClick={() => setTab(t)}
+            className={`flex-1 rounded-lg px-3 py-1.5 text-sm font-medium transition ${
+              tab === t ? "bg-white text-violet-700 shadow-sm" : "text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            {t === "chat" ? "Chat" : "Quiz"}
+          </button>
+        ))}
+      </div>
+
+      {/* Both stay mounted so switching tabs keeps the chat and an unfinished quiz. */}
+      <div className={tab === "quiz" ? "" : "hidden"} role="tabpanel" aria-label="Quiz">
+        <QuizPanel
+          sessionId={sessionId}
+          sessionToken={sessionToken}
+          videoId={videoId}
+          getCurrentTimeMs={getCurrentTimeMs}
+          completedResourceIds={completedResourceIds}
+          onSeek={onSeek}
+          openDoc={openDoc}
+          offline={offline || backendUnreachable}
+        />
+      </div>
+
+      <div className={tab === "chat" ? "contents" : "hidden"} role="tabpanel" aria-label="Chat">
       {!offline && !sessionExpired && (
         <ChatThreads
           threads={threads}
@@ -505,7 +539,7 @@ export default function ChatPanel({
           loading={sending}
           onSeek={onSeek}
           openDoc={openDoc}
-          onSuggest={(text) => void send(text)}
+          onSuggest={(text) => (/^quiz me/i.test(text) ? setTab("quiz") : void send(text))}
           suggestDisabled={sending || sessionExpired}
         />
       )}
@@ -578,6 +612,7 @@ export default function ChatPanel({
           </div>
         )}
       </form>
+      </div>
       <div ref={bottomRef} />
     </section>
   );

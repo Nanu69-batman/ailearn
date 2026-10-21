@@ -17,6 +17,7 @@ from app.chat.launch import (
     verify_lms_launch,
     verify_session_token,
 )
+from app.chat.quiz import GradeRequest, GradeResponse, QuizRequest, QuizResponse
 from app.chat.schemas import (
     ChatMode,
     ChatRequest,
@@ -571,3 +572,62 @@ async def post_chat_live_frame(
         completed_resource_ids=completed_resource_ids or [],
         live_frame=live,
     )
+
+
+# --- practice quizzes (app.chat.quiz) ----------------------------------------
+
+
+def get_quiz_service():
+    from app.chat.agent import get_agent
+    from app.chat.llm import get_llm_provider
+    from app.chat.quiz import QuizService
+    from app.ingestion.embedder import get_embedder
+
+    if _service_override is not None:
+        svc = _service_override
+        return QuizService(
+            store=svc._store, embedder=svc._embedder, llm=svc._llm,
+            sessions=svc._sessions, agent=svc._agent,
+        )
+    return QuizService(
+        store=get_vector_store(),
+        embedder=get_embedder(),
+        llm=get_llm_provider(),
+        sessions=session_store,
+        agent=get_agent(),
+    )
+
+
+def _quiz_upstream_error(exc: Exception) -> HTTPException:
+    log.error("quiz provider error: %s", f"{type(exc).__name__}: {exc}")
+    return HTTPException(status_code=502, detail="upstream provider error")
+
+
+@router.post("/quiz", response_model=QuizResponse)
+async def post_quiz(body: QuizRequest, request: Request) -> QuizResponse:
+    """A practice quiz on the open material up to T, plus materials marked done."""
+    if not _check_rate_limit(_client_ip(request)):
+        raise HTTPException(status_code=429, detail="rate limit exceeded")
+    _authed_session(body.session_id, request, body.session_token)
+    try:
+        return await get_quiz_service().make_quiz(body)
+    except SessionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="session not found") from exc
+    except QuotaExhaustedError:
+        raise
+    except (httpx.HTTPError, ConnectionError, TimeoutError, RuntimeError) as exc:
+        raise _quiz_upstream_error(exc) from exc
+
+
+@router.post("/quiz/grade", response_model=GradeResponse)
+async def post_quiz_grade(body: GradeRequest, request: Request) -> GradeResponse:
+    """Grade one subjective answer. MCQ and numerical are graded client-side."""
+    if not _check_rate_limit(_client_ip(request)):
+        raise HTTPException(status_code=429, detail="rate limit exceeded")
+    _authed_session(body.session_id, request, body.session_token)
+    try:
+        return await get_quiz_service().grade(body)
+    except QuotaExhaustedError:
+        raise
+    except (httpx.HTTPError, ConnectionError, TimeoutError, RuntimeError) as exc:
+        raise _quiz_upstream_error(exc) from exc
