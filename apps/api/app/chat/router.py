@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Annotated
@@ -539,8 +540,9 @@ async def post_chat_live_frame(
         )
 
     try:
-        description = describe_live_frame(
-            payload, resource_id=resource_id, at_ms=at_ms
+        # Blocking vision call (with retries): off the event loop.
+        description = await asyncio.to_thread(
+            describe_live_frame, payload, resource_id=resource_id, at_ms=at_ms
         )
     except LiveFrameUnavailable as exc:
         # An unreadable frame is an honest failure, never a fallback description

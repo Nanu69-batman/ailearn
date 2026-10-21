@@ -24,6 +24,7 @@ pipeline -- so the agent can make answers better, never less safe.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -390,7 +391,8 @@ class LessonAgent:
                 except (TypeError, ValueError):
                     return "Error: from_seconds and to_seconds must be numbers."
                 lo, hi = max(0, min(lo, hi)), max(lo, hi)
-                found = store.passages_between(
+                found = await asyncio.to_thread(
+                    store.passages_between,
                     course_id=course_id,
                     resource_scope=allowed,
                     current_time_ms=t_ms,

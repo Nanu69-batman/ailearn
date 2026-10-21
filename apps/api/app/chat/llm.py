@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import Sequence
@@ -198,7 +199,10 @@ class GeminiChatLLM:
                 )
         # Never log or echo the key; the client holds it in memory only.
         client = genai.Client(api_key=self._api_key)
-        resp = client.models.generate_content(
+        # The SDK call is blocking. On a worker thread, so a 20-40 s answer
+        # does not freeze every other request on the server meanwhile.
+        resp = await asyncio.to_thread(
+            client.models.generate_content,
             model=self._model,
             contents=user_prompt,
             config=types.GenerateContentConfig(
