@@ -15,6 +15,7 @@ PNG versions of every diagram on this page are in [diagrams/](diagrams/):
 | System overview | [0-system-overview.png](diagrams/0-system-overview.png) |
 | (a) Hosting topology | [1-hosting-topology.png](diagrams/1-hosting-topology.png) |
 | (b) Ingest pipeline | [2-ingest-pipeline.png](diagrams/2-ingest-pipeline.png) |
+| Inside the visual lane | [5-visual-lane.png](diagrams/5-visual-lane.png) |
 | (c) Question flow, agentic and classic | [3-question-flow.png](diagrams/3-question-flow.png) |
 | Inside the agentic tutor | [4-agentic-tutor.png](diagrams/4-agentic-tutor.png) |
 
@@ -110,6 +111,40 @@ How it works:
   (complete / partial / failed / skipped), `visual_coverage_pct` and warnings. A
   scanned PDF that could not be read reports `skipped` or `failed` with the reason.
   It never looks like an empty document that was read successfully.
+
+### Inside the visual lane
+
+Frames are not transcribed. Gemini's vision model *describes* each one in
+text, and that text is indexed like the transcript
+(`apps/api/app/ingestion/visual.py`).
+
+```mermaid
+flowchart TD
+  W["120 s window of video"] --> S["ffmpeg samples a frame every 4 s<br/>frame i covers [4i, 4i+4) s"]
+  S --> D{"Near-duplicate of the<br/>last KEPT frame?<br/>64x64 grayscale grid"}
+  D -->|"yes"| X["Not sent to the model.<br/>The kept frame's span is<br/>extended over it"]
+  D -->|"no"| R["Downscale to at most 768 px,<br/>JPEG quality 80"]
+  R --> B["Batch 8 frames per request.<br/>The model sees indices, never times"]
+  B --> P["Gemini describes each frame:<br/>equations, labels, slide titles,<br/>diagrams, colours"]
+  P --> CHK{"Index in the reply was<br/>actually sampled?"}
+  CHK -->|"no"| DROP["Dropped and recorded,<br/>never clamped or reassigned"]
+  CHK -->|"yes"| T["Times from arithmetic:<br/>start = 4i s, end = end of its span"]
+  P -->|"429 or empty reply"| RT["Paced 4 s between calls,<br/>bounded retry with backoff"]
+  RT -->|"still failing"| GAP["Gap recorded:<br/>visual_status = partial"]
+  X -.->|"lengthens the span"| T
+  T --> M["Merge 3 frames per chunk (12 s)<br/>end = latest frame end"]
+  M --> E["Embed and index<br/>with the transcript chunks"]
+```
+
+- **Cost:** a 655 s lecture samples 164 frames. That's 21 requests before
+  duplicates are skipped. Calls start at least 4 s apart, with up to 3 in
+  flight, to stay under the free tier's ~15 requests a minute.
+- **Strict timestamps:** a frame's time comes from its index, so a description
+  is gated exactly like a transcript passage. A merged chunk ends at its latest
+  frame, so it becomes answerable only after every frame in it has played.
+- **Live frames:** when a learner asks "what's on screen?", the player sends
+  the paused frame itself. It's described on the spot as a passage at exactly
+  T and never indexed.
 
 ## (c) Question flow
 
