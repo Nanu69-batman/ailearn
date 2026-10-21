@@ -1,4 +1,4 @@
-"""Safety coverage for the two core product invariants (AGENTS.md Rule 6).
+"""Safety coverage for the two core product invariants (submission/ARCHITECTURE.md, "Safety invariants").
 
     Rule 6.1  strict timestamp gate -- a video passage is only ever usable
               when ``end_ms IS NOT NULL AND end_ms <= T``.
@@ -416,7 +416,7 @@ def test_gate_uses_end_ms_never_start_ms():
     This chunk *looks* covered -- it starts before the learner reached T. But
     its tail runs past T, so quoting it leaks material the learner has not
     reached. A gate relaxed to ``start_ms`` measured a 48% spoiler rate
-    (AGENTS.md Rule 6.1, ADR-002 section 5.1).
+    (submission/eval-results/baseline.json).
     """
     t = TWENTY_MIN_MS
     spanning = _video(

@@ -223,9 +223,6 @@ All deliverables are in [submission/](submission/), and its
 | Evaluation results and testing | [submission/EVALUATION.md](submission/EVALUATION.md); raw results in `submission/eval-results/` |
 | Deployment instructions | [submission/DEPLOYMENT.md](submission/DEPLOYMENT.md) |
 
-[PROJECT.md](PROJECT.md) has the feature inventory, the decision log and more
-detailed Mermaid flows.
-
 ## Known limitations
 
 - **YouTube ingest is unreliable when hosted.** YouTube often blocks caption and

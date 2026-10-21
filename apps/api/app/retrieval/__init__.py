@@ -17,8 +17,8 @@ A video/visual passage is usable only when::
 Two rules the implementation must not lose:
 
 1. The comparison is on ``end_ms``, never ``start_ms``. A gate relaxed to
-   ``start_ms`` was measured at a **48% spoiler rate** (AGENTS.md Rule 6.1,
-   ADR-002 §5.1).
+   ``start_ms`` was measured at a **48% spoiler rate**
+   (``submission/eval-results/baseline.json``).
 2. ``end_ms IS NULL`` is **EXCLUDE**, deliberately -- not an UNKNOWN
    three-valued-logic accident. ADR-002 §5.1 explicitly forbids a future
    "simplification" that drops the null check. Chroma cannot express

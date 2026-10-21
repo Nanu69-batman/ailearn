@@ -6,8 +6,7 @@ learner may see at time `T`, which citations are real, and when to refuse. The
 browser plays media, captures a frame when asked, and posts requests.
 
 Related: [API.md](API.md) (routes), [DEPLOYMENT.md](DEPLOYMENT.md)
-(how to stand this up), [../PROJECT.md](../PROJECT.md) (more detailed flows and the
-decision log).
+(how to stand this up).
 
 PNG versions of every diagram on this page are in [diagrams/](diagrams/):
 

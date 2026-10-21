@@ -11,8 +11,7 @@ Live contract for the FastAPI backend in `apps/api/`.
 
 The web client reads the base URL from `NEXT_PUBLIC_API_URL`.
 `apps/web/lib/api.ts` is the other half of the contract, so a change to one
-needs a matching change to the other. Context: [ARCHITECTURE.md](ARCHITECTURE.md),
-[../PROJECT.md](../PROJECT.md).
+needs a matching change to the other. Context: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 Conventions: JSON unless a route says `multipart/form-data`; errors use the
 FastAPI shape `{"detail": "…"}`; `current_time_ms` is the learner clock in ms,
