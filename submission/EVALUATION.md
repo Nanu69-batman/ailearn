@@ -14,7 +14,7 @@ Anything not measured is marked as such.
 | Citation accuracy | **1.0** | same |
 | Retrieval accuracy (answerable questions) | **0.9375** (15/16) | same |
 | Retrieval latency, in process | p50 **8.3 ms**, p95 **10.0 ms** | same |
-| Backend tests | **479 collected, 479 passed, 0 failed**, no collection errors | `pytest`, 2026-10-21 |
+| Backend tests | **517 collected, 517 passed, 0 failed**, no collection errors | `pytest`, 2026-10-21 |
 | Frontend type check | pass | `npx tsc --noEmit` |
 | Frontend contract check | PASS | `npm run contract-check` |
 
@@ -119,10 +119,10 @@ Commands run on 2026-10-21 from `apps/api` with Python 3.14:
 
 ```text
 $ python -m pytest --co -q -p no:warnings | tail -1
-479 tests collected in 1.47s
+517 tests collected
 
 $ python -m pytest -q -p no:warnings
-479 passed in 109.85s (0:01:49)
+517 passed in 104.69s (0:01:44)
 ```
 
 The suite **collects with no errors**. This is checked separately because a
@@ -136,7 +136,10 @@ directory. They need no network and no keys.
 |---|---|
 | **Timestamp gate and leakage** (`end_ms <= T`, null end excluded, never `start_ms`, gate inside the store query, recency never widens the pool) | `test_chat_safety.py`, `test_store.py`, `test_live_frame.py` (live frame sits at exactly T), `test_visual.py` (frame times from index arithmetic, not the model), `test_duration.py` (duration is a safety input) |
 | **Citations and refusal** (unknown id refused, uncited answer refused after one repair retry, bunched markers validated, citation modality never defaulted, honest refusal texts, grounded vs supplemental) | `test_chat_safety.py`, `test_ta_behaviour.py`, `test_processing_frontier.py` (honest "not processed yet") |
-| **Agentic tutor** (the range tool never returns past the playhead, even for "the whole video"; greetings and "who are you" are conversational with no tools and no citations; an invented citation or a provider failure falls back to the classic pipeline; an uncited subject answer is never served; one required retry when the tools are skipped; no general knowledge for a quiz; no raw citation markers in a cut-off reply; intent classification) | `test_agent.py` |
+| **Agentic tutor** (the range tool never returns past the playhead, even for "the whole video"; greetings and "who are you" are conversational with no tools and no citations; an invented citation or a provider failure falls back to the classic pipeline; an uncited subject answer is never served; one required retry when the tools are skipped; no general knowledge for a quiz; no raw citation markers in a cut-off reply; intent classification; the lesson read is prefetched through the same gates and answered in one call; small talk is never prefetched; a shortened citation id is restored only when unambiguous) | `test_agent.py` |
+| **Materials marked done** (read in full beside the open material, the open video keeps its playhead gate, a null end stays excluded, a material not marked done or outside the grant is never read) | `test_completed_materials.py` |
+| **Practice quizzes** (same gates as chat, every question cites a passage that was sent or is dropped, per-type validation, MCQ shuffle keeps the answer, the watched lesson is read in order and mostly speech, no LLM call when nothing is covered, written answers graded with a key-point fallback, routes need the session token, the fast model first with the agent as fallback) | `test_quiz.py` |
+| **Several chats per session** (separate histories, create / rename / delete, the main chat is emptied not removed, unknown chat is 404) | `test_chat_threads.py` |
 | **Pinecone store** (same gated set as Chroma, strict-T filter sent to Pinecone, Python re-check holds if the server filter leaks, deletes by exact resource id) | `test_pinecone_store.py` |
 | **Hosted config** (with no local Whisper fallback, a failed transcription fails the window instead of silently skipping speech) | `test_hosted_config.py` |
 | **Scope, session and launch auth** (scope intersected and never widened, `scope_empty` separate from low evidence, frame outside the grant gets 403, session token checked) | `test_chat_safety.py`, `test_live_frame.py`, `test_subjects.py` (`None` vs `[]` scope) |
@@ -160,8 +163,8 @@ Run from `apps/web` on 2026-10-21:
 | `npx tsc --noEmit` | **pass** (exit 0) | Types across the Next.js app |
 | `npm run contract-check` | **PASS** | That `lib/api.ts` matches the API response shapes, that KaTeX CSS is loaded, that no message path bypasses the Markdown renderer, and that `rehype-raw` is not imported anywhere (model HTML stays inert) |
 
-`npm run build` was not run for this report, because it conflicts with the
-running dev server. The last recorded build passed.
+`npm run build` passed on 2026-10-21 after the quiz, chats and document viewer
+changes.
 
 ---
 
@@ -217,9 +220,21 @@ near-duplicate frames, downscaled JPEG frames (at most 768 px, quality 80), disk
 caches for billable calls, transcription offloaded to Groq, and upload caps on
 the hosted deployment.
 
+Tutor and quiz latency, single requests, 2026-10-21 (the free models vary a
+lot from call to call; one run each unless stated):
+
+| Request | Before | After | Basis |
+|---|---|---|---|
+| Chat answer, Nemotron agent | 29-52 s locally, 92 s once on the hosted API (up to 4 model calls per answer) | 4.8-19 s locally when the agent answers (lesson read prefetched, one call) | measured |
+| Whole quiz (5 questions) | 135 s and failed on the hosted API (agent model first) | **16.8 s** on the hosted API (Gemini first) | measured |
+| Greeting ("hi") | 1.5 s hosted | unchanged | measured |
+
+When OpenRouter's free daily limit (50 requests) is spent, or the agent's reply
+fails validation, the Gemini pipeline answers instead, which adds 15-20 s.
+
 **Not measured:** end-to-end time per window in stream mode on the real stack,
-retrieval accuracy with the Gemini embedder, chat latency with the real LLM under
-load, concurrent users, and anything on the hosted deployment.
+retrieval accuracy with the Gemini embedder, chat latency under load, and
+concurrent users.
 
 ---
 

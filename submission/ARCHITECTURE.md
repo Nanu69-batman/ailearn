@@ -18,29 +18,31 @@ PNG versions of every diagram on this page are in [diagrams/](diagrams/):
 | Inside the visual lane | [5-visual-lane.png](diagrams/5-visual-lane.png) |
 | (c) Question flow, agentic and classic | [3-question-flow.png](diagrams/3-question-flow.png) |
 | Inside the agentic tutor | [4-agentic-tutor.png](diagrams/4-agentic-tutor.png) |
+| (d) Practice quizzes | [6-practice-quiz.png](diagrams/6-practice-quiz.png) |
+| (e) Lesson page: viewers, cited passages, chats | [7-lesson-page.png](diagrams/7-lesson-page.png) |
 
 ## (a) Hosting topology
 
 ```mermaid
 flowchart LR
-  B["Browser<br/>video player + chat"]
+  B["Browser<br/>video player, PDF / slide viewer,<br/>chat + quiz"]
   subgraph VER["Vercel"]
     W["Next.js 15 web app"]
     L["Server route<br/>signs LMS launch (HMAC)"]
   end
   subgraph RN["Render (Docker, free tier)"]
     A["FastAPI API<br/>chat, ingest, retrieval"]
-    D[("Container disk<br/>media and documents")]
+    D[("Container disk<br/>media and documents<br/>(demo video + PDF baked in)")]
   end
   P[("Pinecone serverless<br/>vectors + Inference embeddings")]
   O["OpenRouter API<br/>Nemotron tutor agent"]
-  G["Gemini API<br/>fallback LLM, vision"]
+  G["Gemini API<br/>quiz writer, fallback LLM, vision"]
   Q["Groq API<br/>whisper-large-v3-turbo"]
 
   B --> W
   W --> L
   L -->|"POST /lms/session (signed)"| A
-  B -->|"POST /chat, /chat/live-frame,<br/>/courses/{id}/ingest, /position"| A
+  B -->|"POST /chat, /chat/live-frame, /quiz,<br/>/sessions/{id}/threads,<br/>/courses/{id}/ingest, /position"| A
   B -->|"GET /resources/{id}/media (Range)"| A
   A --> P
   A --> D
@@ -54,9 +56,9 @@ flowchart LR
 | Web (Next.js 15) | Vercel, root dir `apps/web` | Static and edge-friendly. The only server-side code is the launch-signing route, which keeps `LMS_LAUNCH_SECRET` out of the browser |
 | API (FastAPI) | Render web service, Docker, free tier (`render.yaml`, `apps/api/deploy/render/Dockerfile`) | Vercel cannot host it: the function bundle limit is 250 MB, while faster-whisper, PyAV and chromadb are larger, and ingest jobs run in the background for minutes. One process, because jobs and sessions live in memory |
 | Vectors | Pinecone serverless (`VECTOR_STORE=pinecone`) | Render's free disk is wiped on restart, so the index lives outside the container. The same `build_where` scope + strict-T filter runs in Pinecone, and every match is re-checked against it in Python. Local dev uses Chroma on disk (`VECTOR_STORE=chroma`) |
-| Files | Container disk | A hackathon trade-off. The demo video is baked into the image, so it is always there. Files uploaded on the hosted site last until the next restart. The media route serves them with HTTP Range |
+| Files | Container disk | A hackathon trade-off. The demo video and the UNIT-1 PDF notes are baked into the image, so they are always there. Files uploaded on the hosted site last until the next restart. The media route serves them with HTTP Range |
 | Tutor agent | OpenRouter, `nvidia/nemotron-3.5-super-vl:free` | Free, reliable tool calling with a 1M context. Optional: with no `OPENROUTER_API_KEY`, the classic pipeline answers every question |
-| LLM / vision | Gemini `gemini-3.5-flash-lite` | Fallback answers and frame descriptions |
+| LLM / vision | Gemini `gemini-3.5-flash-lite` | Quiz writing (about 15 s for a whole quiz), fallback answers and frame descriptions. Blocking SDK calls run on a worker thread, so a slow answer never stalls other requests |
 | Embeddings | Pinecone Inference `llama-text-embed-v2` (1024-d) hosted; Gemini `gemini-embedding-2` (3072-d) locally | Pinecone's free plan meters 5M tokens a month, not Gemini's ~1,000 texts a day. The store refuses to start if the index width and the embedder disagree |
 | Speech to text | Groq `whisper-large-v3-turbo`, with local faster-whisper as fallback | About 3 s per 2-minute window on Groq, against 14-18 s for local `tiny` (measured, see [EVALUATION.md](EVALUATION.md)). This is what makes a small CPU host workable |
 
@@ -158,32 +160,32 @@ flowchart TD
   Q["Learner pauses at T, asks a question"] --> S["POST /chat<br/>session_id + session_token + current_time_ms"]
   S --> AUTH{"Session exists and<br/>HMAC token valid?"}
   AUTH -->|"no"| X401["401 / 404"]
-  AUTH -->|"yes"| SC["Scope = granted resource_scope<br/>INTERSECTED with focused video"]
+  AUTH -->|"yes"| SC["Scope = granted resource_scope<br/>INTERSECTED with the open material (gated at T)<br/>+ grant INTERSECT materials marked done (read in full)"]
   SC --> EMPTY{"Scope empty?"}
   EMPTY -->|"yes"| RS["Refuse, scope_empty=true"]
   EMPTY -->|"no"| HAS{"Agent configured?<br/>(OPENROUTER_API_KEY)"}
 
   subgraph AGENT["Agentic path: Nemotron via OpenRouter"]
-    AG["Malai tutor agent<br/>chooses its tools"]
-    AG -->|"search_lesson / get_lesson_content"| GT["Time-gated tools<br/>end_ms <= T, scope filter"]
-    GT --> AG
+    PF["Prefetch: server runs the lesson read<br/>(search, or 0..T for summaries)"]
+    PF --> AG["Malai tutor agent<br/>answers from it, one call"]
+    PF -.->|"same gates"| GT["Time-gated tools<br/>end_ms <= T, scope filter"]
     AG --> AV{"Reply valid?<br/>every cited id returned<br/>by a tool this turn"}
   end
 
   subgraph CLASSIC["Classic pipeline: Gemini"]
     INT{"Intent router"}
     INT -->|"small talk"| CONV["Conversational reply<br/>no retrieval, no citations"]
-    INT -->|"question / quiz / overview"| QRY["Vector query restricted to scope<br/>filter: end_ms <= T (in the query)"]
+    INT -->|"question / quiz / overview"| QRY["Vector query restricted to scope<br/>filter: end_ms <= T (in the query)<br/>+ own query over materials marked done"]
     QRY --> PY["Python re-check: drop any passage<br/>with end_ms missing or > T"]
     PY --> REC["Optional recency re-rank<br/>(gated pool only)"]
     REC --> LLM["Gemini answers from surviving passages only"]
     LLM --> CIT{"At least one citation, and every<br/>cited id in the retrieved set?"}
   end
 
-  HAS -->|"yes"| AG
+  HAS -->|"yes"| PF
   HAS -->|"no"| INT
   AV -->|"yes"| OKA["Answer: grounded (cited),<br/>conversational or supplemental"]
-  AV -->|"no: unknown id, uncited,<br/>timeout, quota, provider error"| INT
+  AV -->|"no: unknown id, uncited,<br/>rate limit (429), provider error"| INT
   CIT -->|"no"| RF["Refuse, no citations"]
   CIT -->|"yes"| OK["Answer + validated citations<br/>(ms range, transcript or visual)"]
 ```
@@ -194,25 +196,29 @@ The agent is `app/chat/agent.py`, and its tool loop works like this:
 
 ```mermaid
 flowchart TD
-  Q2["Question at T, scope already intersected"] --> AG["Nemotron, Malai tutor persona<br/>OpenAI-format tool calling"]
-  AG -->|"search_lesson(query)"| T1["Gated vector search, k=6<br/>end_ms <= T, scope filter"]
-  AG -->|"get_lesson_content(from, to)"| T2["Passages in a time range<br/>clamped to min(to, T), in lesson order"]
-  T1 --> AG
-  T2 --> AG
+  Q2["Question at T, scope already intersected"] --> PRE{"Small talk?"}
+  PRE -->|"no"| PF["Prefetch through call_tool:<br/>search_lesson(question), or<br/>get_lesson_content(0, T) for summary / quiz"]
+  PRE -->|"yes"| AG
+  PF -->|"handed over as that tool's result"| AG["Nemotron, Malai tutor persona<br/>answers in one call (tool_choice=none)"]
+  PF -.-> T1["Gated vector search, k=6<br/>end_ms <= T, scope filter<br/>+ materials marked done"]
+  PF -.-> T2["Passages in a time range<br/>clamped to min(to, T), in lesson order"]
   AG --> VAL{"Validate the final reply"}
   VAL -->|"no tools, no subject words<br/>(hi, who are you)"| CONV["mode=conversational<br/>no citations"]
-  VAL -->|"every cited id was returned<br/>by a tool this turn"| GR["mode=grounded<br/>validated citations"]
+  VAL -->|"every cited id was returned this turn<br/>(a shortened id restored only if unambiguous)"| GR["mode=grounded<br/>validated citations"]
+  VAL -->|"uncited"| REP["One cite-repair turn"]
+  REP --> VAL
   VAL -->|"labelled Not from the video<br/>(qa mode only)"| SUP["mode=supplemental<br/>no citations"]
-  VAL -->|"unknown id, uncited, timeout,<br/>quota, provider error"| FB["Classic pipeline above"]
+  VAL -->|"unknown id, still uncited,<br/>rate limit (429), provider error"| FB["Classic pipeline above"]
 ```
 
 - **The model chooses tools; code chooses what it sees.** Both tools run through
   the same scope and strict-T gate as the classic path. A request for
   `get_lesson_content(0, 99999)` returns only what has played.
-- **Repairs before falling back.** If the model answers a subject question
-  without calling a tool, it gets one retry with `tool_choice="required"`. If it
-  used tools but cited nothing, it gets one cite-repair turn. Only after that
-  does the classic pipeline take over.
+- **Repairs before falling back.** An answer that cites nothing gets one
+  cite-repair turn. A citation the model shortened (`c3_83fd4ed4` for
+  `res_…_c3_83fd4ed4`) is restored only when exactly one passage returned this
+  turn ends with it; anything else is an unknown id and falls back. Only after
+  that does the classic pipeline take over.
 - **Prefetch, then one call.** The server runs the read the model would ask
   for first (`search_lesson` for a question, `get_lesson_content(0, T)` for a
   summary or quiz) through the same gates, and hands it over as that tool's
@@ -294,6 +300,41 @@ flowchart TD
   lecturer said. Reading the watched range in order and balancing speech
   against screen keeps theory questions in the mix.
 
+## (e) Lesson page: viewers, cited passages, chats
+
+The lesson page shows the open material beside the tutor. Clicking a citation
+shows exactly what it cites.
+
+```mermaid
+flowchart TD
+  CL["Course checklist<br/>materials marked done"]
+  CH["Chat tab<br/>several chats: new, switch, rename, delete"]
+  QZ["Quiz tab"]
+  CL -->|"completed_resource_ids"| API["POST /chat, /quiz<br/>server intersects with the grant"]
+  CH --> API
+  QZ --> API
+  API --> CIT["Answer or quiz question<br/>with validated citations"]
+  CIT -->|"click: video passage"| SEEK["Seek to start_ms, draw the cited<br/>span as a band on the scrub bar"]
+  CIT -->|"click: live frame"| LIVE["Seek to the captured moment"]
+  CIT -->|"click: PDF page of the open document"| HL["Open the page, highlight the cited text<br/>(matched on letters and digits)"]
+  SEEK --> V["Video player"]
+  LIVE --> V
+  HL --> DOCV["PDF viewer (react-pdf)<br/>slides via Office Online, images inline"]
+```
+
+- **Several chats per session.** Each chat (`thread_id`) has its own history;
+  the original one is `main`. The chat service itself is unaware of chats: the
+  router sets the current chat per request and the message store keys history by
+  it.
+- **Open material plus what is marked done.** A chat reads the open material up
+  to the playhead, plus every material ticked done in the course checklist (read
+  in full), and nothing else from the course. The done list is intersected with
+  the session grant, so it can never reach a material the session was not given.
+- **Cited passages.** Each citation carries the passage text. The PDF viewer
+  finds it on the cited page by comparing letters and digits only, so line
+  breaks, hyphenation and ligatures do not stop the match (93 of the UNIT-1
+  PDF's 97 chunks match in full, the rest partly, none missed).
+
 ## Safety invariants
 
 These are product properties, and the tests pin them. They are not tuning
@@ -303,7 +344,7 @@ knobs.
 |---|---|---|
 | 1 | **Strict timestamp gate: keep a video passage only when `end_ms <= T`.** Never `start_ms <= T`. A missing `end_ms` excludes the passage. The rule is enforced inside the vector query and re-checked in Python. | A passage that *starts* before `T` can still *end* after it, and its tail is a spoiler. An earlier eval with the loose rule measured a 48% production-gap rate. The current eval measures 0 leakage. |
 | 2 | **Citations are validated against the retrieved set.** Uncited answers and unknown ids are refused. | A model can cite a plausible-looking id that was never retrieved. Passing that through presents an ungrounded answer as grounded. |
-| 3 | **Scope is intersected, never replaced.** The focused video narrows the granted `resource_scope`; it cannot widen it. | An earlier version replaced the scope with the focused id, which let a client read outside its grant. |
+| 3 | **Scope is intersected, never replaced.** The focused video narrows the granted `resource_scope`; it cannot widen it. Materials marked done are intersected with the grant the same way, and a quiz question citing anything outside the passages sent is dropped. | An earlier version replaced the scope with the focused id, which let a client read outside its grant. |
 | 4 | **Plausible-looking ids are not real ids.** Subjects refuse to attach a resource id that the index cannot vouch for. | A scope such as `["res_video"]` once matched no indexed chunk and silently refused every question. |
 | 5 | **Timestamps come from signals, not from the model.** ASR segment times and frame-index arithmetic set the times; a live frame sits at exactly `T`. | A model that labels a frame from 650 s as "index 5" would otherwise store it at 20 s, which is a spoiler leak. |
 | 6 | **Signed launches in production.** `LMS_LAUNCH_SECRET=dev-secret` with `ALLOW_UNSIGNED_LAUNCH=true` is for a localhost demo only. Hosted, the Vercel server route signs launches and the API runs with `ALLOW_UNSIGNED_LAUNCH=false`. | The launch carries the learner, the course and the allowed resources. Unsigned, anyone could grant themselves any scope. |

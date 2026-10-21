@@ -18,6 +18,14 @@ notes. The notes are not time-gated, because a document has no timeline.
 As ingested in development, the video produced
 **89 transcript chunks** (`0..656380 ms`) and **174 visual chunks** from **164
 sampled frames** (`0..652000 ms`), with visual coverage at **100%**.
+The PDF produced **97 chunks** with page numbers. On the hosted demo both files
+are baked into the API image and already indexed, as `res_2e629d682a3d` (video)
+and `res_7c1f4a92d0e5` (PDF) in the **Engineering Mathematics** subject, so
+nothing needs uploading to try them.
+
+The PDF also exercises the cited-passage highlight: the viewer finds each cited
+chunk's text on its page by comparing letters and digits only. Of the 97
+chunks, 93 match in full, 4 partly, and none are missed.
 
 ## Ingesting the sample data
 
@@ -32,7 +40,10 @@ sampled frames** (`0..652000 ms`), with visual coverage at **100%**.
    the first windows, or **Process everything now** to ingest it all in one job.
    Upload.
 4. Upload `test-data/UNIT-1-001.pdf` to the same subject.
-5. Open the video, play it, pause, and ask questions in the chat panel.
+5. Open the video, play it, pause, and ask questions in the chat panel, or
+   open the **Quiz** tab for a practice quiz on what you've watched.
+6. Tick the PDF as done in the course checklist to let the chat and quiz read
+   it beside the video.
 
 Accepted types: video (for example `.mp4`), `.pdf`, `.pptx`, `.png`, `.jpg`,
 `.jpeg`, `.webp`. Hosted uploads are limited by `MAX_UPLOAD_MB` and

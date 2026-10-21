@@ -12,10 +12,12 @@ Malai Pioneer is a lecture-aware AI tutor. A student watches a recorded lecture,
 pauses at any moment, and asks a question. The tutor answers only from what has
 already played: every passage it may use must end at or before the playhead, so
 it never spoils what comes next. Every answer cites the exact moments it relied
-on, and clicking a citation seeks the video there. When the lecture has not yet
-covered the question, the tutor says so instead of inventing an answer. It reads
-the speech, what is written on the screen, and any PDF, PowerPoint or image
-attached to the subject.
+on, and clicking a citation seeks the video there or opens the PDF page with
+the cited text highlighted. When the lecture has not yet covered the question,
+the tutor says so instead of inventing an answer. It reads the speech, what is
+written on the screen, and any PDF, PowerPoint or image attached to the subject.
+A Quiz tab writes practice quizzes (multiple choice, numerical, written) on what
+has been watched.
 
 ## Live demo
 
@@ -28,11 +30,14 @@ attached to the subject.
 | Health check | `https://malai-pioneer-api.onrender.com/health` returns `{"status": "ok"}` |
 
 Suggested walkthrough: open `https://ailearn-theta.vercel.app`, go to the dashboard and open the
-**Engineering Mathematics** subject, which already holds `Partial-derivatives.mp4`.
+**Engineering Mathematics** subject, which already holds `Partial-derivatives.mp4`
+and the `UNIT-1-001.pdf` notes.
 Play it and pause at about 0:30, then ask "What is the final worked example at
 the end of the video?" The tutor says the lesson hasn't got there yet, and every
 citation ends before 0:30. Pause at about 5:00 and ask "What equation is on
-screen right now?" It answers from the moments just before the playhead.
+screen right now?" It answers from the moments just before the playhead; click
+a citation to see its span on the scrub bar. Then open the **Quiz** tab, or
+open the PDF and click a page citation to see the cited text highlighted.
 
 The API runs on Render's free tier, so the first request after about 15 idle
 minutes takes up to a minute while it wakes.
@@ -45,8 +50,9 @@ minutes takes up to a minute while it wakes.
   with `get_lesson_content(from, to)`, for example to write exam questions on
   everything watched so far. It never decides what it may see: both tools clamp
   to the playhead and the granted scope in code, and every id it cites must be
-  one a tool returned in that turn. Greetings and "who are you" get a short
-  conversational reply with no citations. Any agent failure, such as a quota
+  one a tool returned in that turn. The server prefetches the lesson read
+  before the first call, so most answers take one model call. Greetings and
+  "who are you" get a short conversational reply with no citations. Any agent failure, such as a quota
   limit, a timeout or an invented citation, falls back to the classic pipeline
   below. The tutor never serves an unchecked answer.
 - **No spoilers, enforced by the retrieval layer.** A video passage is kept only
@@ -85,6 +91,17 @@ minutes takes up to a minute while it wakes.
   source. Multiple-choice and numerical answers are checked in the browser
   with no model call; only written answers are graded by the model
   ([diagram](submission/ARCHITECTURE.md#d-practice-quizzes)).
+- **Shows exactly what it cites.** Clicking a citation from the open PDF opens
+  that page with the cited text highlighted. A video citation seeks there and
+  draws the cited span as a band on the scrub bar; a live-frame citation seeks
+  to the captured moment. PDFs, slides and images open in viewers beside the
+  tutor.
+- **Reads the open material plus what you finished.** A chat reads the open
+  material up to the playhead, plus every material ticked done in the course
+  checklist (in full), and nothing else. The done list is intersected with the
+  session grant, so it can never widen what a learner may read.
+- **Several chats per lesson.** Start, switch, rename and delete chats; each
+  keeps its own history.
 - **Math renders properly.** Answers are Markdown with LaTeX (KaTeX). Raw HTML
   from the model is never rendered.
 - **Says when it did less than asked.** Every ingest reports `visual_status`,
@@ -105,23 +122,23 @@ flowchart LR
   A --> Q["Groq Whisper<br/>speech to text"]
 ```
 
-More diagrams (hosting, ingest pipeline, question flow, practice quizzes) and the safety
+More diagrams (hosting, ingest pipeline, question flow, practice quizzes, lesson page) and the safety
 invariants are in [submission/ARCHITECTURE.md](submission/ARCHITECTURE.md).
 
 ## Tech stack
 
 | Layer | Technology |
 |---|---|
-| Web | Next.js 15, React 19, Tailwind CSS v3, react-markdown + remark-math + rehype-katex |
+| Web | Next.js 15, React 19, Tailwind CSS v3, react-markdown + remark-math + rehype-katex, react-pdf (PDF viewer), Office Online embed (slides) |
 | API | Python, FastAPI, Pydantic v2, uvicorn |
 | Retrieval | Pinecone serverless (hosted) or Chroma on disk (local), LangChain text splitters |
 | Tutor agent | `nvidia/nemotron-3.5-super-vl:free` via OpenRouter, OpenAI-format tool calling |
-| LLM (fallback pipeline) | Gemini `gemini-3.5-flash-lite` |
+| LLM (quizzes, fallback pipeline) | Gemini `gemini-3.5-flash-lite` |
 | Embeddings | Hosted: Pinecone Inference `llama-text-embed-v2` (1024-d), 96 texts per call, repeated queries cached. Local default: Gemini `gemini-embedding-2` (3072-d) |
 | Vision | Gemini (frame and image descriptions, live frames) |
 | Speech to text | Groq `whisper-large-v3-turbo`, with local faster-whisper as fallback |
 | Media | PyAV (decode, duration, frame sampling), pypdf, python-pptx |
-| File storage | Local disk (the demo video is baked into the hosted image) |
+| File storage | Local disk (the demo video and PDF are baked into the hosted image) |
 | Hosting | Vercel (web), Render Docker free tier (API, `render.yaml`) |
 | Tests | pytest (backend), `tsc --noEmit` and a contract check (frontend) |
 
@@ -175,7 +192,8 @@ To load the sample lecture, see [submission/DATASET.md](submission/DATASET.md).
 | `PINECONE_EMBED_MODEL` | `llama-text-embed-v2` | Pinecone Inference model (1024-d) |
 | `OPENROUTER_API_KEY` | empty | Enables the agentic tutor. With no key, every question goes through the classic Gemini pipeline |
 | `OPENROUTER_MODEL` | `nvidia/nemotron-3.5-super-vl:free` | Tutor model. It must support tool calling |
-| `AGENT_TOTAL_TIMEOUT_S` | `60` | Time budget for the whole tool loop. After it, the classic pipeline answers |
+| `AGENT_MAX_STEPS` | `2` | Model calls per agent answer (the lesson read is prefetched; the second call is for a cite repair) |
+| `AGENT_TIMEOUT_S` / `AGENT_TOTAL_TIMEOUT_S` | unset | Optional time limits per agent call / per answer. Unset means a slow free-tier reply is waited for, not cut off |
 | `GROQ_API_KEY` | empty | Hosted transcription. With no key, local faster-whisper is used |
 | `GROQ_TRANSCRIBE_MODEL` | `whisper-large-v3-turbo` | Groq model |
 | `CORS_ORIGIN` | `http://localhost:3000` | The single allowed browser origin (`https://ailearn-theta.vercel.app` when hosted) |
@@ -251,15 +269,16 @@ All deliverables are in [submission/](submission/), and its
   subjects are mirrored to local files. Ingest job status and the in-flight
   window guard are lost on restart. Render's free disk is wiped on every
   restart and wake-up, so files uploaded on the hosted site disappear then
-  (their index entries stay in Pinecone). The demo video survives because it is
-  baked into the image. Moving this state out of the process (Redis or
+  (their index entries stay in Pinecone). The demo video and PDF survive
+  because they are baked into the image. Moving this state out of the process (Redis or
   Postgres) is the first step toward concurrent users.
 - **State-changing routes (upload, delete, subjects, position) have no auth.**
-  Only chat and history are bound to a signed session. Adding auth there is a
+  Only chat, history, chats and quizzes are bound to a signed session. Adding auth there is a
   planned follow-up.
-- **The free tutor model is rate-limited.** OpenRouter's free tier allows about
-  50 requests a day, and each question uses 2 or 3. Agent answers take about
-  5-20 s. When the limit is reached, answers come from the Gemini pipeline.
+- **The free tutor model is rate-limited.** OpenRouter's free tier allows 50
+  requests a day (1,000 with $10 of credit). Each question now uses 1, or 2 when
+  a citation repair is needed. Agent answers take about 5-20 s. When the limit
+  is reached, answers come from the Gemini pipeline, which adds 15-20 s.
 - **Small eval set, offline embedder.** The golden set has 25 items, and its
   numbers come from the offline hashing embedder, not Gemini. Concurrent load
   has not been measured. One 11-minute lecture has been exercised end to end.
