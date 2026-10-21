@@ -1,13 +1,15 @@
 "use client";
 
 import type { ChatMessage, Citation, MessageKind } from "../lib/api";
-import CitationBadge from "./CitationBadge";
+import CitationBadge, { type CitationBadgeProps } from "./CitationBadge";
 import MarkdownBody from "./MarkdownBody";
 
 interface MessageListProps {
   messages: ChatMessage[];
   loading: boolean;
   onSeek: (startMs: number) => void;
+  /** The PDF open beside the chat; its page citations become jump buttons. */
+  openDoc?: CitationBadgeProps["openDoc"];
   /** Sends a suggested prompt immediately (empty state only). */
   onSuggest?: (text: string) => void;
   /** Disables the suggestion chips, e.g. while a message is in flight. */
@@ -52,21 +54,29 @@ function KindPill({ kind }: { kind?: MessageKind }) {
   return null;
 }
 
-function Citations({ cites, onSeek }: { cites: Citation[]; onSeek: (ms: number) => void }) {
+function Citations({
+  cites,
+  onSeek,
+  openDoc,
+}: {
+  cites: Citation[];
+  onSeek: (ms: number) => void;
+  openDoc?: CitationBadgeProps["openDoc"];
+}) {
   if (cites.length === 0) return null;
   return (
     <div className="mt-3 border-t border-gray-200/70 pt-2">
       <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Sources</div>
       <div className="flex flex-wrap gap-1.5">
         {cites.map((c) => (
-          <CitationBadge key={c.chunk_id} citation={c} onSeek={onSeek} />
+          <CitationBadge key={c.chunk_id} citation={c} onSeek={onSeek} openDoc={openDoc} />
         ))}
       </div>
     </div>
   );
 }
 
-export default function MessageList({ messages, loading, onSeek, onSuggest, suggestDisabled }: MessageListProps) {
+export default function MessageList({ messages, loading, onSeek, openDoc, onSuggest, suggestDisabled }: MessageListProps) {
   if (messages.length === 0 && !loading) {
     return (
       <div className="mt-3 rounded-xl border border-dashed border-gray-300 p-5 text-center text-sm">
@@ -120,7 +130,7 @@ export default function MessageList({ messages, loading, onSeek, onSuggest, sugg
               <MarkdownBody text={m.content} />
               {/* Citations stay a SIBLING of the markdown tree, never inside it, so
                   the seek-on-click handlers survive markdown rendering. */}
-              <Citations cites={m.citations} onSeek={onSeek} />
+              <Citations cites={m.citations} onSeek={onSeek} openDoc={openDoc} />
             </div>
           </div>
         ),

@@ -1063,7 +1063,7 @@ if (landingLinks !== 1) {
 
   // (g) Citation chips must stay OUTSIDE the markdown tree or they lose their
   //     seek-on-click handlers.
-  const citesIdx = list.indexOf("<Citations cites={m.citations} onSeek={onSeek} />");
+  const citesIdx = list.indexOf("<Citations cites={m.citations} onSeek={onSeek}");
   if (citesIdx === -1) {
     fail("MessageList no longer renders <Citations> — citation chips are gone");
   } else if (bodyIdx !== -1 && citesIdx < bodyIdx) {

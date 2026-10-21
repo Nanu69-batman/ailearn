@@ -15,7 +15,9 @@ import { resourceMediaUrl, type CourseResource } from "@/lib/api";
 /** What the player can render for a given resource. */
 export type Selected =
   | { kind: "file"; resourceId: string; src: string; title: string }
-  | { kind: "pdf"; resourceId: string; title: string }
+  | { kind: "pdf"; resourceId: string; src: string | null; title: string }
+  | { kind: "pptx"; resourceId: string; src: string | null; title: string }
+  | { kind: "image"; resourceId: string; src: string; title: string }
   | { kind: "youtube"; resourceId: string; youtubeId: string; title: string };
 
 /**
@@ -58,13 +60,30 @@ export function toSelected(resource: CourseResource): Selected | null {
       title,
     };
   }
-  if (resource.type === "pdf") {
-    return { kind: "pdf", resourceId: resource.id, title };
+  // Documents stay openable without their file: the chat still answers from
+  // the indexed text, and the viewer says the original is gone.
+  if (resource.type === "pdf" || resource.type === "pptx") {
+    return {
+      kind: resource.type,
+      resourceId: resource.id,
+      src: resource.asset_name
+        ? resourceMediaUrl(resource.id, resource.asset_name)
+        : null,
+      title,
+    };
   }
   // Only an asset that still exists on disk gets a real stream URL. Without
   // this check we would point the player at a 404 and the browser would show
   // the last playable source (i.e. the wrong video).
   if (!resource.asset_name) return null;
+  if (resource.type === "image") {
+    return {
+      kind: "image",
+      resourceId: resource.id,
+      src: resourceMediaUrl(resource.id),
+      title,
+    };
+  }
   return {
     kind: "file",
     resourceId: resource.id,
@@ -78,9 +97,11 @@ export function resourceKindLabel(resource: CourseResource): string {
   const kind =
     resource.type === "pdf"
       ? "PDF"
-      : resource.type === "video"
-        ? "Video"
-        : resource.type;
+      : resource.type === "pptx"
+        ? "Slides"
+        : resource.type === "video"
+          ? "Video"
+          : resource.type;
   if (!kind) return "Unknown type";
   return resource.provider === "youtube" ? `${kind} · YouTube` : kind;
 }
@@ -88,6 +109,7 @@ export function resourceKindLabel(resource: CourseResource): string {
 export function resourceIcon(resource: CourseResource): string {
   if (resource.provider === "youtube") return "📺";
   if (resource.type === "image") return "🖼️";
+  if (resource.type === "pptx") return "📊";
   return resource.type === "pdf" ? "📄" : "▶";
 }
 

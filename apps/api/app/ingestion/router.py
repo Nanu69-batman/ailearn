@@ -614,6 +614,17 @@ async def stream_media(resource_id: str) -> FileResponse:
     return FileResponse(asset)
 
 
+@router.get("/resources/{resource_id}/media/{filename}")
+async def stream_media_named(resource_id: str, filename: str) -> FileResponse:
+    """Same asset, under a URL that ends in a file name.
+
+    External viewers (Office Online for slides) pick the format from the URL's
+    extension. ``filename`` is cosmetic: the file is still resolved from the
+    resource id alone, through :func:`resolve_asset`.
+    """
+    return await stream_media(resource_id)
+
+
 def clear_uploads() -> None:
     """Test helper: remove everything under the upload directory."""
     shutil.rmtree(UPLOAD_DIR, ignore_errors=True)

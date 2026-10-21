@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import VideoPlayer from "@/components/VideoPlayer";
+import DocumentViewer from "@/components/DocumentViewer";
 import YouTubePlayer, {
   type YouTubePlayerHandle,
 } from "@/components/YouTubePlayer";
@@ -203,6 +204,17 @@ export default function ContentPage() {
     [selected],
   );
 
+  /** A clicked page citation, for the PDF viewer. Nonce: same page re-jumps. */
+  const [pdfJump, setPdfJump] = useState<{ page: number; nonce: number } | null>(null);
+  const openDoc = useMemo(
+    () => ({
+      resourceId,
+      onOpenPage: (page: number): void =>
+        setPdfJump((prev) => ({ page, nonce: (prev?.nonce ?? 0) + 1 })),
+    }),
+    [resourceId],
+  );
+
   /**
    * Capture the frame the learner is looking at RIGHT NOW.
    *
@@ -386,7 +398,7 @@ export default function ContentPage() {
     );
   }
 
-  const isMedia = selected.kind !== "pdf";
+  const isMedia = selected.kind === "file" || selected.kind === "youtube";
   const doneCount = resources.filter((r) => completedIds.includes(r.id)).length;
 
   return (
@@ -469,19 +481,16 @@ export default function ContentPage() {
               onPauseAt={handlePauseAt}
               onTimeChange={onTimeChange}
             />
-          ) : selected.kind === "pdf" ? (
-            <div className="flex items-start gap-4 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm" role="note">
-              <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-violet-50 text-xl" aria-hidden="true">
-                📄
-              </span>
-              <div>
-                <h2 className="mb-1 text-lg font-semibold text-gray-900">{selected.title}</h2>
-                <p className="text-sm text-gray-500">
-                  This is a document resource — its questions are answered through
-                  the chat panel with page citations. Ask Malai a question.
-                </p>
-              </div>
-            </div>
+          ) : selected.kind === "pdf" ||
+            selected.kind === "pptx" ||
+            selected.kind === "image" ? (
+            <DocumentViewer
+              key={selected.resourceId}
+              kind={selected.kind}
+              src={selected.src}
+              title={selected.title}
+              jump={pdfJump}
+            />
           ) : (
             <VideoPlayer
               src={selected.src}
@@ -491,6 +500,13 @@ export default function ContentPage() {
             />
           )}
           </ImmersiveContext.Provider>
+          {!isMedia && !immersive && (
+            <p className="px-1 text-xs text-gray-500">
+              Malai answers from this {selected.kind === "pptx" ? "deck" : selected.kind === "image" ? "image" : "document"} with{" "}
+              {selected.kind === "pptx" ? "slide" : selected.kind === "image" ? "image" : "page"} citations
+              {selected.kind === "pdf" ? " — click one to open that page" : ""}.
+            </p>
+          )}
           {isMedia && !immersive && (
             <p className="px-1 text-xs text-gray-500">
               Malai answers only from what you&apos;ve watched so far. Click a
@@ -553,6 +569,7 @@ export default function ContentPage() {
             getCurrentTimeMs={getCurrentTimeMs}
             captureFrame={captureFrame}
             onSeek={handleSeek}
+            openDoc={selected.kind === "pdf" && selected.src ? openDoc : null}
             offline={offline}
             onRejoin={reset}
           />

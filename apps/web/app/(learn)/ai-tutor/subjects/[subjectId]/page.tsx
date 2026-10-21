@@ -126,8 +126,7 @@ export default function SubjectPage() {
   );
   /**
    * A completed file ingest is shown in the list, not navigated to: the
-   * player route renders video/pdf, so pushing an image or a PPTX there would
-   * drop the learner on a route that cannot show it.
+   * learner picks it from the list when they are ready to open it.
    */
   const handleFileIngested = useCallback(
     (file: IngestedFile): void => markAdded(file.resourceId),

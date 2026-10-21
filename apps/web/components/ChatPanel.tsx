@@ -13,6 +13,7 @@ import {
 } from "../lib/api";
 import { mockChatAnswer, mockHistory } from "../lib/fixtures";
 import MessageList from "./MessageList";
+import type { CitationBadgeProps } from "./CitationBadge";
 import ModeSelector from "./ModeSelector";
 
 interface ChatPanelProps {
@@ -28,6 +29,8 @@ interface ChatPanelProps {
    */
   captureFrame?: () => Promise<LiveFrameCapture | null>;
   onSeek: (startMs: number) => void;
+  /** The PDF open in the viewer; its page citations jump the viewer. */
+  openDoc?: CitationBadgeProps["openDoc"];
   offline: boolean;
   onRejoin?: () => void;
 }
@@ -69,6 +72,7 @@ export default function ChatPanel({
   getCurrentTimeMs,
   captureFrame,
   onSeek,
+  openDoc,
   offline,
   onRejoin,
 }: ChatPanelProps) {
@@ -352,6 +356,7 @@ export default function ChatPanel({
           messages={messages}
           loading={sending}
           onSeek={onSeek}
+          openDoc={openDoc}
           onSuggest={(text) => void send(text)}
           suggestDisabled={sending || sessionExpired}
         />

@@ -651,9 +651,14 @@ export interface CourseResource {
 }
 
 /** Per-resource media URL. Never share one demo URL across resources. */
-export function resourceMediaUrl(resourceId: string): string {
+/**
+ * `fileName` adds a cosmetic trailing segment (same asset, resolved from the
+ * id alone) for viewers that pick the format from the URL's extension.
+ */
+export function resourceMediaUrl(resourceId: string, fileName?: string): string {
   const base = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/$/, "");
-  return `${base}/resources/${encodeURIComponent(resourceId)}/media`;
+  const url = `${base}/resources/${encodeURIComponent(resourceId)}/media`;
+  return fileName ? `${url}/${encodeURIComponent(fileName)}` : url;
 }
 
 export interface CourseResourcesResponse {
