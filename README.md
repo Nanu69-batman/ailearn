@@ -47,7 +47,7 @@ minutes takes up to a minute while it wakes.
   when `end_ms <= T`, where `T` is the playhead. The filter is inside the vector
   query and is checked again in Python. A passage with no known end is dropped.
   The prompt does not decide this; retrieval does. Eval leakage rate: **0.0**
-  ([docs/EVALUATION.md](docs/EVALUATION.md)).
+  ([submission/EVALUATION.md](submission/EVALUATION.md)).
 - **Citations are checked, and clicking one seeks the video.** Every citation
   id the model returns is compared against the passages actually retrieved. An
   answer with no citation, or with an id that was not retrieved, is refused.
@@ -94,7 +94,7 @@ flowchart LR
 ```
 
 More diagrams (hosting, ingest pipeline, question flow) and the safety
-invariants are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+invariants are in [submission/ARCHITECTURE.md](submission/ARCHITECTURE.md).
 
 ## Tech stack
 
@@ -147,7 +147,7 @@ Open http://localhost:3000. API docs are at http://localhost:8123/docs.
 Locally, the vector store is Chroma under `apps/api/data/` and uploads are kept on
 disk, so no cloud account is needed beyond the Gemini key.
 
-To load the sample lecture, see [docs/DATASET.md](docs/DATASET.md).
+To load the sample lecture, see [submission/DATASET.md](submission/DATASET.md).
 
 ## Environment variables
 
@@ -199,38 +199,32 @@ npm run contract-check                    # client/server contract + rendering s
 ```
 
 Current results and what each test file protects are listed in
-[docs/EVALUATION.md](docs/EVALUATION.md).
+[submission/EVALUATION.md](submission/EVALUATION.md).
 
 ## Submission deliverables
+
+All deliverables are in [submission/](submission/), and its
+[index](submission/README.md) lists them.
 
 | BuildVerse requirement | Where |
 |---|---|
 | Hosted, working application | [Live demo](#live-demo): `https://ailearn-theta.vercel.app` |
 | Source code | This repository (`apps/api` backend, `apps/web` frontend) |
-| System architecture diagram | [Architecture](#architecture) above; full set in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| System architecture diagram | [submission/ARCHITECTURE.md](submission/ARCHITECTURE.md); PNGs in [submission/diagrams/](submission/diagrams/) |
 | README and setup | This file: [Quickstart](#quickstart-local), [Environment variables](#environment-variables) |
-| API documentation | [docs/api.md](docs/api.md); live Swagger UI at `/docs` |
-| Sample dataset | [docs/DATASET.md](docs/DATASET.md) and `test-data/` (lecture video and PDF notes), golden set in `docs/eval/` |
-| Evaluation results and testing | [docs/EVALUATION.md](docs/EVALUATION.md); raw results in `docs/eval-results/` |
-| Demo video | Script: [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md) |
-| Deployment instructions | [docs/deployment-guide.md](docs/deployment-guide.md) |
+| API documentation | [submission/API.md](submission/API.md); live Swagger UI at `/docs` |
+| Sample dataset | [submission/DATASET.md](submission/DATASET.md) and `test-data/` (lecture video and PDF notes); golden set in `submission/eval/` |
+| Evaluation results and testing | [submission/EVALUATION.md](submission/EVALUATION.md); raw results in `submission/eval-results/` |
+| Demo video | Script: [submission/DEMO_SCRIPT.md](submission/DEMO_SCRIPT.md) |
+| Deployment instructions | [submission/DEPLOYMENT.md](submission/DEPLOYMENT.md) |
 
-## Documentation
+## Further reading
 
 | Doc | Contents |
 |---|---|
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Hosting topology, ingest pipeline, question flow, safety invariants |
-| [docs/api.md](docs/api.md) | Every route: auth, request, response, error codes |
-| [docs/deployment-guide.md](docs/deployment-guide.md) | Step-by-step deployment: Pinecone, Render, Vercel, smoke test, rollback |
-| [docs/EVALUATION.md](docs/EVALUATION.md) | RAG evaluation results, test inventory, performance numbers |
-| [docs/DATASET.md](docs/DATASET.md) | Sample lecture, PDF and golden question set, and how to ingest them |
-| [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md) | Scene-by-scene script for the demo video |
 | [PROJECT.md](PROJECT.md) | Feature inventory, decision log, detailed Mermaid flows |
-| [docs/TECHNIQUES.md](docs/TECHNIQUES.md) | Techniques with measured timings |
-| [docs/SCALING_PLAN.md](docs/SCALING_PLAN.md) | Plan from one process to an LMS module with concurrent users |
-| [docs/HANDOFF.md](docs/HANDOFF.md) | Verified engineering state and gotchas |
-| [docs/TODO.md](docs/TODO.md) | Open tasks in priority order |
-| [docs/adr/](docs/adr/) | Architecture decision records |
+| [submission/TECHNIQUES.md](submission/TECHNIQUES.md) | Techniques with measured timings |
+| [submission/SCALING_PLAN.md](submission/SCALING_PLAN.md) | Plan from one process to an LMS module with concurrent users |
 
 ## Known limitations
 
@@ -249,10 +243,10 @@ Current results and what each test file protects are listed in
   restart and wake-up, so files uploaded on the hosted site disappear then
   (their index entries stay in Pinecone). The demo video survives because it is
   baked into the image. Moving this state out of the process is Phase A
-  of [docs/SCALING_PLAN.md](docs/SCALING_PLAN.md).
+  of [submission/SCALING_PLAN.md](submission/SCALING_PLAN.md).
 - **State-changing routes (upload, delete, subjects, position) have no auth.**
-  Only chat and history are bound to a signed session. See
-  [docs/TODO.md](docs/TODO.md).
+  Only chat and history are bound to a signed session. Adding auth there is a
+  planned follow-up.
 - **The free tutor model is rate-limited.** OpenRouter's free tier allows about
   50 requests a day, and each question uses 2 or 3. Agent answers take about
   5-20 s. When the limit is reached, answers come from the Gemini pipeline.

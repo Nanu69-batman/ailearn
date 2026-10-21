@@ -47,7 +47,7 @@ segment / page / slide, course `course_fixture`).
 | 7 | Elodea procedure, **exactly 5 ordered steps** |
 | 8 | Summary + quiz key A, C, B |
 
-## Golden-set design notes (`docs/eval/golden.jsonl`, 25 items)
+## Golden-set design notes (`submission/eval/golden.jsonl`, 25 items)
 
 - 6 `video_before`, 4 `video_later`, 4 `pdf`, 3 `ppt`, 3 `unanswerable`,
   3 `followup` (one chain: `eval-f1 → eval-f2 → eval-f3`), 2 `adversarial`.
@@ -70,9 +70,9 @@ segment / page / slide, course `course_fixture`).
 ### Baseline refresh — 2026-10-07
 
 Re-ran the harness offline after visual chunks landed and the focus path was
-added. `python -m app.eval.harness --golden ../../docs/eval/golden.jsonl --k 5`,
+added. `python -m app.eval.harness --golden ../../submission/eval/golden.jsonl --k 5`,
 `HashingEmbedder` + `InMemoryVectorStore`, no network, no Gemini call
-(`docs/eval-results/baseline-refresh.json`).
+(`submission/eval-results/baseline-refresh.json`).
 
 | Metric | Loose gate (2026-10-03) | Strict gate (2026-10-03) | Refresh (2026-10-07) |
 |---|---|---|---|

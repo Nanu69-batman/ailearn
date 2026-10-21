@@ -43,3 +43,6 @@ PPT_CONTENT.md
 
 # Local test videos (not part of the repo)
 test-data/Differential-equation-introduction-SnapYT.App.mp4
+
+# Agent-only working notes (handoff, TODO, research, ADRs); kept locally, not published
+docs/

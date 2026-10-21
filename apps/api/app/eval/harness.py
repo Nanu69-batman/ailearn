@@ -20,12 +20,12 @@ tuned against human relevance judgments. Likewise ``should_refuse`` here is a
 retrieval-score proxy, NOT the production LLM refusal path (prompt +
 allowlist + uncited-answer handling in ``app.chat.service``); treat
 ``refusal_correctness`` as a retrieval-gating signal only. See
-``docs/eval/threshold-note.md`` for a small threshold-sensitivity sweep.
+``submission/eval/threshold-note.md`` for a small threshold-sensitivity sweep.
 
 Usage (from ``apps/api``)::
 
     python -m app.eval.harness
-    python -m app.eval.harness --golden ../../docs/eval/golden.jsonl --k 5
+    python -m app.eval.harness --golden ../../submission/eval/golden.jsonl --k 5
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ GAP_MODE = "chroma"
 DEFAULT_K = 5
 DEFAULT_THRESHOLD = 0.08
 GOLDEN_DEFAULT = (
-    Path(__file__).resolve().parents[4] / "docs" / "eval" / "golden.jsonl"
+    Path(__file__).resolve().parents[4] / "submission" / "eval" / "golden.jsonl"
 )
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")

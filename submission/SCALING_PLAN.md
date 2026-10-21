@@ -1,9 +1,8 @@
 # Scaling plan — from one-process demo to an LMS module with concurrent users
 
 Status: plan only, nothing here is implemented. Written 2026-10-20.
-Related: `docs/adr/ADR-001-lms-integration-scalability.md`,
-`docs/adr/ADR-002-retrieval-stack-library-migration.md`,
-`docs/deployment-guide.md` (target topology).
+Related: [DEPLOYMENT.md](DEPLOYMENT.md) (current topology). ADR-001 and ADR-002
+below refer to the project's internal architecture decision records.
 
 ## 0. Goal and what "ready" means
 
@@ -25,7 +24,7 @@ instance restarts.
 
 ## 1. Where it stands today
 
-Based on the code and `docs/HANDOFF.md`. Concurrent chat load has **not** been
+Based on the code. Concurrent chat load has **not** been
 measured, so the chat-path rows are expectations, not results.
 
 | Area | Today | Why it blocks scale |
@@ -146,7 +145,7 @@ rough (S under 2 days, M 2-5 days, L over 5 days) for one engineer who knows the
 
 - Load test (k6 or Locust): 25, 50, 100 concurrent learners asking questions,
   plus 2-3 concurrent ingests. Record p50/p95 per stage (retrieval, LLM call,
-  citation check) as in ADR-001 and `docs/deployment-guide.md` section 6.
+  citation check) as in ADR-001 and `submission/DEPLOYMENT.md` section 6.
 - Re-run the eval gates under multi-learner scopes: leakage 0, refusal >= 95%.
 - Add structured logs with a request id, per-stage timings (the window timing
   already in job detail is a start), error-rate and queue-depth metrics, and

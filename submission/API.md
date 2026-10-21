@@ -12,7 +12,7 @@ Live contract for the FastAPI backend in `apps/api/`.
 The web client reads the base URL from `NEXT_PUBLIC_API_URL`.
 `apps/web/lib/api.ts` is the other half of the contract, so a change to one
 needs a matching change to the other. Context: [ARCHITECTURE.md](ARCHITECTURE.md),
-[../PROJECT.md](../PROJECT.md), [HANDOFF.md](HANDOFF.md).
+[../PROJECT.md](../PROJECT.md).
 
 Conventions: JSON unless a route says `multipart/form-data`; errors use the
 FastAPI shape `{"detail": "…"}`; `current_time_ms` is the learner clock in ms,
@@ -37,7 +37,7 @@ reports the same text in its `error` field with `status: "failed"`, and
 
 **Auth summary:** chat and history routes need a session token minted by a
 signed `POST /lms/session`. Ingest, resource, subject and media routes are
-currently unauthenticated (see [TODO.md](TODO.md), item 7). Hosted deployments
+currently unauthenticated (a planned follow-up). Hosted deployments
 protect the model quota with `MAX_UPLOAD_MB`, `MAX_VIDEO_MINUTES` and
 `MAX_UPLOADS_PER_HOUR` instead.
 

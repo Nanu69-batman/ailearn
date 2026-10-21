@@ -569,7 +569,7 @@ never reintroduce a passage that ended after the playhead.*
 
 | Path | What it holds |
 |---|---|
-| `docs/HANDOFF.md` | Current verified state, routing, gotchas |
+| `submission/ARCHITECTURE.md` | Architecture, question flow, safety invariants |
 | `apps/api/app/retrieval/service.py` | Retrieval and the strict-T gate |
 | `apps/api/app/retrieval/recency.py` | Recency preference |
 | `apps/api/app/chat/service.py` | Prompt build and citation validation |
@@ -582,8 +582,7 @@ never reintroduce a passage that ended after the playhead.*
 | `apps/web/components/ChatPanel.tsx` | Chat UI, refusal copy |
 | `apps/web/components/MarkdownBody.tsx` | LaTeX, no rehype-raw |
 | `apps/web/components/LearnSessionProvider.tsx` | Grant re-minting |
-| `docs/adr/ADR-001-lms-integration-scalability.md` | LMS boundary |
-| `docs/adr/ADR-002-retrieval-stack-library-migration.md` | Library and persistence decisions |
+| `submission/SCALING_PLAN.md` | LMS boundary and the path to concurrent users |
 
 Ports: API `8123`, web `3000`.
 

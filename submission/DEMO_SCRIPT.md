@@ -80,7 +80,7 @@ Then ask `what is on the screen right now?` with the frame visible.*
 
 ## Scene 8: Under the hood (2:35–2:55)
 
-*Show the architecture diagram from the README or `docs/ARCHITECTURE.md`. Then briefly flash the test run or the `docs/` folder.*
+*Show the architecture diagram from the README or `submission/ARCHITECTURE.md`. Then briefly flash the test run or the `submission/` folder.*
 
 > "Under the hood: Next.js on Vercel, FastAPI on Render, Pinecone for vectors, and Gemini for embeddings and vision. Groq Whisper does the transcription.
 > The tutor is an agent with two tools, *search lesson* and *get lesson content*. Both are time-gated, so even the agent can't look ahead. If the agent fails, it falls back to our classic retrieval pipeline.

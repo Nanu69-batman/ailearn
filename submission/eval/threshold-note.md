@@ -17,7 +17,7 @@ only; no quality claim about production refusal behavior rests on it.
 
 ## Method
 
-Offline run over the 25-pair golden set (`docs/eval/golden.jsonl`, `k=5`),
+Offline run over the 25-pair golden set (`submission/eval/golden.jsonl`, `k=5`),
 varying only `--threshold`:
 
 ```bash

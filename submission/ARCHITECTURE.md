@@ -5,9 +5,19 @@ The API makes every decision that matters for correctness: which passages a
 learner may see at time `T`, which citations are real, and when to refuse. The
 browser plays media, captures a frame when asked, and posts requests.
 
-Related: [api.md](api.md) (routes), [deployment-guide.md](deployment-guide.md)
+Related: [API.md](API.md) (routes), [DEPLOYMENT.md](DEPLOYMENT.md)
 (how to stand this up), [../PROJECT.md](../PROJECT.md) (more detailed flows and the
 decision log).
+
+PNG versions of every diagram on this page are in [diagrams/](diagrams/):
+
+| Diagram | PNG |
+|---|---|
+| System overview | [0-system-overview.png](diagrams/0-system-overview.png) |
+| (a) Hosting topology | [1-hosting-topology.png](diagrams/1-hosting-topology.png) |
+| (b) Ingest pipeline | [2-ingest-pipeline.png](diagrams/2-ingest-pipeline.png) |
+| (c) Question flow, agentic and classic | [3-question-flow.png](diagrams/3-question-flow.png) |
+| Inside the agentic tutor | [4-agentic-tutor.png](diagrams/4-agentic-tutor.png) |
 
 ## (a) Hosting topology
 
@@ -103,6 +113,11 @@ How it works:
 
 ## (c) Question flow
 
+Every question passes the same session and scope checks. Then the **agentic
+tutor** answers first. The **classic pipeline** answers when the agent is not
+configured, or when its reply fails validation. Both paths read the lesson only
+through the strict-T gate.
+
 ```mermaid
 flowchart TD
   Q["Learner pauses at T, asks a question"] --> S["POST /chat<br/>session_id + session_token + current_time_ms"]
@@ -111,20 +126,36 @@ flowchart TD
   AUTH -->|"yes"| SC["Scope = granted resource_scope<br/>INTERSECTED with focused video"]
   SC --> EMPTY{"Scope empty?"}
   EMPTY -->|"yes"| RS["Refuse, scope_empty=true"]
-  EMPTY -->|"no"| QRY["Vector query restricted to scope<br/>filter: end_ms <= T (in the query)"]
-  QRY --> PY["Python re-check: drop any passage<br/>with end_ms missing or > T"]
-  PY --> REC["Optional recency re-rank<br/>(gated pool only)"]
-  REC --> LLM["Gemini answers from surviving passages only"]
-  LLM --> CIT{"At least one citation, and every<br/>cited id in the retrieved set?"}
+  EMPTY -->|"no"| HAS{"Agent configured?<br/>(OPENROUTER_API_KEY)"}
+
+  subgraph AGENT["Agentic path: Nemotron via OpenRouter"]
+    AG["Malai tutor agent<br/>chooses its tools"]
+    AG -->|"search_lesson / get_lesson_content"| GT["Time-gated tools<br/>end_ms <= T, scope filter"]
+    GT --> AG
+    AG --> AV{"Reply valid?<br/>every cited id returned<br/>by a tool this turn"}
+  end
+
+  subgraph CLASSIC["Classic pipeline: Gemini"]
+    INT{"Intent router"}
+    INT -->|"small talk"| CONV["Conversational reply<br/>no retrieval, no citations"]
+    INT -->|"question / quiz / overview"| QRY["Vector query restricted to scope<br/>filter: end_ms <= T (in the query)"]
+    QRY --> PY["Python re-check: drop any passage<br/>with end_ms missing or > T"]
+    PY --> REC["Optional recency re-rank<br/>(gated pool only)"]
+    REC --> LLM["Gemini answers from surviving passages only"]
+    LLM --> CIT{"At least one citation, and every<br/>cited id in the retrieved set?"}
+  end
+
+  HAS -->|"yes"| AG
+  HAS -->|"no"| INT
+  AV -->|"yes"| OKA["Answer: grounded (cited),<br/>conversational or supplemental"]
+  AV -->|"no: unknown id, uncited,<br/>timeout, quota, provider error"| INT
   CIT -->|"no"| RF["Refuse, no citations"]
   CIT -->|"yes"| OK["Answer + validated citations<br/>(ms range, transcript or visual)"]
 ```
 
-### The agentic tutor (first choice when `OPENROUTER_API_KEY` is set)
+### Inside the agentic tutor
 
-The diagram above is the **classic pipeline**. When an OpenRouter key is set,
-the tutor agent (`app/chat/agent.py`) handles the question first, after the same
-session and scope checks:
+The agent is `app/chat/agent.py`, and its tool loop works like this:
 
 ```mermaid
 flowchart TD

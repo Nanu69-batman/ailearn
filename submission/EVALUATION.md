@@ -8,7 +8,7 @@ Anything not measured is marked as such.
 
 | What | Result | Source |
 |---|---|---|
-| Spoiler leakage (passages after the playhead in retrieved sets) | **0.0** (0 of 25 questions) | `docs/eval-results/chroma-2026-10-21.json` |
+| Spoiler leakage (passages after the playhead in retrieved sets) | **0.0** (0 of 25 questions) | `submission/eval-results/chroma-2026-10-21.json` |
 | Production-gap rate (production retrieval vs eval-strict rule) | **0.0** | same |
 | Refusal correctness | **1.0** (25/25) | same |
 | Citation accuracy | **1.0** | same |
@@ -26,8 +26,8 @@ Embedder used for the eval: the **offline `HashingEmbedder`**. See the caveat in
 
 ### The golden set
 
-`docs/eval/golden.jsonl` has **25 questions** over a synthetic fixture course,
-*Bioenergetics 101* (`docs/eval/fixture-course.md`). The course has a 60-minute
+`submission/eval/golden.jsonl` has **25 questions** over a synthetic fixture course,
+*Bioenergetics 101* (`submission/eval/fixture-course.md`). The course has a 60-minute
 video lecture in 12 five-minute segments, a 6-page PDF handout and a slide
 deck. All content is invented so that each fact has exactly one known location.
 Every question carries a pause time `pause_at_ms` (the learner's playhead `T`),
@@ -57,7 +57,7 @@ the expected behaviour (`answer` or `refuse`), and the gold source location.
 
 ### Results
 
-Fresh run on 2026-10-21 (`python -m app.eval.harness --out ../../docs/eval-results/chroma-2026-10-21.json`, from `apps/api`):
+Fresh run on 2026-10-21 (`python -m app.eval.harness --out ../../submission/eval-results/chroma-2026-10-21.json`, from `apps/api`):
 
 | Metric | 2026-10-20 (`chroma-2026-10-20.json`) | **2026-10-21 (`chroma-2026-10-21.json`)** |
 |---|---|---|
@@ -82,7 +82,7 @@ wrong or spoiling answer was produced.
    `HashingEmbedder` (1536-d, no network) with a real temporary Chroma store. It
    has no option for the Gemini embedder, and this run made no code change to
    add one. Retrieval accuracy with `gemini-embedding-2` is **not measured**
-   (open item 9 in [TODO.md](TODO.md)). Leakage and production gap do not depend on
+   (a planned follow-up). Leakage and production gap do not depend on
    the embedder: they check *which* passages may be returned, not how they rank.
 2. **Refusal is a retrieval proxy.** The harness's `should_refuse` decides from
    gated-retrieval emptiness and a score threshold (`0.08`). It does not run the
@@ -91,12 +91,12 @@ wrong or spoiling answer was produced.
    [eval/threshold-note.md](eval/threshold-note.md).
 3. **Small, synthetic set.** 25 questions over invented content. Answer quality
    with the real LLM is checked by live probes (below), not by a large labelled set.
-4. `baseline*.json` and `smoke*.json` in `docs/eval-results/` come from the
+4. `baseline*.json` and `smoke*.json` in `submission/eval-results/` come from the
    harness before a rebuild and are not comparable.
 
 ### Live probes on the real stack
 
-Recorded in [HANDOFF.md](HANDOFF.md) §7, on the real demo video
+Recorded on the real demo video
 (`Partial-derivatives.mp4`, 655.5 s) with Gemini:
 
 | Playhead T | Question | Result | Cited at (ms) | Modality |
@@ -159,7 +159,7 @@ Run from `apps/web` on 2026-10-21:
 | `npm run contract-check` | **PASS** | That `lib/api.ts` matches the API response shapes, that KaTeX CSS is loaded, that no message path bypasses the Markdown renderer, and that `rehype-raw` is not imported anywhere (model HTML stays inert) |
 
 `npm run build` was not run for this report, because it conflicts with the
-running dev server. The last recorded build passed (see [HANDOFF.md](HANDOFF.md) §1).
+running dev server. The last recorded build passed.
 
 ---
 

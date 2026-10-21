@@ -1,7 +1,7 @@
 """Tests for the offline eval harness (app.eval.harness).
 
 The end-to-end test runs the real Chroma store with the offline
-HashingEmbedder over docs/eval/golden.jsonl. No network.
+HashingEmbedder over submission/eval/golden.jsonl. No network.
 """
 
 from __future__ import annotations
