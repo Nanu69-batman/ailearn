@@ -80,19 +80,41 @@ function formatElapsed(ms: number): string {
   return `${m}:${(s % 60).toString().padStart(2, "0")}`;
 }
 
-const PROCESSING_NOTES: Array<{ afterMs: number; text: string }> = [
-  { afterMs: 0, text: "Queued on the server." },
-  { afterMs: 8_000, text: "Uploading finished; extracting audio and text." },
-  { afterMs: 45_000, text: "Transcribing speech — this is the slow part." },
-  {
-    afterMs: 120_000,
-    text: "Chunking and indexing. Long recordings can take several minutes.",
-  },
-];
+type FileKind = NonNullable<ReturnType<typeof kindOf>>;
 
-function processingNote(elapsedMs: number): string {
-  let note = PROCESSING_NOTES[0].text;
-  for (const entry of PROCESSING_NOTES) {
+/** Per-kind status lines: only a video is transcribed, so a PDF must never
+ *  claim to be "extracting audio". */
+const PROCESSING_NOTES: Record<FileKind, Array<{ afterMs: number; text: string }>> = {
+  video: [
+    { afterMs: 0, text: "Queued on the server." },
+    { afterMs: 8_000, text: "Uploading finished; extracting audio and text." },
+    { afterMs: 45_000, text: "Transcribing speech — this is the slow part." },
+    {
+      afterMs: 120_000,
+      text: "Chunking and indexing. Long recordings can take several minutes.",
+    },
+  ],
+  pdf: [
+    { afterMs: 0, text: "Queued on the server." },
+    { afterMs: 5_000, text: "Reading the PDF's pages and text." },
+    { afterMs: 30_000, text: "Chunking and indexing the pages." },
+  ],
+  pptx: [
+    { afterMs: 0, text: "Queued on the server." },
+    { afterMs: 5_000, text: "Reading the slides and speaker notes." },
+    { afterMs: 30_000, text: "Chunking and indexing the slides." },
+  ],
+  image: [
+    { afterMs: 0, text: "Queued on the server." },
+    { afterMs: 5_000, text: "Describing the image." },
+    { afterMs: 30_000, text: "Indexing the description." },
+  ],
+};
+
+function processingNote(kind: FileKind, elapsedMs: number): string {
+  const notes = PROCESSING_NOTES[kind];
+  let note = notes[0].text;
+  for (const entry of notes) {
     if (elapsedMs >= entry.afterMs) note = entry.text;
   }
   return note;
@@ -249,13 +271,14 @@ export default function FileIngestForm({
     }
   }
 
-  const isVideo = file !== null && kindOf(file) === "video";
+  const fileKind = file ? kindOf(file) : null;
+  const isVideo = fileKind === "video";
   const progress = jobProgress(jobInfo);
   const busy = phase === "uploading" || phase === "polling";
   const statusText =
     phase === "uploading"
       ? `Uploading ${file?.name ?? "file"} (${formatBytes(file?.size ?? 0)})…`
-      : `${jobStatus ? `${jobStatus} · ` : ""}${formatElapsed(elapsedMs)} elapsed — ${processingNote(elapsedMs)}`;
+      : `${jobStatus ? `${jobStatus} · ` : ""}${formatElapsed(elapsedMs)} elapsed — ${processingNote(fileKind ?? "video", elapsedMs)}`;
 
   // Report upward so the subject page can show a pending card while the
   // dialog is closed. Derived from state, never a second source of truth.
