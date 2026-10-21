@@ -91,6 +91,7 @@ def test_quiz_reads_open_material_at_t_plus_done_and_drops_uncited(chroma_store,
     shown = llm.prompts[0]
     assert "open_early" in shown and "done_late" in shown
     assert "open_late" not in shown and "other_pdf" not in shown
+    assert shown.count('open="true"') == 1  # only the open material is marked
 
 
 def test_quiz_refuses_when_nothing_is_covered(chroma_store, embedder):

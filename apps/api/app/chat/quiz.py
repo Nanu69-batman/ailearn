@@ -137,13 +137,18 @@ QUIZ_SYSTEM = (
     'formula for, with concrete numbers. Give "answer" (a plain number), '
     '"tolerance" (absolute; allow for rounding) and "unit" (or ""). Only '
     "write one when you can compute the answer exactly from the method "
-    "shown; otherwise write an mcq instead.\n"
+    "shown, and never for a number the learner could just read off the "
+    "passage; otherwise write an mcq instead.\n"
     '- "subjective": a short explain/why/compare question. Give '
     '"model_answer" (2-4 sentences) and "key_points" (2-4 short phrases a '
     "good answer must contain).\n"
     'Every question has "explanation" (1-2 sentences on why the answer is '
     'right) and "chunk_id": the id of the ONE passage that supports it, copied '
-    "exactly from its tag. Spread the questions over different passages. "
+    "exactly from its tag. Spread the questions over different passages: no "
+    "passage supports more than two questions. Most questions must come from "
+    'passages marked open="true" (the material the learner is studying now); '
+    "the rest are from materials they already finished, as review. Write "
+    "EXACTLY the number of each type asked for. "
     "Reply with ONLY a JSON object, no prose and no code fence: "
     '{"questions": [{"type": ..., "prompt": ..., ..., "explanation": ..., '
     '"chunk_id": ...}]}. In JSON strings write every LaTeX backslash doubled '
@@ -168,10 +173,18 @@ def _mix(count: int, types: Sequence[str]) -> str:
     return ", ".join(f"{plan.count(k)} {k}" for k in kinds)
 
 
-def build_quiz_prompt(passages: Sequence, count: int, types: Sequence[str], attempt: int) -> str:
-    blocks = "\n".join(
-        f"<passage {_passage_attrs(p)}>{p.text}</passage>" for p in passages
-    )
+def build_quiz_prompt(
+    passages: Sequence,
+    count: int,
+    types: Sequence[str],
+    attempt: int,
+    focus_resource_id: str | None = None,
+) -> str:
+    def attrs(p) -> str:
+        own = focus_resource_id is not None and p.resource_id == focus_resource_id
+        return _passage_attrs(p) + (' open="true"' if own else "")
+
+    blocks = "\n".join(f"<passage {attrs(p)}>{p.text}</passage>" for p in passages)
     return (
         f"<context>\n{blocks}\n</context>\n\n"
         f"Write {count} questions: {_mix(count, types)}. "
@@ -389,7 +402,7 @@ class QuizService:
 
         text = await self._complete(
             QUIZ_SYSTEM,
-            build_quiz_prompt(passages, req.count, req.types, req.attempt),
+            build_quiz_prompt(passages, req.count, req.types, req.attempt, req.video_id),
             passages,
             "quiz_json",
         )
