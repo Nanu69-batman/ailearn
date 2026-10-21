@@ -55,3 +55,12 @@ body {
 .katex-error {
   color: #dc2626;
 }
+
+/* A cited passage on a PDF page (PdfView). The text layer's glyphs are
+   transparent over the canvas, so only the background shows. */
+.textLayer mark.cite-hl {
+  color: transparent;
+  background: rgb(250 204 21 / 0.45);
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgb(234 179 8 / 0.35);
+}

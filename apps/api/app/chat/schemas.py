@@ -107,6 +107,10 @@ class Citation(BaseModel):
     #: ``end_ms``: an uploaded image is ungated and has no moment in time, so
     #: a timestamp here would be a fabricated reference point.
     image_no: int | None = None
+    #: The cited passage itself, so the client can highlight it in the PDF or
+    #: show it beside the video. Only passages that already passed the
+    #: strict-T gate are ever cited, so this reveals nothing ahead of T.
+    text: str | None = None
     #: True ONLY for a live capture -- the exact frame the learner's player was
     #: showing at ``current_time_ms``, described on demand (see
     #: ``app.ingestion.liveframe``). Every pre-indexed citation is ``False``,

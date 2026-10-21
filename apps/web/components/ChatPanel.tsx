@@ -29,7 +29,7 @@ interface ChatPanelProps {
    */
   captureFrame?: () => Promise<LiveFrameCapture | null>;
   onSeek: (startMs: number) => void;
-  /** The PDF open in the viewer; its page citations jump the viewer. */
+  /** The resource open beside the chat; its citations are shown there on click. */
   openDoc?: CitationBadgeProps["openDoc"];
   offline: boolean;
   onRejoin?: () => void;

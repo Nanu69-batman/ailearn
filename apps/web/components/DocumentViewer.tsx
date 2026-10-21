@@ -1,13 +1,20 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import dynamic from "next/dynamic";
+import type { PdfTarget } from "./PdfView";
+
+// pdf.js touches browser globals at import time, so it never renders on the server.
+const PdfView = dynamic(() => import("./PdfView"), {
+  ssr: false,
+  loading: () => <p className="py-16 text-center text-sm text-gray-500">Loading PDF…</p>,
+});
 
 /**
  * In-page viewers for the non-timed materials: PDF, slides and images.
  *
- * PDFs use the browser's own viewer in an iframe; `#page=N` is the standard
- * open-parameter for jumping, and the iframe is re-keyed on every jump so a
- * second click on the same page still scrolls back to it. Slides (.pptx) have
+ * PDFs render with pdf.js (PdfView), which gives a real text layer: a clicked
+ * citation scrolls to its page and marks the cited passage on it. Slides (.pptx) have
  * no browser renderer, so they go through Office Online's embed viewer, which
  * fetches the file itself and therefore only works when the API is reachable
  * from the internet. On localhost the viewer says so and offers the download.
@@ -20,8 +27,8 @@ interface DocumentViewerProps {
   /** Null when the original file is no longer stored. */
   src: string | null;
   title: string;
-  /** PDF only: a page to jump to, re-applied whenever `jump.nonce` changes. */
-  jump?: { page: number; nonce: number } | null;
+  /** PDF only: a page (and passage) to show, re-applied whenever `nonce` changes. */
+  jump?: PdfTarget | null;
 }
 
 const LABEL: Record<DocumentKind, string> = {
@@ -137,19 +144,18 @@ function Notice({ children }: { children: React.ReactNode }) {
 }
 
 export default function DocumentViewer({ kind, src, title, jump }: DocumentViewerProps) {
-  const [page, setPage] = useState(jump?.page ?? 1);
-  const [nonce, setNonce] = useState(0);
+  const [target, setTarget] = useState<PdfTarget | null>(jump ?? null);
+  const [pageCount, setPageCount] = useState(0);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    if (!jump) return;
-    setPage(jump.page);
-    setNonce((n) => n + 1);
+    if (jump) setTarget(jump);
   }, [jump]);
 
+  const page = target?.page ?? 1;
   const goTo = (n: number): void => {
-    setPage(n);
-    setNonce((v) => v + 1);
+    const p = pageCount ? Math.min(n, pageCount) : n;
+    setTarget((t) => ({ page: p, text: null, nonce: (t?.nonce ?? 0) + 1 }));
   };
 
   let body: React.ReactNode;
@@ -186,9 +192,13 @@ export default function DocumentViewer({ kind, src, title, jump }: DocumentViewe
         </a>
       </Notice>
     );
+  } else if (kind === "pdf") {
+    body = (
+      <div className="h-[72vh] min-h-[420px]">
+        <PdfView src={src} target={target} onPageCount={setPageCount} />
+      </div>
+    );
   } else {
-    const frameSrc =
-      kind === "pdf" ? `${src}#page=${page}&view=FitH` : officeEmbedUrl(src);
     body = (
       <div className="relative h-[72vh] min-h-[420px] bg-gray-100">
         {!loaded && (
@@ -197,8 +207,7 @@ export default function DocumentViewer({ kind, src, title, jump }: DocumentViewe
           </div>
         )}
         <iframe
-          key={kind === "pdf" ? `${page}-${nonce}` : src}
-          src={frameSrc}
+          src={officeEmbedUrl(src)}
           title={title}
           onLoad={() => setLoaded(true)}
           className="relative h-full w-full border-0"

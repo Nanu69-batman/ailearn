@@ -76,6 +76,7 @@ def _passage_to_citation(passage) -> Citation:
         # the role page_no plays for a pdf. `getattr` because a caller may hand
         # in a passage object predating the field.
         image_no=getattr(passage, "image_no", None),
+        text=(getattr(passage, "text", None) or None),
         # A live capture (app.ingestion.liveframe). Provenance lives only in
         # `metadata["live"]`, so a pre-indexed chunk can never set this, and an
         # absent/foreign metadata dict reads as "not live".

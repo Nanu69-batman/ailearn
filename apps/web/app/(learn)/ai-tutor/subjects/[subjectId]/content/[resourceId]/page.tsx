@@ -9,13 +9,19 @@ import YouTubePlayer, {
   type YouTubePlayerHandle,
 } from "@/components/YouTubePlayer";
 import ChatPanel from "@/components/ChatPanel";
-import { ImmersiveContext, type Immersive } from "@/components/PlayerControls";
+import {
+  CitedRangeContext,
+  ImmersiveContext,
+  type Immersive,
+} from "@/components/PlayerControls";
+import type { PdfTarget } from "@/components/PdfView";
 import { useLearnSession } from "@/components/LearnSessionProvider";
 import { useCourseResources } from "@/components/useCourseResources";
 import {
   isApiConfigured,
   getSubjectResources,
   reportPosition,
+  type Citation,
   type LiveFrameCapture,
 } from "@/lib/api";
 import {
@@ -204,15 +210,38 @@ export default function ContentPage() {
     [selected],
   );
 
-  /** A clicked page citation, for the PDF viewer. Nonce: same page re-jumps. */
-  const [pdfJump, setPdfJump] = useState<{ page: number; nonce: number } | null>(null);
+  /**
+   * The citation the learner last clicked, if it came from this resource. A
+   * PDF one becomes a viewer target (page + passage to highlight; the nonce
+   * re-applies a repeated click). A video one is drawn on the scrub bar and its
+   * passage shown under the player; the seek itself is handleSeek's job.
+   */
+  const [pdfJump, setPdfJump] = useState<PdfTarget | null>(null);
+  const [cited, setCited] = useState<Citation | null>(null);
+  useEffect(() => {
+    setPdfJump(null);
+    setCited(null);
+  }, [resourceId]);
   const openDoc = useMemo(
     () => ({
       resourceId,
-      onOpenPage: (page: number): void =>
-        setPdfJump((prev) => ({ page, nonce: (prev?.nonce ?? 0) + 1 })),
+      onOpen: (c: Citation): void => {
+        if (c.page_no != null) {
+          const page = c.page_no;
+          setPdfJump((prev) => ({ page, text: c.text ?? null, nonce: (prev?.nonce ?? 0) + 1 }));
+        } else if (c.start_ms != null) {
+          setCited(c);
+        }
+      },
     }),
     [resourceId],
+  );
+  const citedRange = useMemo(
+    () =>
+      cited?.start_ms != null
+        ? { startMs: cited.start_ms, endMs: cited.end_ms ?? cited.start_ms }
+        : null,
+    [cited],
   );
 
   /**
@@ -473,6 +502,7 @@ export default function ContentPage() {
             </div>
           )}
           <ImmersiveContext.Provider value={immersiveCtx}>
+          <CitedRangeContext.Provider value={citedRange}>
           {selected.kind === "youtube" ? (
             <YouTubePlayer
               ref={ytHandleRef}
@@ -499,12 +529,47 @@ export default function ContentPage() {
               onTimeChange={onTimeChange}
             />
           )}
+          </CitedRangeContext.Provider>
           </ImmersiveContext.Provider>
+          {isMedia && !immersive && cited?.start_ms != null && (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50/70 px-4 py-3 shadow-sm" role="region" aria-label="Cited passage">
+              <div className="mb-1.5 flex items-center gap-2">
+                <span className="h-2.5 w-2.5 rounded-sm bg-amber-400" aria-hidden="true" />
+                <span className="text-xs font-semibold text-amber-900">
+                  {cited.live
+                    ? `Live frame at ${fmtClock(cited.start_ms)}`
+                    : `Cited ${cited.modality === "visual" ? "on screen" : cited.modality === "transcript" ? "speech" : "passage"} · ${fmtClock(cited.start_ms)}–${fmtClock(cited.end_ms ?? cited.start_ms)}`}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleSeek(cited.start_ms as number)}
+                  className="ml-auto rounded-lg px-2 py-0.5 text-xs font-medium text-amber-800 transition hover:bg-amber-100"
+                >
+                  ▶ Replay
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCited(null)}
+                  aria-label="Clear cited passage"
+                  className="rounded-lg px-1.5 py-0.5 text-xs text-amber-700 transition hover:bg-amber-100"
+                >
+                  ✕
+                </button>
+              </div>
+              {cited.text ? (
+                <p className="whitespace-pre-line text-sm leading-relaxed text-gray-800">
+                  <mark className="rounded bg-amber-200/70 px-0.5 text-gray-900">{cited.text}</mark>
+                </p>
+              ) : (
+                <p className="text-xs text-gray-500">The passage text was not saved with this older answer.</p>
+              )}
+            </div>
+          )}
           {!isMedia && !immersive && (
             <p className="px-1 text-xs text-gray-500">
               Malai answers from this {selected.kind === "pptx" ? "deck" : selected.kind === "image" ? "image" : "document"} with{" "}
               {selected.kind === "pptx" ? "slide" : selected.kind === "image" ? "image" : "page"} citations
-              {selected.kind === "pdf" ? " — click one to open that page" : ""}.
+              {selected.kind === "pdf" ? " — click one to see the passage highlighted on its page" : ""}.
             </p>
           )}
           {isMedia && !immersive && (
@@ -569,7 +634,7 @@ export default function ContentPage() {
             getCurrentTimeMs={getCurrentTimeMs}
             captureFrame={captureFrame}
             onSeek={handleSeek}
-            openDoc={selected.kind === "pdf" && selected.src ? openDoc : null}
+            openDoc={selected.kind === "pptx" || selected.kind === "image" || (selected.kind === "pdf" && !selected.src) ? null : openDoc}
             offline={offline}
             onRejoin={reset}
           />

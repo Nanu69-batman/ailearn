@@ -6,10 +6,17 @@ export interface CitationBadgeProps {
   citation: Citation;
   onSeek: (startMs: number) => void;
   /**
-   * The PDF open in the viewer, if any. A page citation whose chunk belongs
-   * to it (chunk ids are `{resource_id}_c{n}_...`) becomes a jump button.
+   * The resource open beside the chat. A citation drawn from it is shown
+   * there when clicked: a PDF page with the passage highlighted, or the cited
+   * span marked on the video's scrub bar.
    */
-  openDoc?: { resourceId: string; onOpenPage: (page: number) => void } | null;
+  openDoc?: { resourceId: string; onOpen: (citation: Citation) => void } | null;
+}
+
+/** Chunk ids are `{resource_id}_c{n}_...`; a live frame is `live_{resource_id}_{ms}`. */
+function fromResource(citation: Citation, resourceId: string): boolean {
+  const id = citation.chunk_id;
+  return id.startsWith(`${resourceId}_c`) || id.startsWith(`live_${resourceId}_`);
 }
 
 /**
@@ -38,6 +45,10 @@ function formatRange(startMs: number, endMs: number): string {
 }
 
 export default function CitationBadge({ citation, onSeek, openDoc }: CitationBadgeProps) {
+  const show =
+    openDoc && fromResource(citation, openDoc.resourceId)
+      ? () => openDoc.onOpen(citation)
+      : null;
   // IMAGES FIRST, ALWAYS. An image citation carries no time range at all —
   // the backend sets start_ms/end_ms/page_no/slide_no/video_id to null and
   // marks modality "visual". Reaching the time formatter first would print
@@ -79,7 +90,10 @@ export default function CitationBadge({ citation, onSeek, openDoc }: CitationBad
       <button
         type="button"
         className="rounded-full border border-violet-300 bg-violet-50 px-2.5 py-0.5 text-xs font-medium text-violet-700 transition hover:bg-violet-100"
-        onClick={() => onSeek(liveAt)}
+        onClick={() => {
+          onSeek(liveAt);
+          show?.();
+        }}
         title={`This exact frame, captured from your screen at ${stamp} · ${citation.chunk_id}`}
         aria-label={`Live frame citation at ${stamp}, seek to ${stamp}`}
       >
@@ -112,7 +126,10 @@ export default function CitationBadge({ citation, onSeek, openDoc }: CitationBad
       <button
         type="button"
         className="rounded-full border border-cyan-200 bg-cyan-50 px-2.5 py-0.5 text-xs font-medium text-cyan-700 transition hover:bg-cyan-100"
-        onClick={() => onSeek(startMs)}
+        onClick={() => {
+          onSeek(startMs);
+          show?.();
+        }}
         title={`Seek to ${range}${hint ? ` · from ${hint === "frame" ? "a sampled frame" : "spoken audio"}` : ""}`}
         aria-label={`${hint ? `${spoken} citation, ` : "Video citation, "}seek to ${range}`}
       >
@@ -134,17 +151,13 @@ export default function CitationBadge({ citation, onSeek, openDoc }: CitationBad
   }
   if (citation.source_type === "pdf") {
     const page = citation.page_no;
-    if (
-      openDoc &&
-      page != null &&
-      citation.chunk_id.startsWith(`${openDoc.resourceId}_c`)
-    ) {
+    if (show && page != null) {
       return (
         <button
           type="button"
           className="rounded-full border border-orange-200 bg-orange-50 px-2.5 py-0.5 text-xs font-medium text-orange-700 transition hover:bg-orange-100"
-          onClick={() => openDoc.onOpenPage(page)}
-          title={`Open page ${page} in the viewer`}
+          onClick={show}
+          title={`Show the cited passage on page ${page}`}
           aria-label={`PDF citation, open page ${page}`}
         >
           📄 p.{page}

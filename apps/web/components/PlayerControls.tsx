@@ -72,6 +72,18 @@ export interface Immersive {
 
 export const ImmersiveContext = createContext<Immersive | null>(null);
 
+/**
+ * The span of the citation the learner last clicked, drawn on the seek bar.
+ * Page-provided like ImmersiveContext, so neither player needs a new prop. A
+ * live frame is an instant (`startMs === endMs`) and draws as a marker.
+ */
+export interface CitedRange {
+  startMs: number;
+  endMs: number;
+}
+
+export const CitedRangeContext = createContext<CitedRange | null>(null);
+
 const HIDE_AFTER_MS = 2500;
 
 function clamp(n: number, lo: number, hi: number): number {
@@ -200,6 +212,9 @@ function SeekBar({
   const shown = scrub ?? current;
   const playedPct = known ? clamp((shown / duration) * 100, 0, 100) : 0;
   const bufferedPct = known ? clamp((buffered / duration) * 100, 0, 100) : 0;
+  const cited = useContext(CitedRangeContext);
+  const citedLeft = known && cited ? clamp((cited.startMs / 1000 / duration) * 100, 0, 100) : 0;
+  const citedRight = known && cited ? clamp((cited.endMs / 1000 / duration) * 100, 0, 100) : 0;
 
   const onMove = (e: ReactMouseEvent<HTMLDivElement>): void => {
     const el = wrapRef.current;
@@ -231,6 +246,19 @@ function SeekBar({
           className="absolute inset-y-0 left-0 rounded-full bg-violet-600"
           style={{ width: `${playedPct}%` }}
         />
+        {known && cited && (
+          <div
+            className="pointer-events-none absolute -inset-y-[3px] rounded-sm bg-amber-400/90 shadow-[0_0_8px_rgba(251,191,36,0.8)] ring-1 ring-amber-200"
+            style={{
+              left: `${citedLeft}%`,
+              // An instant (a live frame) still gets a visible 3px tick.
+              width: `max(3px, ${citedRight - citedLeft}%)`,
+            }}
+            title={`Cited: ${formatClock(cited.startMs / 1000)}${
+              cited.endMs > cited.startMs ? `–${formatClock(cited.endMs / 1000)}` : ""
+            }`}
+          />
+        )}
         <div
           className="absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 scale-0 rounded-full bg-violet-500 shadow-md ring-2 ring-white/90 transition-transform duration-150 group-hover/seek:scale-100"
           style={{ left: `${playedPct}%` }}

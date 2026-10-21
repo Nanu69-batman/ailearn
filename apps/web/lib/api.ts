@@ -243,6 +243,11 @@ export interface Citation {
    */
   image_no?: number | null;
   /**
+   * The cited passage's own text: highlighted on its PDF page, or shown under
+   * the video. Absent on answers saved before the field existed.
+   */
+  text?: string | null;
+  /**
    * True ONLY for a live capture: the exact frame the player's video element
    * was showing at `current_time_ms`, captured on demand and described by the
    * backend (`POST /chat/live-frame`).

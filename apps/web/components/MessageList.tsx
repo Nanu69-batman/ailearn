@@ -8,7 +8,7 @@ interface MessageListProps {
   messages: ChatMessage[];
   loading: boolean;
   onSeek: (startMs: number) => void;
-  /** The PDF open beside the chat; its page citations become jump buttons. */
+  /** The resource open beside the chat; its citations are shown there on click. */
   openDoc?: CitationBadgeProps["openDoc"];
   /** Sends a suggested prompt immediately (empty state only). */
   onSuggest?: (text: string) => void;
