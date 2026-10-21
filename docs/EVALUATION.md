@@ -14,7 +14,7 @@ Anything not measured is marked as such.
 | Citation accuracy | **1.0** | same |
 | Retrieval accuracy (answerable questions) | **0.9375** (15/16) | same |
 | Retrieval latency, in process | p50 **8.3 ms**, p95 **10.0 ms** | same |
-| Backend tests | **437 collected, 437 passed, 0 failed**, no collection errors | `pytest`, 2026-10-21 |
+| Backend tests | **479 collected, 479 passed, 0 failed**, no collection errors | `pytest`, 2026-10-21 |
 | Frontend type check | pass | `npx tsc --noEmit` |
 | Frontend contract check | PASS | `npm run contract-check` |
 
@@ -117,10 +117,10 @@ Commands run on 2026-10-21 from `apps/api` with Python 3.14:
 
 ```text
 $ python -m pytest --co -q -p no:warnings | tail -1
-437 tests collected in 2.07s
+479 tests collected in 1.47s
 
 $ python -m pytest -q -p no:warnings
-437 passed in 112.69s (0:01:52)
+479 passed in 109.85s (0:01:49)
 ```
 
 The suite **collects with no errors**. This is checked separately because a
@@ -134,6 +134,9 @@ directory. They need no network and no keys.
 |---|---|
 | **Timestamp gate and leakage** (`end_ms <= T`, null end excluded, never `start_ms`, gate inside the store query, recency never widens the pool) | `test_chat_safety.py`, `test_store.py`, `test_live_frame.py` (live frame sits at exactly T), `test_visual.py` (frame times from index arithmetic, not the model), `test_duration.py` (duration is a safety input) |
 | **Citations and refusal** (unknown id refused, uncited answer refused after one repair retry, bunched markers validated, citation modality never defaulted, honest refusal texts, grounded vs supplemental) | `test_chat_safety.py`, `test_ta_behaviour.py`, `test_processing_frontier.py` (honest "not processed yet") |
+| **Agentic tutor** (the range tool never returns past the playhead, even for "the whole video"; greetings and "who are you" are conversational with no tools and no citations; an invented citation or a provider failure falls back to the classic pipeline; an uncited subject answer is never served; one required retry when the tools are skipped; no general knowledge for a quiz; no raw citation markers in a cut-off reply; intent classification) | `test_agent.py` |
+| **Pinecone store** (same gated set as Chroma, strict-T filter sent to Pinecone, Python re-check holds if the server filter leaks, deletes by exact resource id) | `test_pinecone_store.py` |
+| **Hosted config** (with no local Whisper fallback, a failed transcription fails the window instead of silently skipping speech) | `test_hosted_config.py` |
 | **Scope, session and launch auth** (scope intersected and never widened, `scope_empty` separate from low evidence, frame outside the grant gets 403, session token checked) | `test_chat_safety.py`, `test_live_frame.py`, `test_subjects.py` (`None` vs `[]` scope) |
 | **Ingestion and windowing** (120 s windows, chunk ids safe per window, stream/full modes, `/position`, transcript-first stages, empty window advances the frontier, full visual coverage, OCR honesty, routes and job envelope) | `test_ingestion.py`, `test_windowed_ingest.py`, `test_progressive_ingest.py`, `test_staged_ingest.py`, `test_empty_window.py`, `test_processing_frontier.py`, `test_visual_coverage.py`, `test_visual_speed.py`, `test_ocr.py` |
 | **Transcription / Groq** (window audio sent to Groq, 429 retried, fallback to local Whisper, times shifted to video time) | `test_windowed_ingest.py` |

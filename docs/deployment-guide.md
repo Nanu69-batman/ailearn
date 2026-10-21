@@ -7,7 +7,7 @@ This is how the live demo is deployed:
 | Web (Next.js 15) | Vercel, root dir `apps/web` | https://ailearn-theta.vercel.app |
 | API (FastAPI) | Render web service, Docker, free tier | https://malai-pioneer-api.onrender.com |
 | Vectors | Pinecone serverless index `ailearn` (3072-d, cosine) | — |
-| Models | Gemini (answers, embeddings, vision), Groq (speech to text) | — |
+| Models | OpenRouter Nemotron (agentic tutor), Gemini (fallback answers, embeddings, vision), Groq (speech to text) | — |
 
 The API can't run on Vercel. Its Python function bundle limit is 250 MB, which
 faster-whisper, PyAV and chromadb exceed, and ingest runs as background jobs for
@@ -22,7 +22,8 @@ reproduce it.
 ## 0. Prerequisites
 
 - A GitHub repository with this code. Render and Vercel build from it.
-- Accounts: Render, Vercel, Pinecone, Google AI Studio (Gemini key), Groq.
+- Accounts: Render, Vercel, Pinecone, Google AI Studio (Gemini key), Groq,
+  OpenRouter (optional; without it every question uses the Gemini pipeline).
 - A launch secret shared by the web app and the API:
   `python -c "import secrets; print(secrets.token_hex(32))"`.
 - Local checks pass: `cd apps/api && python -m pytest -q && python -m ruff check .`
@@ -62,6 +63,8 @@ build context to exactly those files plus `apps/api`.
    | `EMBEDDING_API_KEY` | The same Gemini key |
    | `GROQ_API_KEY` | Groq key |
    | `PINECONE_API_KEY` | Pinecone key |
+   | `OPENROUTER_API_KEY` | OpenRouter key for the agentic tutor. Leave empty to use only the Gemini pipeline |
+   | `OPENROUTER_MODEL` | `nvidia/nemotron-3.5-super-vl:free` (any model with tool calling) |
    | `LMS_LAUNCH_SECRET` | The secret from section 0. It must match Vercel's |
    | `CORS_ORIGIN` | The exact Vercel origin, e.g. `https://ailearn-theta.vercel.app` (no trailing slash) |
 
@@ -152,6 +155,11 @@ Then use the web app:
   stay in Pinecone, but the media route then returns 404 for them. The demo video
   is unaffected.
 - **YouTube ingest** is often blocked from datacenter IPs. Upload files instead.
+- **Subjects reset on restart.** The image seeds `data/subjects.json` from
+  `apps/api/deploy/seed/subjects.json`, so a restart restores the
+  **Engineering Mathematics** demo subject (`sub_06dea46b30bf4ee7`) even if it
+  was deleted, and drops subjects created on the hosted site since. To get the
+  demo subject back, use **Manual Deploy -> Restart service** on Render.
 - **One process:** ingest job status and the in-flight window guard live in
   memory. Moving that state out of the process is Phase A of
   [SCALING_PLAN.md](SCALING_PLAN.md).

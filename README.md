@@ -201,6 +201,20 @@ npm run contract-check                    # client/server contract + rendering s
 Current results and what each test file protects are listed in
 [docs/EVALUATION.md](docs/EVALUATION.md).
 
+## Submission deliverables
+
+| BuildVerse requirement | Where |
+|---|---|
+| Hosted, working application | [Live demo](#live-demo): `https://ailearn-theta.vercel.app` |
+| Source code | This repository (`apps/api` backend, `apps/web` frontend) |
+| System architecture diagram | [Architecture](#architecture) above; full set in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| README and setup | This file: [Quickstart](#quickstart-local), [Environment variables](#environment-variables) |
+| API documentation | [docs/api.md](docs/api.md); live Swagger UI at `/docs` |
+| Sample dataset | [docs/DATASET.md](docs/DATASET.md) and `test-data/` (lecture video and PDF notes), golden set in `docs/eval/` |
+| Evaluation results and testing | [docs/EVALUATION.md](docs/EVALUATION.md); raw results in `docs/eval-results/` |
+| Demo video | Script: [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md) |
+| Deployment instructions | [docs/deployment-guide.md](docs/deployment-guide.md) |
+
 ## Documentation
 
 | Doc | Contents |
@@ -210,6 +224,7 @@ Current results and what each test file protects are listed in
 | [docs/deployment-guide.md](docs/deployment-guide.md) | Step-by-step deployment: Pinecone, Render, Vercel, smoke test, rollback |
 | [docs/EVALUATION.md](docs/EVALUATION.md) | RAG evaluation results, test inventory, performance numbers |
 | [docs/DATASET.md](docs/DATASET.md) | Sample lecture, PDF and golden question set, and how to ingest them |
+| [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md) | Scene-by-scene script for the demo video |
 | [PROJECT.md](PROJECT.md) | Feature inventory, decision log, detailed Mermaid flows |
 | [docs/TECHNIQUES.md](docs/TECHNIQUES.md) | Techniques with measured timings |
 | [docs/SCALING_PLAN.md](docs/SCALING_PLAN.md) | Plan from one process to an LMS module with concurrent users |
