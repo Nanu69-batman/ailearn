@@ -256,7 +256,7 @@ flowchart TD
   BAL --> GEN
   DOC --> GEN
   DONE --> GEN
-  GEN["ONE model call writes the quiz as JSON<br/>Gemini first (~11 s), Nemotron fallback<br/>passages tagged open / speech / screen<br/>half the questions conceptual"]
+  GEN["ONE model call writes the quiz as JSON<br/>Gemini first (~15 s end to end), Nemotron fallback<br/>passages tagged open / speech / screen<br/>half the questions conceptual"]
   GEN --> VAL{"Per question: well-formed and<br/>chunk_id in the passages sent?"}
   VAL -->|"no"| DROP["Dropped, never repaired"]
   VAL -->|"yes"| SHUF["MCQ options shuffled<br/>numerical tolerance floor 1%"]
