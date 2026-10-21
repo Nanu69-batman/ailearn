@@ -59,7 +59,9 @@ class Settings(BaseSettings):
     # Any agent failure (quota, timeout, bad tool call) falls back to it too.
     openrouter_api_key: str = ""
     openrouter_model: str = "nvidia/nemotron-3.5-super-vl:free"
-    agent_max_steps: int = 4
+    # Model calls per answer. The lesson read is prefetched, so 2 = answer
+    # (or one extra tool call) + the final reply.
+    agent_max_steps: int = 2
     agent_timeout_s: float = 30.0  # per provider call
     agent_total_timeout_s: float = 60.0  # whole tool loop, then classic fallback
 

@@ -31,7 +31,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from app.chat.completed import COMPLETED_K, COMPLETED_T_MS, merge_completed
-from app.chat.intent import SMALLTALK, classify_intent, has_subject_content
+from app.chat.intent import (
+    OVERVIEW,
+    SMALLTALK,
+    STUDY_QUESTIONS,
+    classify_intent,
+    has_subject_content,
+)
 from app.chat.prompts import (
     ANTI_SPOILER_RULE,
     LATEX_RULE,
@@ -39,6 +45,7 @@ from app.chat.prompts import (
     SOURCE_NARRATION_RULE,
     TUTOR_PERSONA,
     extract_cited_ids,
+    rewrite_query,
     strip_dangling_marker,
 )
 from app.ingestion.backoff import QuotaExhaustedError
@@ -231,7 +238,7 @@ class LessonAgent:
         *,
         api_key: str,
         model: str,
-        max_steps: int = 4,
+        max_steps: int = 2,
         timeout_s: float = 45.0,
         transport=None,
     ) -> None:
@@ -428,13 +435,45 @@ class LessonAgent:
         tool_calls_made = 0
         text = ""
         force_tool = False
+        prefetched = False
         repaired = False
         # A subject question answered from the model's priors is ungrounded.
         # Rather than give up on it, ask once more with a tool call required.
-        needs_lesson = classify_intent(message) != SMALLTALK and has_subject_content(message)
+        intent = classify_intent(message)
+        needs_lesson = intent != SMALLTALK and has_subject_content(message)
+
+        # Prefetch: run the lesson read the model would have asked for first,
+        # here, and hand it over as that tool's result. Each round trip to the
+        # free model costs seconds to tens of seconds; with the passages
+        # already in hand it usually writes the answer in ONE call. The read
+        # goes through `call_tool`, so the same gates and `admit` apply.
+        if needs_lesson:
+            if intent in (STUDY_QUESTIONS, OVERVIEW) or mode in NO_GENERAL_KNOWLEDGE_MODES:
+                name, args = "get_lesson_content", {"from_seconds": 0, "to_seconds": t_ms / 1000}
+            else:
+                name, args = "search_lesson", {"query": rewrite_query(message, list(history))}
+            result = await call_tool(name, args)
+            tool_calls_made += 1
+            messages.append({
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "prefetch_0",
+                    "type": "function",
+                    "function": {"name": name, "arguments": json.dumps(args)},
+                }],
+            })
+            messages.append({"role": "tool", "tool_call_id": "prefetch_0", "content": result})
+            prefetched = True
+            log.info("agent: prefetched %s", name)
         for step in range(self._max_steps):
             final_step = step == self._max_steps - 1
             tool_choice = "none" if final_step else ("required" if force_tool else "auto")
+            if prefetched and not force_tool:
+                # The lesson is already in hand. Another read costs a round
+                # trip AND makes the answer slower to write (it took 42 s to
+                # write from a whole-lecture read), so answer from what is here.
+                tool_choice = "none"
             force_tool = False
             payload = {
                 "model": self._model,
@@ -518,9 +557,30 @@ class LessonAgent:
         return self._validate(text, seen, message, mode, tool_calls_made)
 
     @staticmethod
+    def _expand_short_ids(text: str, seen: dict) -> str:
+        """Restore ids the model shortened by dropping their resource prefix.
+
+        Nemotron sometimes writes ``c3_83fd4ed4`` for
+        ``res_2e629d682a3d_c3_83fd4ed4``. A short id is restored only when
+        EXACTLY ONE id returned this turn ends with it, so this can never turn
+        an invented id into a real one; anything else stays unknown and fails
+        validation below.
+        """
+        for cid in extract_cited_ids(text):
+            if cid in seen:
+                continue
+            matches = [s for s in seen if s.endswith("_" + cid)]
+            if len(matches) == 1:
+                text = re.sub(
+                    r"(?<=[=,\s])" + re.escape(cid) + r"(?=[\],\s])", matches[0], text
+                )
+        return text
+
+    @staticmethod
     def _validate(text: str, seen: dict, message: str, mode: str, tool_calls: int) -> AgentOutcome:
         if text == REFUSAL_TEXT:
             return AgentOutcome(kind="refused", text=text, tool_calls=tool_calls)
+        text = LessonAgent._expand_short_ids(text, seen)
         cited_ids = extract_cited_ids(text)
         unknown = [c for c in cited_ids if c not in seen]
         if unknown:

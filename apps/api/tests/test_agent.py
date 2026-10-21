@@ -217,27 +217,43 @@ def test_invented_citation_falls_back_to_the_classic_pipeline(env):
     assert "2xy" not in resp.answer
 
 
-def test_uncited_subject_answer_without_tools_is_not_served(env):
+def test_uncited_subject_answer_is_not_served(env):
     uncited = say("A partial derivative differentiates one variable at a time.")
     ask, transport, _ = env(uncited, uncited, uncited, uncited)
     resp = ask("what is a partial derivative?")
-    # The agent first insisted on a tool call...
-    assert transport.payloads[1]["tool_choice"] == "required"
+    # The lesson was already in hand, so the agent asked for citations...
+    assert "no citations" in transport.payloads[1]["messages"][-1]["content"]
     # ...and when the model still would not ground it, the classic pipeline
     # (stub LLM) answered instead, cited from the gate.
     assert resp.mode == "grounded"
     assert resp.citations and all(c.end_ms <= T for c in resp.citations)
 
 
-def test_skipping_the_tools_gets_one_required_retry(env):
-    ask, transport, _ = env(
-        say("A partial derivative differentiates one variable at a time."),
-        call("get_lesson_content", from_seconds=0, to_seconds=200),
-        say("It holds y fixed [chunk_id=c_early]."),
-    )
+def test_subject_question_is_answered_from_a_prefetched_search(env):
+    ask, transport, retrieval = env(say("It holds y fixed [chunk_id=c_early]."))
     resp = ask("what is a partial derivative?")
-    assert transport.payloads[1]["tool_choice"] == "required"
+    assert len(transport.payloads) == 1  # one model call, not a tool round trip
+    first = transport.payloads[0]["messages"]
+    assert first[2]["tool_calls"][0]["function"]["name"] == "search_lesson"
+    assert first[3]["role"] == "tool" and "c_early" in first[3]["content"]
+    assert "c_future" not in first[3]["content"]  # the prefetch is gated too
+    assert retrieval.calls >= 1
     assert resp.mode == "grounded" and [c.chunk_id for c in resp.citations] == ["c_early"]
+
+
+def test_overview_prefetches_the_watched_range(env):
+    ask, transport, _ = env(say("So far: y is held fixed [chunk_id=c_early]."))
+    ask("summarize what I've watched", mode="summarize")
+    tool_call = transport.payloads[0]["messages"][2]["tool_calls"][0]["function"]
+    assert tool_call["name"] == "get_lesson_content"
+
+
+def test_smalltalk_is_not_prefetched(env):
+    ask, transport, retrieval = env(say("Hi! I'm Malai."))
+    resp = ask("hi")
+    assert retrieval.calls == 0
+    assert all(m["role"] != "tool" for m in transport.payloads[0]["messages"])
+    assert resp.mode == "conversational"
 
 
 def test_uncited_answer_after_tool_use_gets_one_cite_repair(env):
@@ -307,3 +323,11 @@ def test_classify_intent(text, intent):
 def test_subject_content_gate():
     assert not has_subject_content("who are you")
     assert has_subject_content("explain the chain rule")
+
+
+def test_shortened_ids_are_restored_only_when_unambiguous():
+    seen = {"res_a_c3_aa": 1, "res_a_c4_bb": 1, "res_b_c4_bb": 1}
+    fix = LessonAgent._expand_short_ids
+    assert fix("Held fixed [chunk_id=c3_aa].", seen) == "Held fixed [chunk_id=res_a_c3_aa]."
+    assert fix("x [chunk_id=c3_aa, c4_bb]", seen) == "x [chunk_id=res_a_c3_aa, c4_bb]"  # c4_bb ambiguous
+    assert fix("x [chunk_id=c9_zz]", seen) == "x [chunk_id=c9_zz]"  # invented stays invented
