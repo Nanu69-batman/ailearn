@@ -79,6 +79,12 @@ minutes takes up to a minute while it wakes.
   local faster-whisper as a fallback), frame descriptions (Gemini vision, one
   frame every 4 s, with near-duplicate frames skipped), PDF and PPTX text, and
   images. Optional OCR handles scanned PDFs.
+- **Real practice quizzes.** A Quiz tab writes multiple-choice, numerical and
+  written questions on what has been watched (plus materials marked done), in
+  one model call through the same playhead gate, and every question cites its
+  source. Multiple-choice and numerical answers are checked in the browser
+  with no model call; only written answers are graded by the model
+  ([diagram](submission/ARCHITECTURE.md#d-practice-quizzes)).
 - **Math renders properly.** Answers are Markdown with LaTeX (KaTeX). Raw HTML
   from the model is never rendered.
 - **Says when it did less than asked.** Every ingest reports `visual_status`,
@@ -99,7 +105,7 @@ flowchart LR
   A --> Q["Groq Whisper<br/>speech to text"]
 ```
 
-More diagrams (hosting, ingest pipeline, question flow) and the safety
+More diagrams (hosting, ingest pipeline, question flow, practice quizzes) and the safety
 invariants are in [submission/ARCHITECTURE.md](submission/ARCHITECTURE.md).
 
 ## Tech stack

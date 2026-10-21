@@ -228,6 +228,66 @@ passage with `start_ms == end_ms == T`, so it passes the same gate. `T` is first
 checked against the duration the server read from the file. An out-of-range `T`
 gets `422`; it is never clamped.
 
+## (d) Practice quizzes
+
+The **Quiz** tab beside the chat writes a real quiz: multiple choice,
+numerical and written questions. It reads the lesson through the same gates as
+chat. The whole quiz costs **one** model call. Multiple-choice and numerical
+answers are checked in the browser with no model call; only written answers
+go back to the model for grading.
+
+```mermaid
+flowchart TD
+  L["Learner at T picks 3 / 5 / 10 questions<br/>and types: MCQ, numerical, written"] --> P["POST /quiz<br/>session token, video_id, T,<br/>materials marked done"]
+  P --> AUTH{"Session exists and<br/>HMAC token valid?"}
+  AUTH -->|"no"| X["401 / 404"]
+  AUTH -->|"yes"| SC["Scope = grant INTERSECT open material<br/>done list = grant INTERSECT done"]
+
+  subgraph READ["What the quiz may read"]
+    RNG["Open video: read everything watched,<br/>in order, no embedding<br/>store filter end_ms <= T + Python re-check"]
+    RNG --> BAL["Thin evenly over time to ~18k chars<br/>70% speech, 30% screen<br/>shifted per attempt (New quiz)"]
+    DOC["Open document: gated vector search"]
+    DONE["Materials marked done:<br/>vector search, same gate at end of time"]
+  end
+
+  SC --> RNG
+  SC --> DOC
+  SC --> DONE
+  BAL --> GEN
+  DOC --> GEN
+  DONE --> GEN
+  GEN["ONE model call writes the quiz as JSON<br/>Gemini first (~11 s), Nemotron fallback<br/>passages tagged open / speech / screen<br/>half the questions conceptual"]
+  GEN --> VAL{"Per question: well-formed and<br/>chunk_id in the passages sent?"}
+  VAL -->|"no"| DROP["Dropped, never repaired"]
+  VAL -->|"yes"| SHUF["MCQ options shuffled<br/>numerical tolerance floor 1%"]
+  SHUF --> NONE{"Any question left?"}
+  NONE -->|"no"| RF["Refused: try again"]
+  NONE -->|"yes"| UI["Quiz tab<br/>answers sent but hidden"]
+
+  subgraph GRADE["Checking an answer (Submit)"]
+    T{"Question type"}
+    T -->|"MCQ / numerical"| LOCAL["Checked in the browser<br/>no request, no model call"]
+    T -->|"written"| GR["POST /quiz/grade<br/>question + model answer + key points<br/>learner text as untrusted data"]
+    GR --> GM["Model scores 0..1<br/>verdict from score: correct / partial / incorrect"]
+    GM -->|"model unavailable"| KW["Fallback: key-point word match"]
+  end
+
+  UI --> T
+  LOCAL --> REV["Reveal: right answer, explanation,<br/>clickable source (video moment or PDF page)"]
+  GM --> REV
+  KW --> REV
+```
+
+- **Same gates as chat.** The quiz never sees past the playhead, never reads a
+  material outside the grant, and a material counts as readable in full only
+  when the learner marked it done.
+- **Every question is cited.** A question whose `chunk_id` was not among the
+  passages sent is dropped, so the source link on each answer is always real.
+- **Why the in-order read.** A similarity search for "key concepts, formulas"
+  matched mostly on-screen frame descriptions, so quizzes ignored what the
+  lecturer said. Reading the watched range in order and balancing speech
+  against screen keeps theory questions in the mix.
+
 ## Safety invariants
 
 These are product properties, and the tests pin them. They are not tuning

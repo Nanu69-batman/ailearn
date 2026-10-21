@@ -50,6 +50,8 @@ protect the model quota with `MAX_UPLOAD_MB`, `MAX_VIDEO_MINUTES` and
 | POST | `/chat` | session token | Grounded Q&A over the granted course scope |
 | POST | `/chat/live-frame` | session token | Answer about the frame currently on screen |
 | GET | `/sessions/{session_id}/messages` | session token | Conversation history |
+| POST | `/quiz` | session token | Practice quiz (MCQ, numerical, written) on what was covered |
+| POST | `/quiz/grade` | session token | Grade one written quiz answer |
 | POST | `/courses/{course_id}/ingest` | — | Ingest an uploaded file (multipart) |
 | POST | `/courses/{course_id}/ingest-youtube` | — | Ingest a YouTube URL (JSON) |
 | GET | `/ingestion/jobs/{job_id}` | — | Ingest job status |
@@ -308,6 +310,7 @@ Where it is read differs per route — the usual source of a confusing `401`:
 | `POST /chat` | the body field `session_token` **only** — the `X-Session-Token` header is not read on this route, so a header-only request gets `401` |
 | `GET /sessions/{session_id}/messages` | the `?session_token=…` query parameter **or** the `X-Session-Token` header |
 | `POST /chat/live-frame` | the `session_token` form field **or** the `X-Session-Token` header |
+| `POST /quiz`, `POST /quiz/grade` | the body field `session_token` **or** the `X-Session-Token` header |
 
 Sending both the body field and the header on `POST /chat` is harmless, and is
 what the web client does.
