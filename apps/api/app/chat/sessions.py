@@ -27,7 +27,7 @@ import logging
 import threading
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 
@@ -58,7 +58,7 @@ _persistence_enabled = False
 
 
 def _utcnow_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def set_persistence_enabled(enabled: bool) -> None:
@@ -141,7 +141,7 @@ class InMemorySessionStore:
 
     def restore(self, data: dict[str, dict]) -> int:
         restored = 0
-        cutoff = datetime.now(timezone.utc) - SESSION_TTL
+        cutoff = datetime.now(UTC) - SESSION_TTL
         for sid, row in list(data.items()):
             try:
                 session = Session(
@@ -285,7 +285,7 @@ def _parse_iso(value: str) -> datetime | None:
         parsed = datetime.fromisoformat(value)
     except ValueError:
         return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def save_session_state() -> None:
