@@ -14,6 +14,7 @@ and the learner's text -- never the course.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -38,6 +39,7 @@ from app.chat.prompts import (
     strip_citation_markers,
 )
 from app.chat.schemas import MAX_CURRENT_TIME_MS, Citation
+from app.retrieval.store import TIME_GATED_SOURCE_TYPES
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +50,19 @@ ALL_TYPES: tuple[QuestionType, ...] = ("mcq", "numerical", "subjective")
 #: range over the covered material, not one spot in it.
 QUIZ_K = 12
 MIN_QUESTIONS, MAX_QUESTIONS = 3, 10
+
+#: The watched part of the open video is read IN ORDER (no embedding) and
+#: thinned to this many characters, evenly over time. A similarity search for
+#: "key concepts, formulas" mostly matched on-screen frame descriptions, so
+#: quizzes ignored what the lecturer actually said.
+QUIZ_CHAR_BUDGET = 18_000
+#: Share of that budget for what was said (the rest is what was on screen).
+SPEECH_SHARE = 0.7
+#: Upper bound on rows read for the watched range before thinning.
+LESSON_ROW_LIMIT = 2_000
+#: A quiz is one long reply; give it more room and time than an agent step.
+QUIZ_MAX_TOKENS = 8_192
+QUIZ_TIMEOUT_S = 90.0
 
 QUIZ_REFUSAL_TEXT = (
     "There isn't enough covered material to quiz you on yet. Watch a little "
@@ -142,6 +157,13 @@ QUIZ_SYSTEM = (
     '- "subjective": a short explain/why/compare question. Give '
     '"model_answer" (2-4 sentences) and "key_points" (2-4 short phrases a '
     "good answer must contain).\n"
+    'Passages with medium="speech" are what the lecturer SAID: the '
+    "explanations, definitions, reasons and intuition. Passages with "
+    'medium="screen" describe what was SHOWN (formulas, worked steps). Take '
+    "most questions from speech passages. At least half of all questions must "
+    "be conceptual or theoretical (what something means, why a step works, "
+    "when a method applies, how two ideas relate), not reading or copying a "
+    "formula; numericals may use screen passages.\n"
     'Every question has "explanation" (1-2 sentences on why the answer is '
     'right) and "chunk_id": the id of the ONE passage that supports it, copied '
     "exactly from its tag. Spread the questions over different passages: no "
@@ -173,6 +195,55 @@ def _mix(count: int, types: Sequence[str]) -> str:
     return ", ".join(f"{plan.count(k)} {k}" for k in kinds)
 
 
+def is_screen(p) -> bool:
+    """A sampled-frame description rather than spoken audio."""
+    return (getattr(p, "kind", None) or "") == "visual"
+
+
+def _spread(items: Sequence, n: int, offset: int) -> list:
+    """``n`` items picked evenly across ``items``, order kept.
+
+    ``offset`` shifts the picks within each stride, so "New quiz" reads a
+    different slice of the same lesson.
+    """
+    if n <= 0 or not items:
+        return []
+    if n >= len(items):
+        return list(items)
+    stride = len(items) / n
+    shift = (offset % max(1, int(stride))) if stride >= 2 else 0
+    return [items[min(len(items) - 1, int(i * stride) + shift)] for i in range(n)]
+
+
+def lesson_sample(passages: Sequence, attempt: int, budget: int = QUIZ_CHAR_BUDGET) -> list:
+    """Thin an in-order read of the watched lesson to ``budget`` characters.
+
+    Mostly speech (:data:`SPEECH_SHARE`), the rest screen, each spread evenly
+    over the watched time. Either side's unused share goes to the other.
+    """
+    speech = [p for p in passages if not is_screen(p)]
+    screen = [p for p in passages if is_screen(p)]
+
+    def fit(items: Sequence, chars: float) -> int:
+        if not items:
+            return 0
+        avg = max(1.0, sum(len(p.text) for p in items) / len(items))
+        return min(len(items), int(chars // avg))
+
+    n_speech = fit(speech, budget * SPEECH_SHARE)
+    n_screen = fit(screen, budget * (1 - SPEECH_SHARE))
+    used = sum(len(p.text) for p in _spread(speech, n_speech, attempt)) + sum(
+        len(p.text) for p in _spread(screen, n_screen, attempt)
+    )
+    spare = max(0, budget - used)
+    if n_speech == len(speech):
+        n_screen = fit(screen, budget * (1 - SPEECH_SHARE) + spare)
+    elif n_screen == len(screen):
+        n_speech = fit(speech, budget * SPEECH_SHARE + spare)
+    chosen = _spread(speech, n_speech, attempt) + _spread(screen, n_screen, attempt)
+    return sorted(chosen, key=lambda p: (p.start_ms or 0, p.end_ms or 0, p.chunk_id))
+
+
 def build_quiz_prompt(
     passages: Sequence,
     count: int,
@@ -182,7 +253,10 @@ def build_quiz_prompt(
 ) -> str:
     def attrs(p) -> str:
         own = focus_resource_id is not None and p.resource_id == focus_resource_id
-        return _passage_attrs(p) + (' open="true"' if own else "")
+        extra = ' open="true"' if own else ""
+        if p.source_type in TIME_GATED_SOURCE_TYPES:
+            extra += ' medium="screen"' if is_screen(p) else ' medium="speech"'
+        return _passage_attrs(p) + extra
 
     blocks = "\n".join(f"<passage {attrs(p)}>{p.text}</passage>" for p in passages)
     return (
@@ -357,7 +431,10 @@ class QuizService:
         """Agent model first when configured, then the chat provider."""
         if self._agent is not None:
             try:
-                return await self._agent.complete_text(system, user_prompt, json_mode=True)
+                return await self._agent.complete_text(
+                    system, user_prompt, json_mode=True,
+                    max_tokens=QUIZ_MAX_TOKENS, timeout_s=QUIZ_TIMEOUT_S,
+                )
             except Exception as exc:  # noqa: BLE001 -- any agent failure falls through
                 log.warning("quiz: agent model unavailable (%s); using fallback", type(exc).__name__)
         result = await self._llm.complete(
@@ -386,11 +463,31 @@ class QuizService:
         if not allowed:
             return refuse(QUIZ_REFUSAL_TEXT)
         retrieval = RetrievalService(store=self._store, embedder=self._embedder)
-        passages = await retrieval.retrieve(
-            COVERAGE_QUERY, session.course_id, allowed, t_ms, k=QUIZ_K,
-            focus_resource_id=req.video_id,
-        )
-        passages = apply_strict_timestamp(passages, t_ms, "quiz")
+        # A video: read everything watched so far, in order, through the
+        # store's own strict-T gate (no embedding), then thin it evenly.
+        lesson: list = []
+        read_range = getattr(self._store, "passages_between", None)
+        if req.video_id and read_range is not None:
+            lesson = await asyncio.to_thread(
+                read_range,
+                course_id=session.course_id,
+                resource_scope=allowed,
+                current_time_ms=t_ms,
+                from_ms=0,
+                to_ms=t_ms,
+                focus_resource_id=req.video_id,
+                limit=LESSON_ROW_LIMIT,
+            )
+            lesson = apply_strict_timestamp(lesson, t_ms, "quiz")
+        if lesson:
+            passages = lesson_sample(lesson, req.attempt)
+        else:
+            # A document (ungated, so absent from the range read): search it.
+            passages = await retrieval.retrieve(
+                COVERAGE_QUERY, session.course_id, allowed, t_ms, k=QUIZ_K,
+                focus_resource_id=req.video_id,
+            )
+            passages = apply_strict_timestamp(passages, t_ms, "quiz")
         done = completed_scope(session.resource_scope, req.video_id, req.completed_resource_ids)
         if done:
             extra = await retrieval.retrieve(

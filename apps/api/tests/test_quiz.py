@@ -20,6 +20,7 @@ from app.chat.quiz import (
     GradeRequest,
     QuizRequest,
     QuizService,
+    lesson_sample,
     parse_json_object,
     validate_questions,
 )
@@ -191,3 +192,51 @@ def test_quiz_routes_need_the_session_token(api):
     assert client.post("/quiz/grade", json=grade).status_code == 401
     g = client.post("/quiz/grade", json={**grade, "session_token": token})
     assert g.status_code == 200 and g.json()["verdict"] == "correct"
+
+
+def _video(cid, start, kind, text="x" * 100):
+    c = make_chunk(cid, resource_id="res_vid", start_ms=start, end_ms=start + 4_000, text=text)
+    c.metadata["kind"] = kind
+    return c
+
+
+def test_video_quiz_reads_the_watched_range_mostly_speech(chroma_store, embedder):
+    """Frames outnumber speech 4:1 in the store; the quiz must still lead with speech."""
+    chunks = []
+    for i in range(40):
+        t = i * 5_000
+        chunks.append(_video(f"frame_{i}", t, "visual", text="Slide shows f(x,y) = x^2 y. " * 4))
+        if i % 4 == 0:
+            chunks.append(_video(f"said_{i}", t, "transcript",
+                                 text="The lecturer explains why we hold y constant. " * 2))
+    chunks.append(_video("said_future", 900_000, "transcript"))
+    chroma_store.add(chunks)
+    sessions = InMemorySessionStore()
+    llm = _ScriptedLLM("{}")
+    svc = QuizService(store=chroma_store, embedder=embedder, llm=llm, sessions=sessions)
+    sid = sessions.create(
+        learner_id="l1", course_id="course_1", resource_id="res_vid", lesson_id=None,
+        resource_scope=["res_vid"], current_time_ms=T,
+    ).id
+    asyncio.run(svc.make_quiz(QuizRequest(session_id=sid, current_time_ms=300_000, video_id="res_vid")))
+    shown = llm.prompts[0]
+    said = shown.count('medium="speech"')
+    assert said == 10  # every spoken passage up to T fits the budget
+    assert 0 < shown.count('medium="screen"')
+    assert "said_future" not in shown  # the strict-T gate still applies
+
+
+def test_lesson_sample_thins_evenly_and_varies_by_attempt():
+    class P:
+        def __init__(self, i, kind):
+            self.chunk_id, self.kind = f"{kind}{i}", kind
+            self.start_ms, self.end_ms, self.text = i * 1000, i * 1000 + 900, "y" * 1000
+
+    speech = [P(i, "transcript") for i in range(100)]
+    screen = [P(i, "visual") for i in range(100)]
+    a = lesson_sample(speech + screen, attempt=0, budget=20_000)
+    b = lesson_sample(speech + screen, attempt=1, budget=20_000)
+    kinds = [p.kind for p in a]
+    assert kinds.count("transcript") == 14 and kinds.count("visual") == 6
+    assert a[0].start_ms < 10_000 and a[-1].start_ms > 80_000  # spans the lesson
+    assert {p.chunk_id for p in a} != {p.chunk_id for p in b}

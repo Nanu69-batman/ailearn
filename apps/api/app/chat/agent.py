@@ -244,7 +244,7 @@ class LessonAgent:
         # Injectable for tests: an async callable(payload) -> response dict.
         self._transport = transport or self._post
 
-    async def _post(self, payload: dict) -> dict:
+    async def _post(self, payload: dict, timeout_s: float | None = None) -> dict:
         import httpx
 
         headers = {
@@ -253,7 +253,7 @@ class LessonAgent:
             "X-Title": "Malai Pioneer",
         }
         try:
-            async with httpx.AsyncClient(timeout=self._timeout_s) as client:
+            async with httpx.AsyncClient(timeout=timeout_s or self._timeout_s) as client:
                 resp = await client.post(OPENROUTER_URL, json=payload, headers=headers)
                 # Free-tier upstreams blip; one retry on a transient gateway
                 # error is cheap. Quota (429) is not retried: it will not clear.
@@ -269,7 +269,15 @@ class LessonAgent:
         except ValueError as exc:
             raise AgentUnavailableError("openrouter returned non-JSON") from exc
 
-    async def complete_text(self, system: str, user_prompt: str, *, json_mode: bool = False) -> str:
+    async def complete_text(
+        self,
+        system: str,
+        user_prompt: str,
+        *,
+        json_mode: bool = False,
+        max_tokens: int = 4096,
+        timeout_s: float | None = None,
+    ) -> str:
         """One plain completion on the agent's model: no tools, no history."""
         payload = {
             "model": self._model,
@@ -278,12 +286,16 @@ class LessonAgent:
                 {"role": "user", "content": user_prompt},
             ],
             "temperature": 0.4,
-            "max_tokens": 4096,
+            "max_tokens": max_tokens,
             "reasoning": {"effort": "low", "exclude": True},
         }
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
-        data = await self._transport(payload)
+        # A long single reply (a whole quiz) may need longer than one agent step.
+        if timeout_s is not None and self._transport == self._post:
+            data = await self._post(payload, timeout_s=timeout_s)
+        else:
+            data = await self._transport(payload)
         try:
             text = data["choices"][0]["message"]["content"] or ""
         except (KeyError, IndexError, TypeError) as exc:
