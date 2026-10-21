@@ -15,9 +15,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY apps/api/app ./app
 COPY apps/api/migrations ./migrations
-# Demo content: the media file of the one seeded resource, and the subject that
-# lists it. Its chunks are in Pinecone (scripts/seed_pinecone.py).
+# Demo content: the files of the seeded resources, and the subject that lists
+# them. Their chunks are already in Pinecone, so a restart re-indexes nothing.
 COPY test-data/Partial-derivatives.mp4 ./data/assets/uploads/res_2e629d682a3d.mp4
+COPY test-data/UNIT-1-001.pdf ./data/assets/uploads/res_7c1f4a92d0e5.pdf
 COPY apps/api/deploy/seed/subjects.json ./data/subjects.json
 RUN chown -R appuser:appuser /srv/app
 

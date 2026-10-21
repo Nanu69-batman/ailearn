@@ -6,5 +6,6 @@
 !apps/api/migrations/**
 !apps/api/deploy/seed/**
 !test-data/Partial-derivatives.mp4
+!test-data/UNIT-1-001.pdf
 **/__pycache__
 **/.env
