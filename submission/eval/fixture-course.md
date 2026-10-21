@@ -71,8 +71,9 @@ segment / page / slide, course `course_fixture`).
 
 Re-ran the harness offline after visual chunks landed and the focus path was
 added. `python -m app.eval.harness --golden ../../submission/eval/golden.jsonl --k 5`,
-`HashingEmbedder` + `InMemoryVectorStore`, no network, no Gemini call
-(`submission/eval-results/baseline-refresh.json`).
+`HashingEmbedder` + `InMemoryVectorStore`, no network, no Gemini call. The
+2026-10-03 runs are `submission/eval-results/baseline.json` (loose) and
+`baseline-strict.json` (strict).
 
 | Metric | Loose gate (2026-10-03) | Strict gate (2026-10-03) | Refresh (2026-10-07) |
 |---|---|---|---|

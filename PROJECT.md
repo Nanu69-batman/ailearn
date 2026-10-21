@@ -582,7 +582,6 @@ never reintroduce a passage that ended after the playhead.*
 | `apps/web/components/ChatPanel.tsx` | Chat UI, refusal copy |
 | `apps/web/components/MarkdownBody.tsx` | LaTeX, no rehype-raw |
 | `apps/web/components/LearnSessionProvider.tsx` | Grant re-minting |
-| `submission/SCALING_PLAN.md` | LMS boundary and the path to concurrent users |
 
 Ports: API `8123`, web `3000`.
 

@@ -12,11 +12,4 @@ below with the file that covers it.
 | API documentation | [API.md](API.md) |
 | Sample dataset | [DATASET.md](DATASET.md); the files are in [../test-data/](../test-data/) and the golden set is in [eval/](eval/) |
 | Evaluation results and testing details | [EVALUATION.md](EVALUATION.md); raw results in [eval-results/](eval-results/) |
-| Demo video | Script: [DEMO_SCRIPT.md](DEMO_SCRIPT.md) |
 | Deployment instructions | [DEPLOYMENT.md](DEPLOYMENT.md) |
-
-Background reading:
-
-- [SCALING_PLAN.md](SCALING_PLAN.md): the path from one process to an LMS
-  module with concurrent users.
-- [TECHNIQUES.md](TECHNIQUES.md): the techniques used, with measured timings.

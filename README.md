@@ -215,16 +215,10 @@ All deliverables are in [submission/](submission/), and its
 | API documentation | [submission/API.md](submission/API.md); live Swagger UI at `/docs` |
 | Sample dataset | [submission/DATASET.md](submission/DATASET.md) and `test-data/` (lecture video and PDF notes); golden set in `submission/eval/` |
 | Evaluation results and testing | [submission/EVALUATION.md](submission/EVALUATION.md); raw results in `submission/eval-results/` |
-| Demo video | Script: [submission/DEMO_SCRIPT.md](submission/DEMO_SCRIPT.md) |
 | Deployment instructions | [submission/DEPLOYMENT.md](submission/DEPLOYMENT.md) |
 
-## Further reading
-
-| Doc | Contents |
-|---|---|
-| [PROJECT.md](PROJECT.md) | Feature inventory, decision log, detailed Mermaid flows |
-| [submission/TECHNIQUES.md](submission/TECHNIQUES.md) | Techniques with measured timings |
-| [submission/SCALING_PLAN.md](submission/SCALING_PLAN.md) | Plan from one process to an LMS module with concurrent users |
+[PROJECT.md](PROJECT.md) has the feature inventory, the decision log and more
+detailed Mermaid flows.
 
 ## Known limitations
 
@@ -242,8 +236,8 @@ All deliverables are in [submission/](submission/), and its
   window guard are lost on restart. Render's free disk is wiped on every
   restart and wake-up, so files uploaded on the hosted site disappear then
   (their index entries stay in Pinecone). The demo video survives because it is
-  baked into the image. Moving this state out of the process is Phase A
-  of [submission/SCALING_PLAN.md](submission/SCALING_PLAN.md).
+  baked into the image. Moving this state out of the process (Redis or
+  Postgres) is the first step toward concurrent users.
 - **State-changing routes (upload, delete, subjects, position) have no auth.**
   Only chat and history are bound to a signed session. Adding auth there is a
   planned follow-up.

@@ -161,5 +161,5 @@ Then use the web app:
   was deleted, and drops subjects created on the hosted site since. To get the
   demo subject back, use **Manual Deploy -> Restart service** on Render.
 - **One process:** ingest job status and the in-flight window guard live in
-  memory. Moving that state out of the process is Phase A of
-  [SCALING_PLAN.md](SCALING_PLAN.md).
+  memory. Moving that state out of the process (Redis or Postgres) is the
+  first step toward concurrent users.

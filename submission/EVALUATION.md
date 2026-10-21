@@ -91,8 +91,10 @@ wrong or spoiling answer was produced.
    [eval/threshold-note.md](eval/threshold-note.md).
 3. **Small, synthetic set.** 25 questions over invented content. Answer quality
    with the real LLM is checked by live probes (below), not by a large labelled set.
-4. `baseline*.json` and `smoke*.json` in `submission/eval-results/` come from the
-   harness before a rebuild and are not comparable.
+4. `baseline.json` (loose gate, production gap **0.48**) and `baseline-strict.json`
+   (strict gate, **0.0**) in `eval-results/` are the 2026-10-03 before/after runs
+   behind the 48% figure. They predate a harness rebuild, so their other metrics
+   are not comparable with today's.
 
 ### Live probes on the real stack
 
@@ -165,7 +167,7 @@ running dev server. The last recorded build passed.
 
 ## (c) Performance
 
-Copied from [TECHNIQUES.md](TECHNIQUES.md). The demo video is
+Measured during development. The demo video is
 `Partial-derivatives.mp4`, 655.5 s. "By construction" means the figure is derived
 from code constants and was not timed.
 
@@ -197,7 +199,7 @@ Vision pass, one 120 s window, 30 frames, real Gemini calls:
 | Average bytes per call | about 244 KB | about 98 KB |
 | Calls | 4, one after another | 4, three at a time |
 
-Caveats from the source:
+Caveats:
 - Single Gemini vision calls ranged from 15 to 89 s across runs, so the vision
   speed-up is noisy.
 - The duplicate-frame threshold was tuned on one lecture.
@@ -205,7 +207,6 @@ Caveats from the source:
   lane shares the CPU, and in-app times have not been re-measured.
 - The Groq numbers are one run per window. Using Groq sends lecture audio to a
   third party.
-- The test count of 428 in TECHNIQUES.md is older. Today's count is 437 (above).
 
 Cost levers that are in the code: batched embeddings (64 texts per call), skipping
 near-duplicate frames, downscaled JPEG frames (at most 768 px, quality 80), disk
