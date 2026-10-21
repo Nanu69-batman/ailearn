@@ -427,20 +427,36 @@ class QuizService:
         self._sessions = sessions
         self._agent = agent
 
-    async def _complete(self, system: str, user_prompt: str, passages: Sequence, mode: str) -> str:
-        """Agent model first when configured, then the chat provider."""
+    async def _replies(self, system: str, user_prompt: str, passages: Sequence, mode: str):
+        """Each configured model's reply in turn, fastest first.
+
+        The chat provider (Gemini) writes a quiz in seconds; the free agent
+        model took over a minute, so it is the fallback. The offline stub goes
+        last. A provider that fails is logged and skipped.
+        """
+        from app.chat.llm import DeterministicStubLLM
+
+        async def chat_llm() -> str:
+            result = await self._llm.complete(
+                system=system, user_prompt=user_prompt, passages=passages, mode=mode
+            )
+            return result.text
+
+        async def agent() -> str:
+            return await self._agent.complete_text(
+                system, user_prompt, json_mode=True,
+                max_tokens=QUIZ_MAX_TOKENS, timeout_s=QUIZ_TIMEOUT_S,
+            )
+
+        order = [chat_llm]
         if self._agent is not None:
+            stub = isinstance(self._llm, DeterministicStubLLM)
+            order = [agent, chat_llm] if stub else [chat_llm, agent]
+        for call in order:
             try:
-                return await self._agent.complete_text(
-                    system, user_prompt, json_mode=True,
-                    max_tokens=QUIZ_MAX_TOKENS, timeout_s=QUIZ_TIMEOUT_S,
-                )
-            except Exception as exc:  # noqa: BLE001 -- any agent failure falls through
-                log.warning("quiz: agent model unavailable (%s); using fallback", type(exc).__name__)
-        result = await self._llm.complete(
-            system=system, user_prompt=user_prompt, passages=passages, mode=mode
-        )
-        return result.text
+                yield await call()
+            except Exception as exc:  # noqa: BLE001 -- try the next provider
+                log.warning("quiz: %s failed (%s)", call.__name__, type(exc).__name__)
 
     async def make_quiz(self, req: QuizRequest) -> QuizResponse:
         from app.chat.launch import clamp_current_time_ms
@@ -497,19 +513,18 @@ class QuizService:
         if not passages:
             return refuse(QUIZ_REFUSAL_TEXT)
 
-        text = await self._complete(
-            QUIZ_SYSTEM,
-            build_quiz_prompt(passages, req.count, req.types, req.attempt, req.video_id),
-            passages,
-            "quiz_json",
-        )
-        rng = random.Random(f"{req.session_id}:{t_ms}:{req.attempt}")
-        questions = validate_questions(parse_json_object(text), passages, rng)
-        if not questions:
+        prompt = build_quiz_prompt(passages, req.count, req.types, req.attempt, req.video_id)
+        async for text in self._replies(QUIZ_SYSTEM, prompt, passages, "quiz_json"):
+            rng = random.Random(f"{req.session_id}:{t_ms}:{req.attempt}")
+            questions = validate_questions(parse_json_object(text), passages, rng)
+            if questions:
+                return QuizResponse(questions=questions[: req.count], current_time_ms=t_ms)
             log.warning("quiz: no valid questions in model reply (%d chars)", len(text or ""))
-            return refuse(QUIZ_FAILED_TEXT)
-        return QuizResponse(questions=questions[: req.count], current_time_ms=t_ms)
+        return refuse(QUIZ_FAILED_TEXT)
 
     async def grade(self, req: GradeRequest) -> GradeResponse:
-        text = await self._complete(GRADE_SYSTEM, build_grade_prompt(req), [], "quiz_grade")
-        return _clamp_grade(parse_json_object(text)) or keyword_grade(req)
+        async for text in self._replies(GRADE_SYSTEM, build_grade_prompt(req), [], "quiz_grade"):
+            graded = _clamp_grade(parse_json_object(text))
+            if graded is not None:
+                return graded
+        return keyword_grade(req)

@@ -240,3 +240,33 @@ def test_lesson_sample_thins_evenly_and_varies_by_attempt():
     assert kinds.count("transcript") == 14 and kinds.count("visual") == 6
     assert a[0].start_ms < 10_000 and a[-1].start_ms > 80_000  # spans the lesson
     assert {p.chunk_id for p in a} != {p.chunk_id for p in b}
+
+
+class _FakeAgent:
+    def __init__(self, reply: str) -> None:
+        self.reply, self.calls = reply, 0
+
+    async def complete_text(self, system, user_prompt, **_kw) -> str:
+        self.calls += 1
+        return self.reply
+
+
+class _BrokenLLM:
+    async def complete(self, **_kw):
+        raise RuntimeError("quota")
+
+
+@pytest.mark.parametrize("llm", [_BrokenLLM(), _ScriptedLLM("not json")])
+def test_quiz_falls_back_to_the_agent_model(chroma_store, embedder, llm):
+    svc, sid, _ = _setup(chroma_store, embedder, "{}")
+    agent = _FakeAgent(json.dumps({"questions": [_mcq("open_early")]}))
+    svc._llm, svc._agent = llm, agent
+    resp = _quiz(svc, sid)
+    assert not resp.refused and agent.calls == 1
+
+
+def test_quiz_tries_the_chat_model_before_the_agent(chroma_store, embedder):
+    svc, sid, _ = _setup(chroma_store, embedder, json.dumps({"questions": [_mcq("open_early")]}))
+    agent = _FakeAgent("{}")
+    svc._agent = agent
+    assert not _quiz(svc, sid).refused and agent.calls == 0
