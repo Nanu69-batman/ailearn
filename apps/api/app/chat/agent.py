@@ -30,6 +30,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
+from app.chat.completed import COMPLETED_K, COMPLETED_T_MS, merge_completed
 from app.chat.intent import SMALLTALK, classify_intent, has_subject_content
 from app.chat.prompts import (
     ANTI_SPOILER_RULE,
@@ -177,13 +178,21 @@ def _passage_block(p) -> str:
     return f"<passage {' '.join(attrs)}>\n{p.text}\n</passage>"
 
 
-def build_agent_system(t_ms: int, mode: str) -> str:
+def build_agent_system(t_ms: int, mode: str, *, has_done: bool = False) -> str:
+    done_note = (
+        "search_lesson also returns passages from course materials the learner "
+        "has marked done; those were studied in full, so any part of them may "
+        "be used.\n\n"
+        if has_done
+        else ""
+    )
     return (
         TUTOR_PERSONA
         + f"The learner has paused the lesson video at {_fmt(t_ms)}. You can "
         "only see lesson content through your tools, and the tools only ever "
         "return content up to that moment.\n\n"
-        "How to work:\n"
+        + done_note
+        + "How to work:\n"
         "- Greetings, thanks, or questions about you: reply directly in 1-3 "
         "sentences, call no tool, cite nothing. If asked who you are, say you "
         "are Malai and what you can do (answer from what they've watched with "
@@ -271,6 +280,7 @@ class LessonAgent:
         focus_resource_id: str | None,
         store,
         retrieval,
+        done: Sequence[str] = (),
         history: Sequence[str] = (),
         live_passage=None,
     ) -> AgentOutcome:
@@ -280,18 +290,21 @@ class LessonAgent:
         answer cannot be served safely; the caller then uses the classic path.
         """
         seen: dict[str, object] = {}
+        completed = set(done)
 
         def admit(passages) -> list:
             kept = []
             for p in passages:
                 # Belt and braces over the store's own gate: nothing that ends
-                # after T, or has no end, reaches the model.
+                # after T, or has no end, reaches the model. A material marked
+                # done is read at the end of time, so only "no end" drops it.
+                limit = COMPLETED_T_MS if p.resource_id in completed else t_ms
                 if p.source_type in TIME_GATED_SOURCE_TYPES and (
-                    p.end_ms is None or int(p.end_ms) > t_ms
+                    p.end_ms is None or int(p.end_ms) > limit
                 ):
                     log.warning("agent: dropped %s past T", p.chunk_id)
                     continue
-                if p.resource_id and p.resource_id not in allowed:
+                if p.resource_id and p.resource_id not in allowed and p.resource_id not in completed:
                     log.warning("agent: dropped %s outside scope", p.chunk_id)
                     continue
                 seen[p.chunk_id] = p
@@ -310,6 +323,14 @@ class LessonAgent:
                         k=SEARCH_K,
                         focus_resource_id=focus_resource_id,
                     )
+                    if completed:
+                        found = merge_completed(
+                            found,
+                            await retrieval.retrieve(
+                                query, course_id, list(completed), COMPLETED_T_MS,
+                                k=COMPLETED_K,
+                            ),
+                        )
                 except QuotaExhaustedError:
                     # Search spends an embedding request; reading by time does
                     # not. Point the model at the tool that still works.
@@ -366,7 +387,7 @@ class LessonAgent:
         user_lines.append(f"Learner ({mode}): {message}")
 
         messages: list[dict] = [
-            {"role": "system", "content": build_agent_system(t_ms, mode)},
+            {"role": "system", "content": build_agent_system(t_ms, mode, has_done=bool(completed))},
             {"role": "user", "content": "\n".join(user_lines)},
         ]
         tool_calls_made = 0

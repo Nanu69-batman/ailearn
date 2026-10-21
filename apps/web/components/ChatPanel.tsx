@@ -38,6 +38,11 @@ interface ChatPanelProps {
   onSeek: (startMs: number) => void;
   /** The resource open beside the chat; its citations are shown there on click. */
   openDoc?: CitationBadgeProps["openDoc"];
+  /**
+   * Other materials the learner marked done. The chat reads the open
+   * material plus these, and nothing else from the course.
+   */
+  completedResourceIds?: string[];
   offline: boolean;
   onRejoin?: () => void;
 }
@@ -101,6 +106,7 @@ export default function ChatPanel({
   captureFrame,
   onSeek,
   openDoc,
+  completedResourceIds = [],
   offline,
   onRejoin,
 }: ChatPanelProps) {
@@ -335,6 +341,7 @@ export default function ChatPanel({
             mode,
             force_frame: forced,
             thread_id: threadId,
+            completed_resource_ids: completedResourceIds,
           });
         }
       }
@@ -352,6 +359,7 @@ export default function ChatPanel({
               message: text,
               mode,
               thread_id: threadId,
+              completed_resource_ids: completedResourceIds,
             });
       }
 
@@ -432,7 +440,11 @@ export default function ChatPanel({
           </div>
           <div className="min-w-0">
             <h2 className="text-base font-semibold leading-tight text-gray-900">Malai · AI tutor</h2>
-            <p className="truncate text-xs text-gray-500">Answers come from what you&apos;ve watched so far</p>
+            <p className="truncate text-xs text-gray-500" title="Malai reads this material up to where you are, plus the materials you've marked done.">
+              {completedResourceIds.length > 0
+                ? `This lesson so far + ${completedResourceIds.length} completed material${completedResourceIds.length === 1 ? "" : "s"}`
+                : "Answers come from what you've watched so far"}
+            </p>
           </div>
         </div>
         {offline && <span className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-xs text-amber-600">offline mock</span>}

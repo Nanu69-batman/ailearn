@@ -161,6 +161,19 @@ export default function ContentPage() {
   );
 
   /**
+   * What the chat may read besides the open material: the ticked ones that
+   * still exist in this subject. The server intersects this with the session
+   * grant again, so a stale or edited list can only narrow, never widen.
+   */
+  const completedForChat = useMemo(
+    () =>
+      completedIds.filter(
+        (id) => id !== resourceId && resources.some((r) => r.id === id),
+      ),
+    [completedIds, resourceId, resources],
+  );
+
+  /**
    * Explicit, history-independent return to the subject page. It is a push,
    * not `history.back()`, because it must work on a cold deep link too.
    */
@@ -635,6 +648,7 @@ export default function ContentPage() {
             captureFrame={captureFrame}
             onSeek={handleSeek}
             openDoc={selected.kind === "pptx" || selected.kind === "image" || (selected.kind === "pdf" && !selected.src) ? null : openDoc}
+            completedResourceIds={completedForChat}
             offline={offline}
             onRejoin={reset}
           />

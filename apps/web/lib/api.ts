@@ -204,6 +204,12 @@ export interface ChatRequest {
   mode?: ChatMode;
   /** Which of the session's chats; omitted = the original one ("main"). */
   thread_id?: string;
+  /**
+   * Materials marked done in the course checklist. Besides the open one
+   * (`video_id`), the chat may read these in full; the server intersects them
+   * with the session grant, so this can never reach an ungranted material.
+   */
+  completed_resource_ids?: string[];
 }
 
 export type CitationSourceType =
@@ -581,6 +587,7 @@ export interface LiveFrameRequest {
   /** True when the learner pressed "about this frame", overriding the wording. */
   force_frame?: boolean;
   thread_id?: string;
+  completed_resource_ids?: string[];
 }
 
 export async function postChatWithFrame(
@@ -603,6 +610,9 @@ export async function postChatWithFrame(
   if (token) form.append("session_token", token);
   form.append("force_frame", req.force_frame ? "true" : "false");
   if (req.thread_id) form.append("thread_id", req.thread_id);
+  for (const id of req.completed_resource_ids ?? []) {
+    form.append("completed_resource_ids", id);
+  }
 
   let res: Response;
   try {

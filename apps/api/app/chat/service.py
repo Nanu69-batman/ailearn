@@ -6,6 +6,12 @@ import asyncio
 import logging
 from collections.abc import Sequence
 
+from app.chat.completed import (
+    COMPLETED_K,
+    COMPLETED_T_MS,
+    completed_scope,
+    merge_completed,
+)
 from app.chat.intent import (
     COVERAGE_QUERY,
     INTENT_MODES,
@@ -236,6 +242,7 @@ class ChatService:
         focus_resource_id: str | None = None,
         live_frame=None,
         no_frame_note: str | None = None,
+        completed_resource_ids: Sequence[str] = (),
     ) -> ChatResponse:
         """Answer one learner question; flags ``visual_pending`` when visuals lag."""
         from app.chat.launch import clamp_current_time_ms
@@ -256,6 +263,7 @@ class ChatService:
             live_frame=live_frame,
             no_frame_note=no_frame_note,
             visual_through=visual_through,
+            completed_resource_ids=completed_resource_ids,
         )
         if visual_through is not None:
             resp.visual_pending = True
@@ -273,6 +281,7 @@ class ChatService:
         live_frame=None,
         no_frame_note: str | None = None,
         visual_through: int | None = None,
+        completed_resource_ids: Sequence[str] = (),
     ) -> ChatResponse:
         """Answer one learner question.
 
@@ -323,6 +332,11 @@ class ChatService:
         # sending it through the general-knowledge fallback produced an invented
         # lesson for "who are you". A captured frame always means a real
         # question about the screen, so it is never smalltalk.
+        # Materials marked done, readable in full alongside the open one.
+        done = completed_scope(
+            session.resource_scope, focus_resource_id, completed_resource_ids
+        )
+
         if self._agent is not None and self._pending_frontier(allowed, t_ms) is None:
             resp = await self._agent_answer(
                 session=session,
@@ -330,6 +344,7 @@ class ChatService:
                 mode=mode,
                 t_ms=t_ms,
                 allowed=allowed,
+                done=done,
                 focus_resource_id=focus_resource_id,
                 live_frame=live_frame,
                 no_frame_note=no_frame_note,
@@ -393,6 +408,13 @@ class ChatService:
             prefer_recent=prefer_recent,
         )
         passages = apply_strict_timestamp(passages, t_ms, mode)
+        if done:
+            # Its own retrieval, so the open material's gate and ranking are
+            # untouched; `retrieve` asserts no leakage at COMPLETED_T_MS.
+            extra = await retrieval.retrieve(
+                rewritten, session.course_id, done, COMPLETED_T_MS, k=COMPLETED_K
+            )
+            passages = merge_completed(passages, extra)
 
         live_passage = None
         if live_frame is not None:
@@ -655,6 +677,7 @@ class ChatService:
         focus_resource_id: str | None,
         live_frame,
         no_frame_note: str | None,
+        done: Sequence[str] = (),
     ) -> ChatResponse | None:
         """One agentic turn, or ``None`` to fall back to the classic pipeline.
 
@@ -682,6 +705,7 @@ class ChatService:
                     t_ms=t_ms,
                     course_id=session.course_id,
                     allowed=allowed,
+                    done=list(done),
                     focus_resource_id=focus_resource_id,
                     store=self._store,
                     retrieval=self._retrieval(),

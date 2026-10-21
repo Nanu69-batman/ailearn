@@ -231,9 +231,10 @@ async def post_chat(body: ChatRequest, request: Request) -> ChatResponse:
             current_time_ms=clamp_current_time_ms(body.current_time_ms),
             message=body.message,
             mode=body.mode.value,
-            # Ranking preference only: boosts the video the learner is watching
-            # without dropping the rest of the course scope.
+            # The open material. Retrieval reads the grant INTERSECT this one
+            # (gated at the playhead), plus whatever was marked done.
             focus_resource_id=body.video_id,
+            completed_resource_ids=body.completed_resource_ids,
         )
     except SessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail="session not found") from exc
@@ -430,6 +431,7 @@ async def post_chat_live_frame(
     session_token: Annotated[str | None, Form()] = None,
     force_frame: Annotated[bool, Form()] = False,
     thread_id: Annotated[str | None, Form(max_length=64)] = None,
+    completed_resource_ids: Annotated[list[str] | None, Form()] = None,
 ) -> ChatResponse:
     from app.config import settings
     from app.ingestion.liveframe import (
@@ -490,6 +492,7 @@ async def post_chat_live_frame(
             message=message,
             mode=chat_mode,
             focus_resource_id=video_id,
+            completed_resource_ids=completed_resource_ids or [],
             live_frame=None,
             no_frame_note=DOCUMENT_NO_FRAME_TEXT,
         )
@@ -565,5 +568,6 @@ async def post_chat_live_frame(
         message=message,
         mode=chat_mode,
         focus_resource_id=video_id,
+        completed_resource_ids=completed_resource_ids or [],
         live_frame=live,
     )

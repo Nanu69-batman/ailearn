@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -58,6 +58,12 @@ class ChatRequest(BaseModel):
     #: Which of the session's chats this message belongs to; omitted means the
     #: session's original chat ("main").
     thread_id: str | None = Field(default=None, max_length=64)
+    #: Materials the learner marked done. Besides the open material
+    #: (``video_id``), these are readable in full. Intersected with the
+    #: session grant server-side: never a way to read an ungranted resource.
+    completed_resource_ids: list[Annotated[str, Field(max_length=64)]] = Field(
+        default_factory=list, max_length=100
+    )
 
 
 #: What kind of signal a citation was drawn from, for material where that
