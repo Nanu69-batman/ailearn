@@ -221,6 +221,7 @@ All deliverables are in [submission/](submission/), and its
 | API documentation | [submission/API.md](submission/API.md); live Swagger UI at `/docs` |
 | Sample dataset | [submission/DATASET.md](submission/DATASET.md) and `test-data/` (lecture video and PDF notes); golden set in `submission/eval/` |
 | Evaluation results and testing | [submission/EVALUATION.md](submission/EVALUATION.md); raw results in `submission/eval-results/` |
+| Demo video | [submission/My Video-1.mp4](submission/My%20Video-1.mp4) |
 | Deployment instructions | [submission/DEPLOYMENT.md](submission/DEPLOYMENT.md) |
 
 ## Known limitations
