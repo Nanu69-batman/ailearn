@@ -248,11 +248,11 @@ function SeekBar({
         />
         {known && cited && (
           <div
-            className="pointer-events-none absolute -inset-y-[3px] rounded-sm bg-amber-400/90 shadow-[0_0_8px_rgba(251,191,36,0.8)] ring-1 ring-amber-200"
+            className="pointer-events-none absolute inset-y-0 rounded-full bg-amber-400"
             style={{
               left: `${citedLeft}%`,
-              // An instant (a live frame) still gets a visible 3px tick.
-              width: `max(3px, ${citedRight - citedLeft}%)`,
+              // An instant (a live frame) still gets a visible 2px tick.
+              width: `max(2px, ${citedRight - citedLeft}%)`,
             }}
             title={`Cited: ${formatClock(cited.startMs / 1000)}${
               cited.endMs > cited.startMs ? `–${formatClock(cited.endMs / 1000)}` : ""

@@ -24,8 +24,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import uuid
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -95,6 +97,144 @@ class StoredMessage:
     content: str
     citations: list[dict] = field(default_factory=list)
     created_at: str = field(default_factory=_utcnow_iso)
+
+
+# ---------------------------------------------------------------------------
+# Chats (threads) within a session.
+#
+# A learner can keep several chats. Each is a separate message history inside
+# the same launch session, so the session's scope, grant and token are shared
+# and nothing about the safety checks changes: the chat service never sees a
+# thread at all. Which history it reads and writes is chosen by the
+# ``current_thread`` context variable, set per request by the router, and the
+# message store keys that thread's rows apart. A ContextVar is per request
+# (per asyncio task / worker thread), so concurrent chats cannot cross.
+# ---------------------------------------------------------------------------
+
+#: The chat every session has from the start; its rows keep the bare session
+#: id as their key, so histories written before threads existed are this one.
+MAIN_THREAD = "main"
+MAX_THREADS_PER_SESSION = 50
+THREAD_TITLE_MAX = 80
+_THREAD_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+current_thread: ContextVar[str] = ContextVar("current_thread", default=MAIN_THREAD)
+
+
+def valid_thread_id(thread_id: str) -> bool:
+    return bool(_THREAD_ID.fullmatch(thread_id or ""))
+
+
+def history_key(session_id: str, thread_id: str | None = None) -> str:
+    """Message-store key for one chat of a session."""
+    tid = thread_id if thread_id is not None else current_thread.get()
+    return session_id if tid == MAIN_THREAD else f"{session_id}#{tid}"
+
+
+@dataclass
+class ChatThread:
+    id: str
+    session_id: str
+    #: None until the learner renames it; the list then shows the first
+    #: question asked in it instead.
+    title: str | None = None
+    created_at: str = field(default_factory=_utcnow_iso)
+
+
+class InMemoryThreadStore:
+    def __init__(self) -> None:
+        self._threads: dict[str, dict[str, ChatThread]] = {}
+
+    def snapshot(self) -> dict[str, list[dict]]:
+        with _state_lock:
+            return {
+                sid: [asdict(t) for t in list(ts.values())]
+                for sid, ts in list(self._threads.items())
+                if ts
+            }
+
+    def restore(self, data: dict[str, list[dict]]) -> None:
+        for sid, rows in list(data.items()):
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                try:
+                    t = ChatThread(
+                        id=str(row["id"]),
+                        session_id=str(row["session_id"]),
+                        title=row.get("title"),
+                        created_at=str(row.get("created_at") or _utcnow_iso()),
+                    )
+                except (KeyError, TypeError, ValueError) as exc:
+                    log.warning("skipping unreadable thread row in %s: %s", sid, exc)
+                    continue
+                if valid_thread_id(t.id):
+                    with _state_lock:
+                        self._threads.setdefault(sid, {})[t.id] = t
+
+    def _ensure_main(self, session_id: str, created_at: str | None) -> None:
+        ts = self._threads.setdefault(session_id, {})
+        if MAIN_THREAD not in ts:
+            ts[MAIN_THREAD] = ChatThread(
+                id=MAIN_THREAD,
+                session_id=session_id,
+                created_at=created_at or _utcnow_iso(),
+            )
+
+    def list(
+        self, session_id: str, *, session_created_at: str | None = None
+    ) -> list[ChatThread]:
+        with _state_lock:
+            self._ensure_main(session_id, session_created_at)
+            return list(self._threads[session_id].values())
+
+    def get(self, session_id: str, thread_id: str) -> ChatThread | None:
+        with _state_lock:
+            if thread_id == MAIN_THREAD:
+                self._ensure_main(session_id, None)
+            return self._threads.get(session_id, {}).get(thread_id)
+
+    def create(self, session_id: str) -> ChatThread:
+        with _state_lock:
+            self._ensure_main(session_id, None)
+            ts = self._threads[session_id]
+            if len(ts) >= MAX_THREADS_PER_SESSION:
+                raise ValueError(
+                    f"a session keeps at most {MAX_THREADS_PER_SESSION} chats; "
+                    "delete one first"
+                )
+            t = ChatThread(id=f"thr_{uuid.uuid4().hex[:12]}", session_id=session_id)
+            ts[t.id] = t
+        save_session_state()
+        return t
+
+    def rename(self, session_id: str, thread_id: str, title: str) -> ChatThread | None:
+        clean = " ".join(title.split())[:THREAD_TITLE_MAX] or None
+        with _state_lock:
+            t = self._threads.get(session_id, {}).get(thread_id)
+            if t is None:
+                return None
+            t.title = clean
+        save_session_state()
+        return t
+
+    def delete(self, session_id: str, thread_id: str) -> bool:
+        """Remove a chat and its messages. Deleting the main chat empties it."""
+        with _state_lock:
+            ts = self._threads.get(session_id, {})
+            if thread_id not in ts:
+                return False
+            if thread_id == MAIN_THREAD:
+                ts[thread_id].title = None
+            else:
+                del ts[thread_id]
+        message_store.drop(history_key(session_id, thread_id))
+        save_session_state()
+        return True
+
+    def clear(self) -> None:
+        with _state_lock:
+            self._threads.clear()
 
 
 class SessionRepository(Protocol):
@@ -254,22 +394,29 @@ class InMemoryMessageStore:
             citations=list(citations) if citations else [],
         )
         with _state_lock:
-            self._messages.setdefault(session_id, []).append(msg)
+            self._messages.setdefault(history_key(session_id), []).append(msg)
         save_session_state()
         return msg
 
-    def list_for_session(self, session_id: str) -> list[StoredMessage]:
+    def list_for_session(
+        self, session_id: str, thread_id: str | None = None
+    ) -> list[StoredMessage]:
+        """The messages of one chat: ``thread_id``, else the current one."""
         with _state_lock:
-            return list(self._messages.get(session_id, []))
+            return list(self._messages.get(history_key(session_id, thread_id), []))
 
     def user_texts(self, session_id: str, limit: int = 5) -> list[str]:
         with _state_lock:
             texts = [
                 m.content
-                for m in self._messages.get(session_id, [])
+                for m in self._messages.get(history_key(session_id), [])
                 if m.role == "user"
             ]
         return texts[-limit:]
+
+    def drop(self, key: str) -> None:
+        with _state_lock:
+            self._messages.pop(key, None)
 
     def clear(self) -> None:
         with _state_lock:
@@ -278,6 +425,7 @@ class InMemoryMessageStore:
 
 session_store = InMemorySessionStore()
 message_store = InMemoryMessageStore()
+thread_store = InMemoryThreadStore()
 
 
 def _parse_iso(value: str) -> datetime | None:
@@ -304,6 +452,7 @@ def save_session_state() -> None:
                 {
                     "sessions": session_store.snapshot(),
                     "messages": message_store.snapshot(),
+                    "threads": thread_store.snapshot(),
                 }
             ),
             encoding="utf-8",
@@ -335,6 +484,9 @@ def load_session_state() -> int:
     )
     if isinstance(messages, dict):
         message_store.restore(messages)
+    threads = data.get("threads")
+    if isinstance(threads, dict):
+        thread_store.restore(threads)
     if n_sessions:
         log.info("restored %d sessions from local session state", n_sessions)
     return n_sessions
@@ -353,3 +505,4 @@ def get_message_store() -> MessageRepository:
 def reset_stores() -> None:
     session_store.clear()
     message_store.clear()
+    thread_store.clear()

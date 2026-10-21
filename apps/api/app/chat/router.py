@@ -25,9 +25,21 @@ from app.chat.schemas import (
     LmsSessionResponse,
     MessageOut,
     MessagesResponse,
+    ThreadOut,
+    ThreadRenameRequest,
+    ThreadsResponse,
 )
 from app.chat.service import ChatService, SessionNotFoundError
-from app.chat.sessions import message_store, reset_stores, session_store
+from app.chat.sessions import (
+    MAIN_THREAD,
+    ChatThread,
+    current_thread,
+    message_store,
+    reset_stores,
+    session_store,
+    thread_store,
+    valid_thread_id,
+)
 from app.ingestion.backoff import QuotaExhaustedError
 
 log = logging.getLogger(__name__)
@@ -211,6 +223,7 @@ async def post_chat(body: ChatRequest, request: Request) -> ChatResponse:
         learner_id=session.learner_id,
         token=body.session_token,
     )
+    _use_thread(session.id, body.thread_id)
     service = get_service()
     try:
         return await service.chat(
@@ -238,10 +251,24 @@ async def post_chat(body: ChatRequest, request: Request) -> ChatResponse:
         raise HTTPException(status_code=502, detail="upstream provider error") from exc
 
 
-@router.get("/sessions/{session_id}/messages", response_model=MessagesResponse)
-def get_messages(
-    session_id: str, request: Request, session_token: str | None = None
-) -> MessagesResponse:
+def _resolve_thread(session_id: str, thread_id: str | None) -> str:
+    """A chat id that exists in this session, or 404. None means "main"."""
+    tid = thread_id or MAIN_THREAD
+    if not valid_thread_id(tid) or thread_store.get(session_id, tid) is None:
+        raise HTTPException(status_code=404, detail="chat not found")
+    return tid
+
+
+def _use_thread(session_id: str, thread_id: str | None) -> None:
+    """Point this request's message history at one chat of the session.
+
+    Called only after the session token has been verified. The chat service
+    is unaware of threads; the message store reads ``current_thread``.
+    """
+    current_thread.set(_resolve_thread(session_id, thread_id))
+
+
+def _authed_session(session_id: str, request: Request, session_token: str | None):
     from app.config import settings
 
     session = session_store.get(session_id)
@@ -254,6 +281,84 @@ def get_messages(
         learner_id=session.learner_id,
         token=token,
     )
+    return session
+
+
+def _thread_out(session_id: str, t: ChatThread) -> ThreadOut:
+    msgs = message_store.list_for_session(session_id, t.id)
+    first_q = next((m.content for m in msgs if m.role == "user"), None)
+    derived = " ".join(first_q.split())[:60] if first_q else None
+    return ThreadOut(
+        id=t.id,
+        title=t.title or derived,
+        renamed=t.title is not None,
+        created_at=t.created_at,
+        updated_at=msgs[-1].created_at if msgs else t.created_at,
+        message_count=len(msgs),
+    )
+
+
+@router.get("/sessions/{session_id}/threads", response_model=ThreadsResponse)
+def list_threads(
+    session_id: str, request: Request, session_token: str | None = None
+) -> ThreadsResponse:
+    session = _authed_session(session_id, request, session_token)
+    threads = [
+        _thread_out(session.id, t)
+        for t in thread_store.list(session.id, session_created_at=session.created_at)
+    ]
+    threads.sort(key=lambda t: t.updated_at, reverse=True)
+    return ThreadsResponse(session_id=session.id, threads=threads)
+
+
+@router.post("/sessions/{session_id}/threads", response_model=ThreadOut)
+def create_thread(
+    session_id: str, request: Request, session_token: str | None = None
+) -> ThreadOut:
+    session = _authed_session(session_id, request, session_token)
+    try:
+        t = thread_store.create(session.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _thread_out(session.id, t)
+
+
+@router.patch("/sessions/{session_id}/threads/{thread_id}", response_model=ThreadOut)
+def rename_thread(
+    session_id: str,
+    thread_id: str,
+    body: ThreadRenameRequest,
+    request: Request,
+    session_token: str | None = None,
+) -> ThreadOut:
+    session = _authed_session(session_id, request, session_token)
+    tid = _resolve_thread(session.id, thread_id)
+    t = thread_store.rename(session.id, tid, body.title)
+    if t is None:
+        raise HTTPException(status_code=404, detail="chat not found")
+    return _thread_out(session.id, t)
+
+
+@router.delete("/sessions/{session_id}/threads/{thread_id}")
+def delete_thread(
+    session_id: str, thread_id: str, request: Request, session_token: str | None = None
+) -> dict:
+    """Delete a chat and its messages. The main chat is emptied, not removed."""
+    session = _authed_session(session_id, request, session_token)
+    tid = _resolve_thread(session.id, thread_id)
+    thread_store.delete(session.id, tid)
+    return {"deleted": True, "thread_id": tid, "emptied": tid == MAIN_THREAD}
+
+
+@router.get("/sessions/{session_id}/messages", response_model=MessagesResponse)
+def get_messages(
+    session_id: str,
+    request: Request,
+    session_token: str | None = None,
+    thread_id: str | None = None,
+) -> MessagesResponse:
+    session = _authed_session(session_id, request, session_token)
+    tid = _resolve_thread(session.id, thread_id)
     out = [
         MessageOut(
             role=m.role,
@@ -261,9 +366,9 @@ def get_messages(
             citations=m.citations,  # type: ignore[arg-type]
             created_at=m.created_at,
         )
-        for m in message_store.list_for_session(session_id)
+        for m in message_store.list_for_session(session_id, tid)
     ]
-    return MessagesResponse(session_id=session_id, messages=out)
+    return MessagesResponse(session_id=session_id, messages=out, thread_id=tid)
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +429,7 @@ async def post_chat_live_frame(
     video_id: Annotated[str | None, Form()] = None,
     session_token: Annotated[str | None, Form()] = None,
     force_frame: Annotated[bool, Form()] = False,
+    thread_id: Annotated[str | None, Form(max_length=64)] = None,
 ) -> ChatResponse:
     from app.config import settings
     from app.ingestion.liveframe import (
@@ -349,6 +455,7 @@ async def post_chat_live_frame(
         learner_id=session.learner_id,
         token=token,
     )
+    _use_thread(session.id, thread_id)
     chat_mode = _validate_mode(mode)
 
     resource_id = video_id or session.resource_id

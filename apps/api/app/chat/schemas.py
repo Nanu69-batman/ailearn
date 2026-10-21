@@ -55,6 +55,9 @@ class ChatRequest(BaseModel):
     current_time_ms: int = Field(ge=0, le=MAX_CURRENT_TIME_MS)
     message: str = Field(min_length=1, max_length=4000)
     mode: ChatMode = Field(default=ChatMode.qa)
+    #: Which of the session's chats this message belongs to; omitted means the
+    #: session's original chat ("main").
+    thread_id: str | None = Field(default=None, max_length=64)
 
 
 #: What kind of signal a citation was drawn from, for material where that
@@ -177,3 +180,27 @@ class MessageOut(BaseModel):
 class MessagesResponse(BaseModel):
     session_id: str
     messages: list[MessageOut]
+    thread_id: str = "main"
+
+
+class ThreadOut(BaseModel):
+    id: str
+    #: The learner's name for it, else the first question asked, else None.
+    title: str | None = None
+    #: True when ``title`` was set by the learner (not derived).
+    renamed: bool = False
+    created_at: str
+    #: Time of the last message, or ``created_at`` for an empty chat.
+    updated_at: str
+    message_count: int = 0
+
+
+class ThreadsResponse(BaseModel):
+    session_id: str
+    threads: list[ThreadOut]
+
+
+class ThreadRenameRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(max_length=200)

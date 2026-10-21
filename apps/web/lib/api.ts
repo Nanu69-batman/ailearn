@@ -202,6 +202,8 @@ export interface ChatRequest {
   current_time_ms: number;
   message: string;
   mode?: ChatMode;
+  /** Which of the session's chats; omitted = the original one ("main"). */
+  thread_id?: string;
 }
 
 export type CitationSourceType =
@@ -458,14 +460,90 @@ export interface MessagesEnvelope {
 export async function getMessages(
   sessionId: string,
   sessionToken?: string,
+  threadId?: string,
 ): Promise<ChatMessage[]> {
   // Header X-Session-Token preferred (router also accepts ?session_token=).
   const token = sessionToken ?? getStoredSessionToken() ?? undefined;
+  const query = threadId ? `?thread_id=${encodeURIComponent(threadId)}` : "";
   const envelope = await apiFetch<MessagesEnvelope>(
-    `/sessions/${encodeURIComponent(sessionId)}/messages`,
+    `/sessions/${encodeURIComponent(sessionId)}/messages${query}`,
     token ? { headers: { "X-Session-Token": token } } : undefined,
   );
-  return envelope.messages.map((m, i) => ({ ...m, id: `${sessionId}#${i}` }));
+  return envelope.messages.map((m, i) => ({
+    ...m,
+    id: `${sessionId}#${threadId ?? "main"}#${i}`,
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Chats (threads) within a session — apps/api/app/chat/router.py
+//   GET    /sessions/{id}/threads              -> { threads: ChatThread[] }
+//   POST   /sessions/{id}/threads              -> ChatThread
+//   PATCH  /sessions/{id}/threads/{thread_id}  { title } -> ChatThread
+//   DELETE /sessions/{id}/threads/{thread_id}  (the "main" chat is emptied)
+// ---------------------------------------------------------------------------
+
+export const MAIN_THREAD_ID = "main";
+
+export interface ChatThread {
+  id: string;
+  /** Learner's name for it, else the first question asked, else null. */
+  title: string | null;
+  renamed: boolean;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+}
+
+function threadsPath(sessionId: string, threadId?: string): string {
+  const base = `/sessions/${encodeURIComponent(sessionId)}/threads`;
+  return threadId ? `${base}/${encodeURIComponent(threadId)}` : base;
+}
+
+function tokenHeaders(sessionToken?: string): Record<string, string> | undefined {
+  const token = sessionToken ?? getStoredSessionToken() ?? undefined;
+  return token ? { "X-Session-Token": token } : undefined;
+}
+
+export async function listThreads(
+  sessionId: string,
+  sessionToken?: string,
+): Promise<ChatThread[]> {
+  const res = await apiFetch<{ threads: ChatThread[] }>(threadsPath(sessionId), {
+    headers: tokenHeaders(sessionToken),
+  });
+  return res.threads;
+}
+
+export function createThread(sessionId: string, sessionToken?: string): Promise<ChatThread> {
+  return apiFetch<ChatThread>(threadsPath(sessionId), {
+    method: "POST",
+    headers: tokenHeaders(sessionToken),
+  });
+}
+
+export function renameThread(
+  sessionId: string,
+  threadId: string,
+  title: string,
+  sessionToken?: string,
+): Promise<ChatThread> {
+  return apiFetch<ChatThread>(threadsPath(sessionId, threadId), {
+    method: "PATCH",
+    body: JSON.stringify({ title }),
+    headers: tokenHeaders(sessionToken),
+  });
+}
+
+export async function deleteThread(
+  sessionId: string,
+  threadId: string,
+  sessionToken?: string,
+): Promise<void> {
+  await apiFetch<unknown>(threadsPath(sessionId, threadId), {
+    method: "DELETE",
+    headers: tokenHeaders(sessionToken),
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -502,6 +580,7 @@ export interface LiveFrameRequest {
   mode?: ChatMode;
   /** True when the learner pressed "about this frame", overriding the wording. */
   force_frame?: boolean;
+  thread_id?: string;
 }
 
 export async function postChatWithFrame(
@@ -523,6 +602,7 @@ export async function postChatWithFrame(
   if (req.video_id) form.append("video_id", req.video_id);
   if (token) form.append("session_token", token);
   form.append("force_frame", req.force_frame ? "true" : "false");
+  if (req.thread_id) form.append("thread_id", req.thread_id);
 
   let res: Response;
   try {

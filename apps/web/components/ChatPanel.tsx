@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChatMessage, ChatMode, LiveFrameCapture } from "../lib/api";
 import {
   ApiError,
@@ -10,9 +10,16 @@ import {
   isSessionExpiredError,
   postChat,
   postChatWithFrame,
+  listThreads,
+  createThread,
+  renameThread,
+  deleteThread,
+  MAIN_THREAD_ID,
+  type ChatThread,
 } from "../lib/api";
 import { mockChatAnswer, mockHistory } from "../lib/fixtures";
 import MessageList from "./MessageList";
+import ChatThreads from "./ChatThreads";
 import type { CitationBadgeProps } from "./CitationBadge";
 import ModeSelector from "./ModeSelector";
 
@@ -60,6 +67,27 @@ function isFatalSessionError(err: unknown): boolean {
   return isSessionExpiredError(err) || isSessionGoneError(err);
 }
 
+/** The chat a learner last had open, per session; survives a reload. */
+function threadKey(sessionId: string): string {
+  return `ailearn.chat_thread.${sessionId}`;
+}
+
+function readThread(sessionId: string): string {
+  try {
+    return window.localStorage.getItem(threadKey(sessionId)) || MAIN_THREAD_ID;
+  } catch {
+    return MAIN_THREAD_ID;
+  }
+}
+
+function writeThread(sessionId: string, threadId: string): void {
+  try {
+    window.localStorage.setItem(threadKey(sessionId), threadId);
+  } catch {
+    // Storage unavailable -> the choice lasts for this page only.
+  }
+}
+
 function fmtMs(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
   return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
@@ -103,6 +131,87 @@ export default function ChatPanel({
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
+  // ---- Chats -------------------------------------------------------------
+  // Several chats per session, each its own history on the server. The
+  // selection is per session and remembered locally; an id that no longer
+  // exists (deleted elsewhere, server restarted) falls back to "main".
+  const [threads, setThreads] = useState<ChatThread[]>([]);
+  const [threadId, setThreadId] = useState<string>(MAIN_THREAD_ID);
+  const [threadBusy, setThreadBusy] = useState(false);
+  const [threadError, setThreadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setThreadId(readThread(sessionId));
+  }, [sessionId]);
+
+  const selectThread = useCallback(
+    (id: string): void => {
+      setThreadId(id);
+      writeThread(sessionId, id);
+      setSendError(null);
+      setFrameError(null);
+    },
+    [sessionId],
+  );
+
+  const refreshThreads = useCallback(async (): Promise<ChatThread[] | null> => {
+    if (offline) return null;
+    try {
+      const list = await listThreads(sessionId, sessionToken);
+      setThreads(list);
+      return list;
+    } catch {
+      return null; // the history load reports session problems
+    }
+  }, [offline, sessionId, sessionToken]);
+
+  useEffect(() => {
+    void refreshThreads().then((list) => {
+      if (list && !list.some((t) => t.id === readThread(sessionId))) {
+        selectThread(MAIN_THREAD_ID);
+      }
+    });
+  }, [refreshThreads, selectThread, sessionId]);
+
+  async function handleCreateThread(): Promise<void> {
+    setThreadBusy(true);
+    setThreadError(null);
+    try {
+      const t = await createThread(sessionId, sessionToken);
+      setThreads((prev) => [t, ...prev]);
+      selectThread(t.id);
+      inputRef.current?.focus();
+    } catch (err) {
+      setThreadError(formatApiError(err));
+    } finally {
+      setThreadBusy(false);
+    }
+  }
+
+  async function handleRenameThread(id: string, title: string): Promise<void> {
+    setThreadError(null);
+    try {
+      const t = await renameThread(sessionId, id, title, sessionToken);
+      setThreads((prev) => prev.map((x) => (x.id === id ? t : x)));
+    } catch (err) {
+      setThreadError(formatApiError(err));
+    }
+  }
+
+  async function handleDeleteThread(id: string): Promise<void> {
+    setThreadError(null);
+    try {
+      await deleteThread(sessionId, id, sessionToken);
+      if (id === threadId) {
+        if (id === MAIN_THREAD_ID) setMessages([]);
+        else selectThread(MAIN_THREAD_ID);
+      }
+      await refreshThreads();
+    } catch (err) {
+      setThreadError(formatApiError(err));
+    }
+  }
+
   useEffect(() => {
     let cancelled = false;
     async function load(): Promise<void> {
@@ -115,7 +224,11 @@ export default function ChatPanel({
         return;
       }
       try {
-        const history = await getMessages(sessionId, sessionToken);
+        const history = await getMessages(
+          sessionId,
+          sessionToken,
+          threadId === MAIN_THREAD_ID ? undefined : threadId,
+        );
         if (!cancelled) {
           setMessages(history);
           setHistoryState("ready");
@@ -138,7 +251,7 @@ export default function ChatPanel({
     return () => {
       cancelled = true;
     };
-  }, [sessionId, sessionToken, offline]);
+  }, [sessionId, sessionToken, offline, threadId]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -221,6 +334,7 @@ export default function ChatPanel({
             message: text,
             mode,
             force_frame: forced,
+            thread_id: threadId,
           });
         }
       }
@@ -237,6 +351,7 @@ export default function ChatPanel({
               current_time_ms: getCurrentTimeMs(),
               message: text,
               mode,
+              thread_id: threadId,
             });
       }
 
@@ -258,6 +373,9 @@ export default function ChatPanel({
         kind: res.refused ? "refused" : res.mode,
       };
       setMessages((prev) => [...prev, assistantMsg]);
+      // Titles come from a chat's first question, and the list is ordered by
+      // activity, so both may have changed.
+      void refreshThreads();
     } catch (err) {
       if (isFatalSessionError(err)) {
         // 401 = session binding rejected, 404 = session gone server-side.
@@ -319,6 +437,24 @@ export default function ChatPanel({
         </div>
         {offline && <span className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-xs text-amber-600">offline mock</span>}
       </div>
+
+      {!offline && !sessionExpired && (
+        <ChatThreads
+          threads={threads}
+          currentId={threadId}
+          disabled={sending}
+          busy={threadBusy}
+          onSelect={selectThread}
+          onCreate={() => void handleCreateThread()}
+          onRename={(id, title) => void handleRenameThread(id, title)}
+          onDelete={(id) => void handleDeleteThread(id)}
+        />
+      )}
+      {threadError && (
+        <p className="mb-2 rounded-lg bg-red-50 px-3 py-1.5 text-xs text-red-600" role="alert">
+          {threadError}
+        </p>
+      )}
 
       <ModeSelector value={mode} onChange={setMode} disabled={sending} />
 
