@@ -31,7 +31,10 @@ services:
       - key: VECTOR_STORE
         value: pinecone
       - key: PINECONE_INDEX
-        value: ailearn
+        value: ailearn-llama
+      # Pinecone Inference embeds chunks and queries (1024-d, llama-text-embed-v2).
+      - key: EMBEDDING_PROVIDER
+        value: pinecone
       - key: ALLOW_UNSIGNED_LAUNCH
         value: "false"
       - key: LOCAL_WHISPER_FALLBACK

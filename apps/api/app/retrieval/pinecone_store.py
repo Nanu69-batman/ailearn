@@ -196,6 +196,15 @@ class PineconeVectorStore(ChromaVectorStore):
             index = pc.Index(index_name)
         else:
             dimension = int(getattr(index, "dimension", 0) or 0)
+        width = getattr(self._embedder, "dim", None)
+        if width and dimension and int(width) != dimension:
+            # Vectors of one width compared against an index of another are
+            # meaningless; refuse to start rather than index garbage.
+            raise RuntimeError(
+                f"pinecone index {index_name!r} is {dimension}-d but the "
+                f"embedder produces {width}-d vectors; point PINECONE_INDEX at "
+                f"an index of the embedder's width"
+            )
         self.path = f"pinecone:{index_name or 'injected'}"
         self._collection = PineconeCollection(index, dimension=dimension)
         log.info("pinecone store ready (%s, dim=%d)", self.path, dimension)

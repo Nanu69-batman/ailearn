@@ -393,8 +393,11 @@ def test_youtube_caption_path_is_preferred(monkeypatch):
     )
 
     assert report["source"] == "captions"
-    assert report["caption_chunks"] == 2
-    assert len(captured) == 2
+    # Two cues within 30 s merge into one chunk spanning both.
+    assert report["caption_chunks"] == 1
+    assert len(captured) == 1
+    assert captured[0].text == "intro body"
+    assert (captured[0].start_ms, captured[0].end_ms) == (0, 4_000)
     for chunk in captured:
         assert chunk.start_ms is not None and chunk.end_ms is not None
         assert chunk.metadata["kind"] == "caption"

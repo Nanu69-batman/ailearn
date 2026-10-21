@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     llm_model: str = "gemini-3.5-flash-lite"
     embedding_api_key: str = ""
     embedding_model: str = "gemini-embedding-2"
+    # "pinecone" embeds chunks and queries with Pinecone Inference (needs
+    # PINECONE_API_KEY and a 1024-d index). Anything else keeps the old
+    # choice: Gemini when EMBEDDING_API_KEY is set, else offline hashing.
+    embedding_provider: str = ""
+    pinecone_embed_model: str = "llama-text-embed-v2"
     # Hosted transcription. Empty key = local faster-whisper only.
     groq_api_key: str = ""
     groq_transcribe_model: str = "whisper-large-v3-turbo"
@@ -71,8 +76,14 @@ class Settings(BaseSettings):
         Imported lazily inside the method: ``app.ingestion.embedder`` imports
         this module at import time, so a top-level import would be circular.
         """
-        from app.ingestion.embedder import EMBED_DIM, GEMINI_EMBED_DIM
+        from app.ingestion.embedder import (
+            EMBED_DIM,
+            GEMINI_EMBED_DIM,
+            PINECONE_EMBED_DIM,
+        )
 
+        if self.embedding_provider == "pinecone":
+            return PINECONE_EMBED_DIM
         return GEMINI_EMBED_DIM if self.embedding_api_key else EMBED_DIM
 
 

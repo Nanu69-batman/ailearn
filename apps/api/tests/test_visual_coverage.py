@@ -186,9 +186,13 @@ def test_ingest_media_indexes_visual_chunks_through_to_the_end(monkeypatch):
     assert report["visual_span_pct"] == 100.0
 
     visual = [c for c in store.added if c.metadata.get("kind") == "visual"]
-    assert len(visual) == N_FRAMES
-    assert max(c.start_ms for c in visual) == 652_000
-    assert max(c.end_ms for c in visual) == DURATION_MS
+    # Frames merge three to a chunk; coverage is proven by the spans tiling
+    # the whole timeline with no gap, not by a one-chunk-per-frame count.
+    assert len(visual) == -(-N_FRAMES // 3)
+    spans = sorted((c.start_ms, c.end_ms) for c in visual)
+    assert spans[0][0] == 0
+    assert all(a[1] == b[0] for a, b in itertools.pairwise(spans))
+    assert spans[-1][1] == DURATION_MS
 
 
 def test_the_removed_forty_frame_cap_reproduces_the_bug_and_is_now_degraded(
@@ -266,8 +270,8 @@ def test_partial_description_is_not_reported_as_complete(monkeypatch):
     )
 
     visual = [c for c in store.added if c.metadata.get("kind") == "visual"]
-    assert len(visual) == 40
-    assert max(c.start_ms for c in visual) == 156_000
+    assert len(visual) == -(-40 // 3)  # 40 frames, merged three to a chunk
+    assert max(c.end_ms for c in visual) == 160_000
 
 
 def test_a_visual_pass_that_describes_nothing_is_reported_as_failed(monkeypatch):

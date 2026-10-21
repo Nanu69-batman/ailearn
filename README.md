@@ -92,10 +92,10 @@ flowchart LR
   U["Learner's browser"] --> W["Next.js 15 web app<br/>Vercel"]
   W -->|"signed LMS launch (HMAC)"| A
   U -->|"REST: chat, ingest, media"| A["FastAPI API<br/>Docker on Render"]
-  A --> V[("Pinecone<br/>vector index")]
+  A --> V[("Pinecone<br/>vector index + embeddings")]
   A --> S[("Container disk<br/>videos, PDFs, PPTX, images")]
   A --> O["OpenRouter Nemotron<br/>agentic tutor (tool calls)"]
-  A --> G["Gemini<br/>fallback answers, embeddings, frame descriptions"]
+  A --> G["Gemini<br/>fallback answers, frame descriptions"]
   A --> Q["Groq Whisper<br/>speech to text"]
 ```
 
@@ -111,7 +111,7 @@ invariants are in [submission/ARCHITECTURE.md](submission/ARCHITECTURE.md).
 | Retrieval | Pinecone serverless (hosted) or Chroma on disk (local), LangChain text splitters |
 | Tutor agent | `nvidia/nemotron-3.5-super-vl:free` via OpenRouter, OpenAI-format tool calling |
 | LLM (fallback pipeline) | Gemini `gemini-3.5-flash-lite` |
-| Embeddings | Gemini `gemini-embedding-2` (3072-d), batched 64 texts per call |
+| Embeddings | Hosted: Pinecone Inference `llama-text-embed-v2` (1024-d), 96 texts per call, repeated queries cached. Local default: Gemini `gemini-embedding-2` (3072-d) |
 | Vision | Gemini (frame and image descriptions, live frames) |
 | Speech to text | Groq `whisper-large-v3-turbo`, with local faster-whisper as fallback |
 | Media | PyAV (decode, duration, frame sampling), pypdf, python-pptx |
@@ -165,6 +165,8 @@ To load the sample lecture, see [submission/DATASET.md](submission/DATASET.md).
 | `EMBEDDING_API_KEY` | empty | Gemini key for embeddings (same value). With no key the app uses an offline hashing embedder (1536-d) |
 | `LLM_MODEL` | `gemini-3.5-flash-lite` | Answer model |
 | `EMBEDDING_MODEL` | `gemini-embedding-2` | Embedding model (3072-d) |
+| `EMBEDDING_PROVIDER` | empty | `pinecone` embeds chunks and queries with Pinecone Inference (`PINECONE_API_KEY`, a 1024-d index). Empty keeps Gemini, or hashing with no key |
+| `PINECONE_EMBED_MODEL` | `llama-text-embed-v2` | Pinecone Inference model (1024-d) |
 | `OPENROUTER_API_KEY` | empty | Enables the agentic tutor. With no key, every question goes through the classic Gemini pipeline |
 | `OPENROUTER_MODEL` | `nvidia/nemotron-3.5-super-vl:free` | Tutor model. It must support tool calling |
 | `AGENT_TOTAL_TIMEOUT_S` | `60` | Time budget for the whole tool loop. After it, the classic pipeline answers |
@@ -230,11 +232,15 @@ All deliverables are in [submission/](submission/), and its
   video downloads from datacenter IPs such as Render's. Upload the file
   instead. YouTube ingest has also not been verified in the development
   environment.
-- **Free-tier quotas limit throughput.** Gemini's free tier allows about 100
-  embedding texts per minute and about 1,000 embedding requests per day, so a
-  fresh 11-minute video takes minutes to ingest. When a daily quota runs out,
-  ingest stops with a readable `503` until it resets. Hosted uploads are
-  capped by size, length and rate to protect the quota.
+- **Free-tier quotas limit throughput.** The hosted API embeds with Pinecone
+  Inference (5M tokens a month on the free plan) instead of Gemini, whose free
+  tier allows only about 1,000 embedding texts a day. Speech cues are merged
+  into chunks of up to 30 s and frame descriptions three to a chunk, so a video
+  needs 2-11x fewer embeddings (measured: the demo lecture 263 -> 118 chunks,
+  a captioned lecture 193 -> 17). Frame descriptions
+  still use Gemini's quota; when a daily quota runs out, ingest stops with a
+  readable `503` until it resets. Hosted uploads are capped by size, length and
+  rate.
 - **Job, session and subject state lives in process memory.** Sessions and
   subjects are mirrored to local files. Ingest job status and the in-flight
   window guard are lost on restart. Render's free disk is wiped on every

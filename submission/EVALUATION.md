@@ -208,7 +208,11 @@ Caveats:
 - The Groq numbers are one run per window. Using Groq sends lecture audio to a
   third party.
 
-Cost levers that are in the code: batched embeddings (64 texts per call), skipping
+Cost levers that are in the code: speech cues merged into chunks of up to 30 s and
+frames three to a chunk (measured on indexed data: the demo lecture goes from 263
+chunks to 118, a captioned YouTube lecture from 193 to 17),
+Pinecone Inference embeddings on the hosted API, a query-embedding cache,
+batched embeddings, skipping
 near-duplicate frames, downscaled JPEG frames (at most 768 px, quality 80), disk
 caches for billable calls, transcription offloaded to Groq, and upload caps on
 the hosted deployment.
@@ -221,14 +225,14 @@ load, concurrent users, and anything on the hosted deployment.
 
 ## (d) Limitations
 
-- The eval runs offline with a hashing embedder. Production uses Gemini
-  embeddings, so retrieval accuracy there is not measured.
+- The eval runs offline with a hashing embedder. Production uses Pinecone
+  Inference embeddings, so retrieval accuracy there is not measured.
 - The golden set is small (25) and synthetic. The refusal metric is a
   retrieval-score proxy, not the production LLM refusal path.
 - One real lecture (11 minutes) has been exercised end to end. There is no
   long-form video, no long multi-page document, and no multi-subject coverage.
-- Ingest throughput is bound by the free tier: about 100 embedding texts per
-  minute and about 1,000 embedding requests per day on Gemini. A spent quota
+- Ingest throughput is bound by free tiers: Pinecone Inference's 5M embedding
+  tokens a month, and Gemini's quota for frame descriptions. A spent quota
   stops ingest with a `503` until it resets.
 - Job state, the in-flight guard, sessions and subjects live in process memory
   (sessions and subjects are mirrored to local files). A restart loses running

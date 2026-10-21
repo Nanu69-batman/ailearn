@@ -131,7 +131,8 @@ def test_chunk_ids_unique_and_monotonic_across_windows():
 def test_overflow_guard_trips():
     with pytest.raises(ValueError):
         jobs.build_chunks(resource_id="r", course_id="c", source_type="video",
-                          visual=[_vis(0), _vis(1), _vis(2)], max_chunks=2)
+                          # 20 s apart: too far to merge, so three chunks.
+                          visual=[_vis(0), _vis(5), _vis(10)], max_chunks=2)
     assert jobs.window_max_chunks(120_000, 240_000) == 120_000
 
 

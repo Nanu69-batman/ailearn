@@ -34,7 +34,7 @@ from app.ingestion import embedder as embedder_mod
 from app.ingestion import images as images_mod
 from app.ingestion import visual as visual_mod
 from app.ingestion import youtube as yt_mod
-from app.ingestion.chunking import Chunk, TextSegment, chunk_segment
+from app.ingestion.chunking import CHUNK_CHARS, Chunk, TextSegment, chunk_segment
 from app.ingestion.documents import extract, extract_pdf_pass
 from app.ingestion.duration import media_duration_ms
 
@@ -314,6 +314,61 @@ def window_max_chunks(window_start_ms: int, window_end_ms: int) -> int:
     return window_end_ms - window_index_offset(window_start_ms)
 
 
+#: Consecutive speech cues (transcript or caption) are merged into one chunk
+#: spanning at most this long. A cue is a sentence fragment -- 38 to 118 chars
+#: on average -- and every chunk costs one embedding, so one chunk per cue
+#: spent ~8x the embedding quota for passages too short to retrieve well.
+SPEECH_GROUP_MS = 30_000
+#: Consecutive frame descriptions merged into one chunk: three 4 s frames.
+VISUAL_GROUP_MS = 12_000
+
+
+def group_timed(segments: list[TextSegment], *, max_span_ms: int) -> list[TextSegment]:
+    """Merge consecutive time-bounded segments of one kind into bigger ones.
+
+    A group spans ``[first.start_ms, max(end_ms)]`` and holds at most
+    :data:`CHUNK_CHARS` characters, so it still becomes a single chunk. The
+    merged ``end_ms`` is the latest end in the group: the strict-T gate then
+    admits the passage only once ALL of it has played, never earlier.
+    Segments without both bounds (documents, unknown ends) are never merged;
+    they pass through unchanged, so a NULL ``end_ms`` stays NULL and excluded.
+    """
+    out: list[TextSegment] = []
+    group: list[TextSegment] = []
+
+    def flush() -> None:
+        if not group:
+            return
+        if len(group) == 1:
+            out.append(group[0])
+        else:
+            out.append(
+                TextSegment(
+                    text=" ".join(s.text.strip() for s in group),
+                    start_ms=group[0].start_ms,
+                    end_ms=max(s.end_ms for s in group),
+                    kind=group[0].kind,
+                )
+            )
+        group.clear()
+
+    for seg in segments:
+        timed = seg.start_ms is not None and seg.end_ms is not None
+        if not timed or seg.page_no is not None or seg.slide_no is not None:
+            flush()
+            out.append(seg)
+            continue
+        if group and (
+            seg.kind != group[0].kind
+            or seg.end_ms - group[0].start_ms > max_span_ms
+            or sum(len(s.text) + 1 for s in group) + len(seg.text) > CHUNK_CHARS
+        ):
+            flush()
+        group.append(seg)
+    flush()
+    return out
+
+
 def build_chunks(
     *,
     resource_id: str,
@@ -343,7 +398,24 @@ def build_chunks(
     """
     chunks: list[Chunk] = []
     index = index_offset
-    for seg in text_segments or []:
+    text_segments = group_timed(text_segments or [], max_span_ms=SPEECH_GROUP_MS)
+    transcript_segments = group_timed(
+        [
+            TextSegment(text=cue.text, start_ms=cue.start_ms, end_ms=cue.end_ms,
+                        kind="transcript")
+            for cue in transcript or []
+        ],
+        max_span_ms=SPEECH_GROUP_MS,
+    )
+    visual_segments = group_timed(
+        [
+            TextSegment(text=frame.text, start_ms=frame.start_ms,
+                        end_ms=frame.end_ms, kind="visual")
+            for frame in visual or []
+        ],
+        max_span_ms=VISUAL_GROUP_MS,
+    )
+    for seg in text_segments:
         made = chunk_segment(
             seg,
             resource_id=resource_id,
@@ -355,24 +427,9 @@ def build_chunks(
         chunks.extend(made)
         index += len(made)
 
-    for cue in transcript or []:
+    for seg in [*transcript_segments, *visual_segments]:
         made = chunk_segment(
-            TextSegment(text=cue.text, start_ms=cue.start_ms, end_ms=cue.end_ms,
-                        kind="transcript"),
-            resource_id=resource_id,
-            course_id=course_id,
-            source_type="video",
-            video_id=video_id,
-            start_index=index,
-            title=title,
-        )
-        chunks.extend(made)
-        index += len(made)
-
-    for frame in visual or []:
-        made = chunk_segment(
-            TextSegment(text=frame.text, start_ms=frame.start_ms,
-                        end_ms=frame.end_ms, kind="visual"),
+            seg,
             resource_id=resource_id,
             course_id=course_id,
             source_type="video",

@@ -6,8 +6,8 @@ This is how the live demo is deployed:
 |---|---|---|
 | Web (Next.js 15) | Vercel, root dir `apps/web` | https://ailearn-theta.vercel.app |
 | API (FastAPI) | Render web service, Docker, free tier | https://malai-pioneer-api.onrender.com |
-| Vectors | Pinecone serverless index `ailearn` (3072-d, cosine) | — |
-| Models | OpenRouter Nemotron (agentic tutor), Gemini (fallback answers, embeddings, vision), Groq (speech to text) | — |
+| Vectors | Pinecone serverless index `ailearn-llama` (1024-d, cosine), embedded by Pinecone Inference `llama-text-embed-v2` | — |
+| Models | OpenRouter Nemotron (agentic tutor), Gemini (fallback answers, vision), Pinecone Inference (embeddings), Groq (speech to text) | — |
 
 The API can't run on Vercel. Its Python function bundle limit is 250 MB, which
 faster-whisper, PyAV and chromadb exceed, and ingest runs as background jobs for
@@ -43,7 +43,9 @@ reproduce it.
    The script creates the index `ailearn` (serverless, aws us-east-1, cosine,
    dimension taken from the local vectors: 3072 for `gemini-embedding-2`) if it
    doesn't exist. It copies vectors as they are, so it spends **no** embedding
-   requests. Re-running it replaces that resource's chunks, deleting them by
+   requests. With `EMBEDDING_PROVIDER=pinecone` the index must be 1024-d
+   instead: copy each chunk's text and metadata and re-embed the text with
+   `llama-text-embed-v2` (passage mode); no Gemini call is needed. Re-running it replaces that resource's chunks, deleting them by
    exact `resource_id` equality.
 
 ## 2. Render: the API
@@ -73,13 +75,14 @@ build context to exactly those files plus `apps/api`.
    | Name | Value | Why |
    |---|---|---|
    | `VECTOR_STORE` | `pinecone` | The index lives outside the container |
-   | `PINECONE_INDEX` | `ailearn` | |
+   | `PINECONE_INDEX` | `ailearn-llama` | 1024-d, must match the embedder's width (checked at start-up) |
+   | `EMBEDDING_PROVIDER` | `pinecone` | Pinecone embeds chunks and queries; Gemini's ~1,000 texts/day embedding quota is not used |
    | `ALLOW_UNSIGNED_LAUNCH` | `false` | Only launches signed by the web app's server route are accepted |
    | `LOCAL_WHISPER_FALLBACK` | `false` | The local Whisper model does not fit in 512 MB. If Groq fails, the window fails visibly instead of skipping speech |
    | `MAX_UPLOAD_MB` / `MAX_VIDEO_MINUTES` / `MAX_UPLOADS_PER_HOUR` | `100` / `15` / `10` | Protect the free model quota |
 
 3. The first build takes several minutes. Watch **Logs** until you see
-   `pinecone store ready (pinecone:ailearn, dim=3072)` and uvicorn listening.
+   `pinecone store ready (pinecone:ailearn-llama, dim=1024)` and uvicorn listening.
 4. Check it:
 
    ```bash
@@ -147,10 +150,14 @@ Then use the web app:
 
 ## 6. Known operational limits
 
-- **Gemini free tier:** about 1,000 embedding requests per day per Google
-  project. Every question costs one. When the quota is spent, `/chat` and ingest
-  return `503` with the reset time. Switch to a key from another project, or
-  enable billing.
+- **Embeddings:** Pinecone Inference's free plan includes 5M
+  `llama-text-embed-v2` tokens a month (250k/min for passages, 50k/min for
+  queries). An 11-minute lecture is about 20k tokens. Repeated queries are
+  cached in memory. Gemini's free tier (about 1,000 embedding texts a day) is
+  only used when `EMBEDDING_PROVIDER` is not `pinecone`.
+- **Gemini free tier:** frame and image descriptions and fallback answers still
+  use Gemini. When that quota is spent, ingest and `/chat` return `503` with the
+  reset time.
 - **Files on the container disk** disappear on restart or wake-up. Their chunks
   stay in Pinecone, but the media route then returns 404 for them. The demo video
   is unaffected.

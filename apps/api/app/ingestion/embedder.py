@@ -60,6 +60,8 @@ log = logging.getLogger(__name__)
 EMBED_DIM = 1536
 #: Gemini text-embedding width.
 GEMINI_EMBED_DIM = 3072
+#: ``llama-text-embed-v2`` width (Pinecone Inference). The index must match.
+PINECONE_EMBED_DIM = 1024
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
@@ -626,15 +628,115 @@ class GeminiEmbedder:
         return vectors[0]
 
 
-def get_default_embedder(*, sink=None):
-    """Ingestion-side embedder. Gemini only when a key is configured.
+class PineconeEmbedder:
+    """Pinecone Inference (``llama-text-embed-v2`` by default).
 
-    ``sink`` receives ``(embedded, total)`` after each embedding batch. It is
-    accepted by both providers so a caller never has to know which one it got;
-    the hashing embedder ignores it.
+    Pinecone hosts the model, so chunks and queries are embedded by the same
+    service that stores them, metered in *tokens per month* (5M on the free
+    Starter plan) instead of Gemini's ~1,000 texts per day. Passages and
+    queries use the model's separate ``input_type`` modes, which is how the
+    model is trained to be used for retrieval.
+    """
+
+    #: The model's per-request input cap.
+    BATCH_SIZE = 96
+    EMBED_MAX_ATTEMPTS = 6
+    EMBED_BACKOFF_S = 5.0
+    EMBED_BACKOFF_CAP_S = 60.0
+    #: Repeated queries (an agent re-searching, a learner re-asking) are free.
+    QUERY_CACHE_SIZE = 512
+
+    _sink = None
+    _retry_sleep = staticmethod(time.sleep)
+
+    def __init__(
+        self, model: str, api_key: str, *, dim: int = PINECONE_EMBED_DIM,
+        sink=None, client=None,
+    ) -> None:
+        if client is None:
+            from pinecone import Pinecone
+
+            client = Pinecone(api_key=api_key)
+        self._client = client
+        self._model = model
+        self.dim = dim
+        self._sink = sink
+        self._query_cache: dict[str, list[float]] = {}
+        self._cache_lock = threading.Lock()
+
+    def _embed_once(self, batch: list[str], input_type: str) -> list[list[float]]:
+        resp = self._client.inference.embed(
+            model=self._model,
+            inputs=batch,
+            parameters={"input_type": input_type, "truncate": "END", "dimension": self.dim},
+        )
+        vectors = [list(item.values) for item in resp.data]
+        if len(vectors) != len(batch):
+            raise EmbeddingAlignmentError(
+                f"pinecone embed returned {len(vectors)} vector(s) for "
+                f"{len(batch)} text(s); refusing to pair them positionally"
+            )
+        if any(len(v) != self.dim for v in vectors):
+            raise EmbeddingAlignmentError(
+                f"pinecone embed returned a vector that is not {self.dim}-d"
+            )
+        return vectors
+
+    def _embed(self, texts: list[str], input_type: str) -> list[list[float]]:
+        return backoff_mod.call_with_retry(
+            lambda: self._embed_once(texts, input_type),
+            what=f"pinecone embed({self._model}, {len(texts)} text(s))",
+            max_attempts=self.EMBED_MAX_ATTEMPTS,
+            backoff_s=self.EMBED_BACKOFF_S,
+            backoff_cap_s=self.EMBED_BACKOFF_CAP_S,
+            sleep=self._retry_sleep,
+        )
+
+    def _progress(self, done: int, total: int) -> None:
+        sink = self._sink or _embedding_progress
+        if sink is not None:
+            try:
+                sink(done, total)
+            except Exception:  # progress must never fail an ingest
+                log.debug("embedding progress sink raised; ignoring", exc_info=True)
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        out: list[list[float]] = []
+        self._progress(0, len(texts))
+        for start in range(0, len(texts), self.BATCH_SIZE):
+            out.extend(self._embed(texts[start : start + self.BATCH_SIZE], "passage"))
+            self._progress(len(out), len(texts))
+        return out
+
+    def embed_query(self, text: str) -> list[float]:
+        with self._cache_lock:
+            hit = self._query_cache.get(text)
+        if hit is not None:
+            return hit
+        vector = self._embed([text], "query")[0]
+        with self._cache_lock:
+            if len(self._query_cache) >= self.QUERY_CACHE_SIZE:
+                self._query_cache.pop(next(iter(self._query_cache)))
+            self._query_cache[text] = vector
+        return vector
+
+
+def get_default_embedder(*, sink=None):
+    """Ingestion-side embedder, chosen by ``EMBEDDING_PROVIDER``.
+
+    ``pinecone`` uses Pinecone Inference with ``PINECONE_API_KEY``. Otherwise
+    Gemini when an embedding key is configured, else the offline hashing
+    embedder. ``sink`` receives ``(embedded, total)`` after each batch; the
+    hashing embedder ignores it.
     """
     from app.config import settings
 
+    if settings.embedding_provider == "pinecone":
+        return PineconeEmbedder(
+            settings.pinecone_embed_model, settings.pinecone_api_key, sink=sink
+        )
     if settings.embedding_api_key:
         return GeminiEmbedder(
             settings.embedding_model, settings.embedding_api_key, sink=sink

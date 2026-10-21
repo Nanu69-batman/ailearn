@@ -31,9 +31,9 @@ flowchart LR
     A["FastAPI API<br/>chat, ingest, retrieval"]
     D[("Container disk<br/>media and documents")]
   end
-  P[("Pinecone serverless<br/>vectors, cosine")]
+  P[("Pinecone serverless<br/>vectors + Inference embeddings")]
   O["OpenRouter API<br/>Nemotron tutor agent"]
-  G["Gemini API<br/>fallback LLM, embeddings, vision"]
+  G["Gemini API<br/>fallback LLM, vision"]
   Q["Groq API<br/>whisper-large-v3-turbo"]
 
   B --> W
@@ -55,7 +55,8 @@ flowchart LR
 | Vectors | Pinecone serverless (`VECTOR_STORE=pinecone`) | Render's free disk is wiped on restart, so the index lives outside the container. The same `build_where` scope + strict-T filter runs in Pinecone, and every match is re-checked against it in Python. Local dev uses Chroma on disk (`VECTOR_STORE=chroma`) |
 | Files | Container disk | A hackathon trade-off. The demo video is baked into the image, so it is always there. Files uploaded on the hosted site last until the next restart. The media route serves them with HTTP Range |
 | Tutor agent | OpenRouter, `nvidia/nemotron-3.5-super-vl:free` | Free, reliable tool calling with a 1M context. Optional: with no `OPENROUTER_API_KEY`, the classic pipeline answers every question |
-| LLM / embeddings / vision | Gemini `gemini-3.5-flash-lite`, `gemini-embedding-2` (3072-d) | One provider for fallback answers, vectors and frame descriptions |
+| LLM / vision | Gemini `gemini-3.5-flash-lite` | Fallback answers and frame descriptions |
+| Embeddings | Pinecone Inference `llama-text-embed-v2` (1024-d) hosted; Gemini `gemini-embedding-2` (3072-d) locally | Pinecone's free plan meters 5M tokens a month, not Gemini's ~1,000 texts a day. The store refuses to start if the index width and the embedder disagree |
 | Speech to text | Groq `whisper-large-v3-turbo`, with local faster-whisper as fallback | About 3 s per 2-minute window on Groq, against 14-18 s for local `tiny` (measured, see [EVALUATION.md](EVALUATION.md)). This is what makes a small CPU host workable |
 
 Free-tier protection on the API: `MAX_UPLOAD_MB`, `MAX_VIDEO_MINUTES` (read from
@@ -77,9 +78,9 @@ flowchart TD
   KIND -->|"video"| WIN["Split into 120 s windows<br/>duration from container header"]
   WIN --> T["Stage T: transcript lane<br/>window audio to Groq (or faster-whisper)"]
   WIN --> V["Stage V: visual lane<br/>frame every 4 s, skip duplicates,<br/>Gemini describes frames"]
-  T --> CT["Chunk transcript<br/>times from the audio signal"]
-  V --> CV["Visual chunks<br/>times from frame-index arithmetic"]
-  CT --> EMB["Batch embed, 64 texts per call<br/>gemini-embedding-2"]
+  T --> CT["Merge cues into chunks of up to 30 s<br/>end = latest cue end"]
+  V --> CV["Merge 3 frames per chunk (12 s)<br/>times from frame-index arithmetic"]
+  CT --> EMB["Batch embed<br/>Pinecone llama-text-embed-v2 (hosted)<br/>or gemini-embedding-2 (local)"]
   CV --> EMB
   DOC --> EMB
   IMG --> EMB
