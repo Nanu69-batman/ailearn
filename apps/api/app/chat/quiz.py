@@ -60,9 +60,8 @@ QUIZ_CHAR_BUDGET = 18_000
 SPEECH_SHARE = 0.7
 #: Upper bound on rows read for the watched range before thinning.
 LESSON_ROW_LIMIT = 2_000
-#: A quiz is one long reply; give it more room and time than an agent step.
+#: A quiz is one long reply; give it more room than an agent step.
 QUIZ_MAX_TOKENS = 8_192
-QUIZ_TIMEOUT_S = 90.0
 
 QUIZ_REFUSAL_TEXT = (
     "There isn't enough covered material to quiz you on yet. Watch a little "
@@ -445,7 +444,7 @@ class QuizService:
         async def agent() -> str:
             return await self._agent.complete_text(
                 system, user_prompt, json_mode=True,
-                max_tokens=QUIZ_MAX_TOKENS, timeout_s=QUIZ_TIMEOUT_S,
+                max_tokens=QUIZ_MAX_TOKENS,
             )
 
         order = [chat_llm]

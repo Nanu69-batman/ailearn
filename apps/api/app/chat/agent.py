@@ -239,7 +239,7 @@ class LessonAgent:
         api_key: str,
         model: str,
         max_steps: int = 2,
-        timeout_s: float = 45.0,
+        timeout_s: float | None = None,
         transport=None,
     ) -> None:
         if not api_key:

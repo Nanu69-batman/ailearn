@@ -219,7 +219,8 @@ flowchart TD
   result. The model then answers in one call, which on the free endpoint is
   the difference between one slow round trip and four.
 - **Budgets.** At most 2 model calls (the answer, plus one cite-repair turn),
-  30 s per provider call and 60 s for the whole loop. A reply cut off at the token limit has any unfinished
+  and no time limit of our own: a slow free-tier reply is waited for
+  (`AGENT_TIMEOUT_S` / `AGENT_TOTAL_TIMEOUT_S` bring one back). A reply cut off at the token limit has any unfinished
   `[chunk_id=...` removed and asks the learner to say "continue".
 - **Without the agent**, a regex intent router (`app/chat/intent.py`) keeps
   the classic path from going wrong:

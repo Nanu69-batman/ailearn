@@ -696,8 +696,8 @@ class ChatService:
         from app.config import settings
 
         try:
-            # One wall-clock budget for the whole tool loop: a queued free-tier
-            # endpoint must degrade to the classic answer, not hang the learner.
+            # Optional wall-clock budget for the whole loop (AGENT_TOTAL_TIMEOUT_S);
+            # unset by default, so a slow reply is waited for, not cut off.
             outcome = await asyncio.wait_for(
                 self._agent.run(
                     message=message,

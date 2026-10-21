@@ -62,8 +62,10 @@ class Settings(BaseSettings):
     # Model calls per answer. The lesson read is prefetched, so 2 = answer
     # (or one extra tool call) + the final reply.
     agent_max_steps: int = 2
-    agent_timeout_s: float = 30.0  # per provider call
-    agent_total_timeout_s: float = 60.0  # whole tool loop, then classic fallback
+    # No time limit by default: a slow free-tier reply is waited for, not cut
+    # off. Set either to a number of seconds to bring a limit back.
+    agent_timeout_s: float | None = None  # per provider call
+    agent_total_timeout_s: float | None = None  # whole tool loop
 
     def expected_embedding_dim(self) -> int:
         """Vector width every chunk and every query must agree on.
