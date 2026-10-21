@@ -2,6 +2,12 @@
 
 **AHGV BuildVerse 2026, Problem Statement 1.**
 
+> **AHGV evaluators:** every submission deliverable (architecture diagrams, API
+> documentation, sample dataset, evaluation results and testing, deployment
+> instructions) is in the [`submission/`](submission/) folder. Start with its
+> [index](submission/README.md). Setup instructions are in this README under
+> [Quickstart](#quickstart-local).
+
 Malai Pioneer is a lecture-aware AI tutor. A student watches a recorded lecture,
 pauses at any moment, and asks a question. The tutor answers only from what has
 already played: every passage it may use must end at or before the playhead, so
