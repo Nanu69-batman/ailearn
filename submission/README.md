@@ -14,3 +14,4 @@ below with the file that covers it.
 | Evaluation results and testing details | [EVALUATION.md](EVALUATION.md); raw results in [eval-results/](eval-results/) |
 | Demo video | [My Video-2.mp4](My%20Video-2.mp4) |
 | Deployment instructions | [DEPLOYMENT.md](DEPLOYMENT.md) |
+| Future scope (known gaps and planned fixes) | [FUTURE_SCOPE.md](FUTURE_SCOPE.md) |
