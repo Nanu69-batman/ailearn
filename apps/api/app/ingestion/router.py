@@ -283,6 +283,8 @@ async def ingest_file(
             )
 
     job = new_job(target_course_id, resource_id)
+    job.trace = {"file": original_name, "source_type": source_type, "bytes": size,
+                 "mode": mode if source_type == "video" else "full"}
     log.info(
         "queued ingest job=%s course=%s resource=%s type=%s bytes=%d subject=%s",
         job.job_id, target_course_id, resource_id, source_type, size, subject_id,
@@ -529,6 +531,9 @@ async def report_position(
                 log.debug("title lookup failed for %s", resource_id, exc_info=True)
             for kind, windows in to_queue:
                 job = new_job(course_id, resource_id)
+                job.trace = {"file": title, "source_type": "video",
+                             "mode": "stream: watch-ahead windows", "stage": kind,
+                             "windows": list(windows)}
                 keys = [(resource_id, kind, w * WINDOW_MS) for w in windows]
                 for k in keys:
                     _INFLIGHT[k] = job.job_id

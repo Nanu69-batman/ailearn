@@ -505,6 +505,21 @@ export default function LearnShell({ children }: { children: ReactNode }) {
               />
             </div>
             <div className="flex items-center gap-4">
+              {/* Opens the live pipeline trace (/dev) in its own window, so it
+                  can sit beside the lesson during a demo. */}
+              <button
+                type="button"
+                onClick={() =>
+                  window.open("/dev", "malai-dev-view", "width=1440,height=900")
+                }
+                title="Open the developer view: a live diagram of every pipeline step"
+                className="hidden items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs font-semibold text-violet-700 transition hover:border-violet-300 hover:bg-violet-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 sm:flex"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
+                  <path d="M16 18l6-6-6-6M8 6l-6 6 6 6" />
+                </svg>
+                Developer view
+              </button>
               <button type="button" aria-label="Notifications" className="relative rounded-full p-2 text-gray-500 transition hover:bg-gray-100 hover:text-gray-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5">
                   <path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a1 1 0 01-3.4 0" />

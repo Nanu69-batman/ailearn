@@ -31,6 +31,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
+from app import devtrace
 from app.chat.completed import COMPLETED_K, COMPLETED_T_MS, merge_completed
 from app.chat.intent import (
     OVERVIEW,
@@ -300,10 +301,18 @@ class LessonAgent:
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
         # A long single reply (a whole quiz) may need longer than one agent step.
-        if timeout_s is not None and self._transport == self._post:
-            data = await self._post(payload, timeout_s=timeout_s)
-        else:
-            data = await self._transport(payload)
+        with devtrace.span(
+            "llm", title="Agent model writes the reply", at=devtrace.where("agent"),
+            data={"json_mode": json_mode, "prompt_chars": len(system) + len(user_prompt)},
+        ) as out:
+            if timeout_s is not None and self._transport == self._post:
+                data = await self._post(payload, timeout_s=timeout_s)
+            else:
+                data = await self._transport(payload)
+            try:
+                out["reply"] = devtrace.preview(data["choices"][0]["message"]["content"], 260)
+            except (KeyError, IndexError, TypeError):
+                pass
         try:
             text = data["choices"][0]["message"]["content"] or ""
         except (KeyError, IndexError, TypeError) as exc:
@@ -355,6 +364,15 @@ class LessonAgent:
             return kept
 
         async def call_tool(name: str, args: dict) -> str:
+            with devtrace.span(
+                "tool", title=f"Tool call: {name}", data={"tool": name, "args": args, "T_ms": t_ms},
+            ) as out:
+                result = await _call_tool(name, args)
+                out["passages_returned"] = result.count("<passage ") if result else 0
+                out["result_preview"] = devtrace.preview(result, 240)
+                return result
+
+        async def _call_tool(name: str, args: dict) -> str:
             if name == "search_lesson":
                 query = str(args.get("query") or message)[:500]
                 try:
@@ -491,12 +509,24 @@ class LessonAgent:
                 # uncited. Low effort keeps the tool use and cuts the wait.
                 "reasoning": {"effort": "low", "exclude": True},
             }
-            data = await self._transport(payload)
-            try:
-                msg = data["choices"][0]["message"]
-            except (KeyError, IndexError, TypeError) as exc:
-                raise AgentUnavailableError("openrouter reply had no message") from exc
-            calls = msg.get("tool_calls") or []
+            with devtrace.span(
+                "llm", title=f"Agent model call {step + 1}", at=devtrace.where("agent"),
+                data={
+                    "step": step + 1,
+                    "tool_choice": tool_choice,
+                    "messages": len(messages),
+                    "tools_offered": [t["function"]["name"] for t in TOOLS],
+                },
+            ) as out:
+                data = await self._transport(payload)
+                try:
+                    msg = data["choices"][0]["message"]
+                except (KeyError, IndexError, TypeError) as exc:
+                    raise AgentUnavailableError("openrouter reply had no message") from exc
+                calls = msg.get("tool_calls") or []
+                out["tool_calls"] = [(c.get("function") or {}).get("name") for c in calls]
+                out["reply"] = devtrace.preview(msg.get("content") or "", 260)
+                out["finish_reason"] = data["choices"][0].get("finish_reason")
             log.info(
                 "agent step %d: tool_choice=%s tool_calls=%s",
                 step, tool_choice, [(c.get("function") or {}).get("name") for c in calls],
@@ -556,7 +586,15 @@ class LessonAgent:
 
         if not text:
             raise AgentUnavailableError("agent produced no answer")
-        return self._validate(text, seen, message, mode, tool_calls_made)
+        with devtrace.span(
+            "validate", title="Validate citations",
+            data={"retrieved_ids": list(seen)[:20], "retrieved": len(seen)},
+        ) as out:
+            outcome = self._validate(text, seen, message, mode, tool_calls_made)
+            out["cited_ids"] = [p.chunk_id for p in outcome.cited][:10]
+            out["unknown_ids"] = []
+            out["verdict"] = outcome.kind
+        return outcome
 
     @staticmethod
     def _expand_short_ids(text: str, seen: dict) -> str:

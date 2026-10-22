@@ -458,6 +458,41 @@ class QuizService:
                 log.warning("quiz: %s failed (%s)", call.__name__, type(exc).__name__)
 
     async def make_quiz(self, req: QuizRequest) -> QuizResponse:
+        from app import devtrace
+
+        session = self._sessions.get(req.session_id)
+        token = devtrace.start_run(
+            "quiz", session.course_id if session is not None else None,
+            title="Learner asks for a practice quiz",
+            data={
+                "T_ms": req.current_time_ms,
+                "open_material": req.video_id,
+                "count": req.count,
+                "types": list(req.types),
+                "attempt": req.attempt,
+                "materials_done": list(req.completed_resource_ids)[:8],
+            },
+        )
+        try:
+            resp = await self._make_quiz(req)
+        except BaseException as exc:
+            devtrace.end_run(token, "error", data={"error": type(exc).__name__})
+            raise
+        devtrace.end_run(
+            token, title="Quiz sent to the browser",
+            data={
+                "refused": resp.refused,
+                "message": resp.message,
+                "questions": [
+                    {"type": q.type, "prompt": devtrace.preview(q.prompt, 160),
+                     "chunk_id": q.citation.chunk_id}
+                    for q in resp.questions
+                ],
+            },
+        )
+        return resp
+
+    async def _make_quiz(self, req: QuizRequest) -> QuizResponse:
         from app.chat.launch import clamp_current_time_ms
         from app.chat.service import (
             SessionNotFoundError,
@@ -478,6 +513,17 @@ class QuizService:
         if not allowed:
             return refuse(QUIZ_REFUSAL_TEXT)
         retrieval = RetrievalService(store=self._store, embedder=self._embedder)
+        from app import devtrace
+
+        devtrace.emit(
+            "plan", "end", title="Plan the retrieval",
+            data={
+                "strategy": "read the whole watched range, then sample it evenly"
+                if req.video_id else "search the document",
+                "open_material_allowed": allowed,
+                "T_ms": t_ms,
+            },
+        )
         # A video: read everything watched so far, in order, through the
         # store's own strict-T gate (no embedding), then thin it evenly.
         lesson: list = []
@@ -496,6 +542,11 @@ class QuizService:
             lesson = apply_strict_timestamp(lesson, t_ms, "quiz")
         if lesson:
             passages = lesson_sample(lesson, req.attempt)
+            devtrace.emit(
+                "sample", "end", title="Sample the lesson for the prompt",
+                data={"watched_chunks": len(lesson), "sampled": len(passages),
+                      "passages": devtrace.passages_info(passages, 8)},
+            )
         else:
             # A document (ungated, so absent from the range read): search it.
             passages = await retrieval.retrieve(
@@ -512,16 +563,48 @@ class QuizService:
         if not passages:
             return refuse(QUIZ_REFUSAL_TEXT)
 
+        from app import devtrace
+
         prompt = build_quiz_prompt(passages, req.count, req.types, req.attempt, req.video_id)
         async for text in self._replies(QUIZ_SYSTEM, prompt, passages, "quiz_json"):
             rng = random.Random(f"{req.session_id}:{t_ms}:{req.attempt}")
-            questions = validate_questions(parse_json_object(text), passages, rng)
+            raw = parse_json_object(text)
+            questions = validate_questions(raw, passages, rng)
+            proposed = raw.get("questions") if isinstance(raw, dict) else None
+            devtrace.emit(
+                "validate", "end" if questions else "error",
+                title="Validate each question's citation",
+                data={
+                    "proposed": len(proposed) if isinstance(proposed, list) else 0,
+                    "kept": len(questions),
+                    "rule": "a question must cite a chunk_id that was retrieved",
+                    "cited_ids": [q.citation.chunk_id for q in questions][:10],
+                    "retrieved": len(passages),
+                },
+            )
             if questions:
                 return QuizResponse(questions=questions[: req.count], current_time_ms=t_ms)
             log.warning("quiz: no valid questions in model reply (%d chars)", len(text or ""))
         return refuse(QUIZ_FAILED_TEXT)
 
     async def grade(self, req: GradeRequest) -> GradeResponse:
+        from app import devtrace
+
+        token = devtrace.start_run(
+            "grade", None, title="Learner submits a written answer",
+            data={"question": devtrace.preview(req.prompt, 200),
+                  "answer": devtrace.preview(req.answer, 200),
+                  "key_points": list(req.key_points)[:6]},
+        )
+        try:
+            resp = await self._grade(req)
+        except BaseException as exc:
+            devtrace.end_run(token, "error", data={"error": type(exc).__name__})
+            raise
+        devtrace.end_run(token, title="Grade sent to the browser", data=resp.model_dump())
+        return resp
+
+    async def _grade(self, req: GradeRequest) -> GradeResponse:
         async for text in self._replies(GRADE_SYSTEM, build_grade_prompt(req), [], "quiz_grade"):
             graded = _clamp_grade(parse_json_object(text))
             if graded is not None:

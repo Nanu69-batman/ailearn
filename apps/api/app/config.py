@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     # off. Set either to a number of seconds to bring a limit back.
     agent_timeout_s: float | None = None  # per provider call
     agent_total_timeout_s: float | None = None  # whole tool loop
+    # Developer view: record pipeline steps for GET /dev/trace. DEV_TRACE=false
+    # turns recording off (the endpoint then returns no events).
+    dev_trace: bool = True
 
     def expected_embedding_dim(self) -> int:
         """Vector width every chunk and every query must agree on.

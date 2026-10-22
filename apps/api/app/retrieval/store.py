@@ -70,6 +70,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app import devtrace
 from app.retrieval.recency import apply_recency_preference
 
 log = logging.getLogger(__name__)
@@ -290,10 +291,25 @@ class ChromaVectorStore:
         ids = [c.chunk_id for c in chunks]
         documents = [c.text for c in chunks]
         metadatas = [chroma_metadata(c) for c in chunks]
-        embeddings = self._embedder.embed_documents(documents)
-        self._collection.upsert(
-            ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
-        )
+        with devtrace.span(
+            "embed", title=f"Embed {len(chunks)} chunks", at=devtrace.where("embed"),
+            data={"chunks": len(chunks), "sample": devtrace.preview(documents[0], 160)},
+        ) as out:
+            embeddings = self._embedder.embed_documents(documents)
+            out["vectors"] = len(embeddings)
+            out["dim"] = len(embeddings[0]) if embeddings else 0
+            out["vector_head"] = [round(float(x), 4) for x in (embeddings[0][:8] if embeddings else [])]
+        with devtrace.span(
+            "index", title=f"Upsert {len(chunks)} vectors", at=devtrace.where("store"),
+            data={
+                "ids": ids[:6],
+                "metadata_sample": {k: v for k, v in metadatas[0].items() if k != "text"},
+            },
+        ) as out:
+            self._collection.upsert(
+                ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
+            )
+            out["written"] = len(chunks)
         return len(chunks)
 
     def mark_progress(
@@ -555,13 +571,30 @@ class ChromaVectorStore:
             # This is recall only: the same ``where`` clause, and therefore the
             # same strict-T gate, applies unchanged.
             candidates = min(max(k * RECENCY_OVERFETCH, k), MAX_CANDIDATES)
-        embedding = self._embedder.embed_query(query_text)
-        got = self._collection.query(
-            query_embeddings=[embedding],
-            n_results=candidates,
-            where=where,
-            include=["documents", "metadatas", "distances"],
-        )
+        with devtrace.span(
+            "embed_query", title="Embed the question", at=devtrace.where("embed"),
+            data={"query": devtrace.preview(query_text, 200)},
+        ) as out:
+            embedding = self._embedder.embed_query(query_text)
+            out["dim"] = len(embedding)
+            out["vector_head"] = [round(float(x), 4) for x in embedding[:8]]
+        with devtrace.span(
+            "search", title="Nearest-neighbour search", at=devtrace.where("store"),
+            data={
+                "course_id": course_id,
+                "scope": list(resource_scope)[:8],
+                "filter": f"video chunks need end_ms <= T ({current_time_ms} ms)",
+                "candidates": candidates,
+                "k": k,
+            },
+        ) as out:
+            got = self._collection.query(
+                query_embeddings=[embedding],
+                n_results=candidates,
+                where=where,
+                include=["documents", "metadatas", "distances"],
+            )
+            out["returned"] = len((got.get("documents") or [[]])[0])
 
         docs = (got.get("documents") or [[]])[0]
         metas = (got.get("metadatas") or [[]])[0]
@@ -596,7 +629,23 @@ class ChromaVectorStore:
                     current_time_ms,
                 )
 
-        return self._select_with_coverage(eligible, k)
+        selected = self._select_with_coverage(eligible, k)
+        devtrace.emit(
+            "gate", "end", title="Strict timestamp gate",
+            data={
+                "T_ms": current_time_ms,
+                "rule": "keep a video chunk only if end_ms <= T",
+                "candidates": len(docs),
+                "eligible": len(eligible),
+                "kept": len(selected),
+                "max_end_ms": max(
+                    (p.end_ms for p in selected if p.end_ms is not None), default=None
+                ),
+                "prefer_recent": prefer_recent,
+                "passages": devtrace.passages_info(selected),
+            },
+        )
+        return selected
 
     def passages_between(
         self,
@@ -639,7 +688,28 @@ class ChromaVectorStore:
                 continue
             out.append(passage)
         out.sort(key=lambda p: (p.start_ms or 0, p.end_ms or 0, p.chunk_id))
-        return out[: max(int(limit), 0)]
+        out = out[: max(int(limit), 0)]
+        devtrace.emit(
+            "search", "end", title="Read the watched range (no embedding)",
+            at=devtrace.where("store"),
+            data={
+                "range_ms": [int(from_ms), upto],
+                "filter": f"video chunks need end_ms <= T ({t_ms} ms)",
+                "returned": len(got.get("documents") or []),
+            },
+        )
+        devtrace.emit(
+            "gate", "end", title="Strict timestamp gate",
+            data={
+                "T_ms": t_ms,
+                "rule": "keep a video chunk only if end_ms <= T",
+                "candidates": len(got.get("documents") or []),
+                "kept": len(out),
+                "max_end_ms": max((p.end_ms for p in out if p.end_ms is not None), default=None),
+                "passages": devtrace.passages_info(out),
+            },
+        )
+        return out
 
     @staticmethod
     def _select_with_coverage(

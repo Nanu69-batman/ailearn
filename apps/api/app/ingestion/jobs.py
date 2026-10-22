@@ -29,6 +29,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app import devtrace
 from app.ingestion import audio as audio_mod
 from app.ingestion import embedder as embedder_mod
 from app.ingestion import images as images_mod
@@ -60,6 +61,8 @@ class IngestJob:
     #: stage is where the job is -- two different facts about the
     #: same job, and merging them made ``detail`` untestable.
     stage: str | None = None
+    #: What the developer view shows about this job (file, type, size).
+    trace: dict = field(default_factory=dict)
 
 
 _JOBS: dict[str, IngestJob] = {}
@@ -203,6 +206,8 @@ def embedding_progress(job_id: str):
             embedded=done,
             embedding_total=total,
         )
+        devtrace.emit("embed", "progress", title=f"Embedded {done}/{total}",
+                      at=devtrace.where("embed"), data={"done": done, "total": total})
 
     previous = embedder_mod.set_embedding_progress(_sink)
     try:
@@ -444,7 +449,51 @@ def build_chunks(
             f"window produced {index - index_offset} chunks, exceeding the "
             f"ordinal stride {max_chunks}; ordinals would collide with the next window"
         )
+    _trace_chunks(chunks)
     return chunks
+
+
+def _segments_info(segments, kind: str) -> dict:
+    """A trace summary of transcript or frame segments: count, span, samples."""
+    segs = list(segments or [])
+    return {
+        "kind": kind,
+        "segments": len(segs),
+        "span_ms": [
+            min((s.start_ms for s in segs if s.start_ms is not None), default=None),
+            max((s.end_ms for s in segs if s.end_ms is not None), default=None),
+        ],
+        "samples": [
+            {"start_ms": s.start_ms, "end_ms": s.end_ms, "text": devtrace.preview(s.text, 140)}
+            for s in segs[:3]
+        ],
+    }
+
+
+def _trace_chunks(chunks: list[Chunk]) -> None:
+    kinds: dict[str, int] = {}
+    for c in chunks:
+        k = c.metadata.get("kind") or c.source_type
+        kinds[k] = kinds.get(k, 0) + 1
+    devtrace.emit(
+        "chunk", "end", title=f"Split into {len(chunks)} chunks",
+        data={
+            "chunks": len(chunks),
+            "by_kind": kinds,
+            "max_chars": CHUNK_CHARS,
+            "samples": [
+                {
+                    "chunk_id": c.chunk_id,
+                    "kind": c.metadata.get("kind") or c.source_type,
+                    "start_ms": c.start_ms,
+                    "end_ms": c.end_ms,
+                    "page_no": c.page_no,
+                    "text": devtrace.preview(c.text, 160),
+                }
+                for c in chunks[:3]
+            ],
+        },
+    )
 
 
 def _clamp_to_duration(chunks: list[Chunk], duration_ms: int) -> list[Chunk]:
@@ -517,17 +566,27 @@ def ingest_media(
             "time-gated content without an authoritative timeline"
         )
 
+    devtrace.emit("extract", "end", title="Read the video container",
+                  data={"duration_ms": duration_ms, "file": path.suffix})
     note_stage(STAGE_TRANSCRIBING)
-    transcript, audio_signals = audio_mod.transcribe(path, duration_ms=duration_ms)
+    with devtrace.span("transcribe", title="Transcribe the audio",
+                       at=devtrace.where("asr"), data={"range_ms": [0, duration_ms]}) as out:
+        transcript, audio_signals = audio_mod.transcribe(path, duration_ms=duration_ms)
+        out.update(_segments_info(transcript, "transcript"))
     visual: list[visual_mod.VisualSegment] = []
     visual_report = visual_mod.VisualPassReport(duration_ms=duration_ms)
     warnings: list[str] = []
     if with_visual:
         note_stage(STAGE_DESCRIBING)
         try:
-            visual_report = visual_mod.extract_visual_pass(
-                str(path), duration_ms=duration_ms, max_frames=max_visual_frames
-            )
+            with devtrace.span(
+                "describe", title="Describe sampled frames", at=devtrace.where("vision"),
+                data={"every_s": visual_mod.FRAME_INTERVAL_S, "range_ms": [0, duration_ms]},
+            ) as out:
+                visual_report = visual_mod.extract_visual_pass(
+                    str(path), duration_ms=duration_ms, max_frames=max_visual_frames
+                )
+                out.update(_segments_info(visual_report.segments, "visual"))
         except Exception as exc:  # noqa: BLE001 - visual is additive to audio
             log.warning("visual extraction failed for %s: %s", path.name, exc)
             # Audio is genuinely useful and is already transcribed, so this is
@@ -671,9 +730,12 @@ def _bound_chunks(
 
 def _compute_transcript(ctx: _WinCtx, s: int, e: int) -> tuple[list[Chunk], dict]:
     note_stage(STAGE_TRANSCRIBING)
-    transcript, signals = audio_mod.transcribe(
-        ctx.path, duration_ms=ctx.duration_ms, start_ms=s, end_ms=e
-    )
+    with devtrace.span("transcribe", title="Transcribe the audio",
+                       at=devtrace.where("asr"), data={"range_ms": [s, e]}) as out:
+        transcript, signals = audio_mod.transcribe(
+            ctx.path, duration_ms=ctx.duration_ms, start_ms=s, end_ms=e
+        )
+        out.update(_segments_info(transcript, "transcript"))
     chunks = build_chunks(
         resource_id=ctx.resource_id, course_id=ctx.course_id, source_type="video",
         transcript=transcript, video_id=ctx.video_id, title=ctx.title,
@@ -690,10 +752,15 @@ def _compute_transcript(ctx: _WinCtx, s: int, e: int) -> tuple[list[Chunk], dict
 
 def _compute_visual(ctx: _WinCtx, s: int, e: int):
     note_stage(STAGE_DESCRIBING)
-    report_v = visual_mod.extract_visual_pass(
-        str(ctx.path), duration_ms=ctx.duration_ms,
-        max_frames=ctx.max_visual_frames, start_ms=s, end_ms=e,
-    )
+    with devtrace.span(
+        "describe", title="Describe sampled frames", at=devtrace.where("vision"),
+        data={"every_s": visual_mod.FRAME_INTERVAL_S, "range_ms": [s, e]},
+    ) as out:
+        report_v = visual_mod.extract_visual_pass(
+            str(ctx.path), duration_ms=ctx.duration_ms,
+            max_frames=ctx.max_visual_frames, start_ms=s, end_ms=e,
+        )
+        out.update(_segments_info(report_v.segments, "visual"))
     chunks = build_chunks(
         resource_id=ctx.resource_id, course_id=ctx.course_id, source_type="video",
         visual=report_v.segments, video_id=ctx.video_id, title=ctx.title,
@@ -868,6 +935,16 @@ def ingest_media_windows(
     if n_windows is None and mode == "stream":
         n_windows = INITIAL_WINDOWS
     selected = bounds[first:] if n_windows is None else bounds[first : first + n_windows]
+    devtrace.emit(
+        "extract", "end", title="Read the video and plan windows",
+        data={
+            "duration_ms": duration_ms,
+            "mode": mode,
+            "window_ms": WINDOW_MS,
+            "windows": [list(b) for b in selected][:8],
+            "stages": list(run_stages),
+        },
+    )
 
     tally = _Tally(
         mode=mode, duration_ms=duration_ms, stages=run_stages, total=len(selected),
@@ -1029,11 +1106,21 @@ def ingest_document(
     """
     path = Path(path)
     report = None
-    if source_type == "pdf":
-        report = extract_pdf_pass(path)
-        segments = report.segments
-    else:
-        segments = extract(path, source_type)
+    with devtrace.span("extract", title=f"Extract text from the {source_type}",
+                       data={"source_type": source_type}) as out:
+        if source_type == "pdf":
+            report = extract_pdf_pass(path)
+            segments = report.segments
+            out["text_chars"] = report.text_chars
+            out["ocr"] = report.ocr.status
+        else:
+            segments = extract(path, source_type)
+        out["segments"] = len(segments)
+        out["pages"] = len({getattr(sg, "page_no", None) for sg in segments} - {None})
+        out["samples"] = [
+            {"page_no": getattr(sg, "page_no", None), "text": devtrace.preview(sg.text, 140)}
+            for sg in segments[:2]
+        ]
     chunks = build_chunks(
         resource_id=resource_id,
         course_id=course_id,
@@ -1170,6 +1257,10 @@ def run_ingest(job: IngestJob, work) -> None:
     update_job(job.job_id, status="processing", error=None)
     set_stage(job.job_id, STAGE_EXTRACTING)
     _ACTIVE_JOB["job_id"] = job.job_id
+    token = devtrace.start_run(
+        "ingest", job.course_id, run_id=job.job_id, title="File received by the API",
+        data={"job_id": job.job_id, "resource_id": job.resource_id, **(job.trace or {})},
+    )
     try:
         with embedding_progress(job.job_id):
             report = work()
@@ -1180,9 +1271,16 @@ def run_ingest(job: IngestJob, work) -> None:
             status="failed",
             error=f"{type(exc).__name__}: {exc}",
         )
+        devtrace.end_run(token, "error", title="Ingest failed",
+                         data={"error": type(exc).__name__})
         return
     finally:
         _ACTIVE_JOB.pop("job_id", None)
+    devtrace.end_run(
+        token, title="Indexed and ready to ask",
+        data={k: v for k, v in (report or {}).items()
+              if isinstance(v, (int, float, str, bool)) or v is None},
+    )
     # Merge rather than replace: the stage/counter fields describe how the
     # ingest got there, and replacing them with the report alone would erase
     # the only evidence of where the time went.

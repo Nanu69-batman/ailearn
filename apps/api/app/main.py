@@ -88,6 +88,22 @@ app.include_router(ingestion_router)
 app.include_router(subjects_router)
 
 
+@app.get("/dev/trace")
+def dev_trace(after: int = 0, course_id: str | None = None) -> dict:
+    """Pipeline step events after ``after``, for the developer view to animate."""
+    from app import devtrace
+
+    return {
+        "enabled": devtrace.enabled(),
+        "events": devtrace.events_after(max(after, 0), course_id),
+        "latest": devtrace.latest_seq(),
+        "where": {
+            k: devtrace.where(k) for k in ("asr", "vision", "embed", "store", "llm", "agent")
+        },
+        "agent": bool(settings.openrouter_api_key),
+    }
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}

@@ -6,6 +6,7 @@ import asyncio
 import logging
 from collections.abc import Sequence
 
+from app import devtrace
 from app.chat.completed import (
     COMPLETED_K,
     COMPLETED_T_MS,
@@ -254,16 +255,53 @@ class ChatService:
             allowed = effective_resource_scope(session.resource_scope, focus_resource_id)
             if allowed and self._pending_frontier(allowed, t_ms) is None:
                 visual_through = self._visual_frontier(allowed, t_ms)
-        resp = await self._chat_core(
-            session_id=session_id,
-            current_time_ms=current_time_ms,
-            message=message,
-            mode=mode,
-            focus_resource_id=focus_resource_id,
-            live_frame=live_frame,
-            no_frame_note=no_frame_note,
-            visual_through=visual_through,
-            completed_resource_ids=completed_resource_ids,
+        token = devtrace.start_run(
+            "chat",
+            session.course_id if session is not None else None,
+            title="Learner asks the AI tutor",
+            data={
+                "question": devtrace.preview(message, 300),
+                "T_ms": current_time_ms,
+                "mode": mode,
+                "open_material": focus_resource_id,
+                "materials_done": list(completed_resource_ids)[:8],
+                "live_frame": live_frame is not None,
+            },
+        )
+        try:
+            resp = await self._chat_core(
+                session_id=session_id,
+                current_time_ms=current_time_ms,
+                message=message,
+                mode=mode,
+                focus_resource_id=focus_resource_id,
+                live_frame=live_frame,
+                no_frame_note=no_frame_note,
+                visual_through=visual_through,
+                completed_resource_ids=completed_resource_ids,
+            )
+        except BaseException as exc:
+            devtrace.end_run(token, "error", data={"error": type(exc).__name__})
+            raise
+        devtrace.end_run(
+            token,
+            title="Answer sent to the browser",
+            data={
+                "refused": resp.refused,
+                "mode": resp.mode,
+                "grounded": resp.grounded,
+                "answer": devtrace.preview(resp.answer, 400),
+                "citations": [
+                    {
+                        "chunk_id": c.chunk_id,
+                        "modality": c.modality,
+                        "start_ms": c.start_ms,
+                        "end_ms": c.end_ms,
+                        "page_no": c.page_no,
+                    }
+                    for c in resp.citations
+                ][:10],
+            },
         )
         if visual_through is not None:
             resp.visual_pending = True
@@ -336,8 +374,22 @@ class ChatService:
         done = completed_scope(
             session.resource_scope, focus_resource_id, completed_resource_ids
         )
+        devtrace.emit(
+            "scope", "end", title="Check what the learner may read",
+            data={
+                "granted": list(session.resource_scope)[:8],
+                "open_material_allowed": allowed,
+                "done_materials": list(done),
+                "T_ms": t_ms,
+            },
+        )
 
-        if self._agent is not None and self._pending_frontier(allowed, t_ms) is None:
+        use_agent = self._agent is not None and self._pending_frontier(allowed, t_ms) is None
+        devtrace.emit(
+            "route", "end", title="Agent" if use_agent else "Classic RAG pipeline",
+            data={"path": "agent" if use_agent else "classic"},
+        )
+        if use_agent:
             resp = await self._agent_answer(
                 session=session,
                 message=message,
@@ -351,6 +403,10 @@ class ChatService:
             )
             if resp is not None:
                 return resp
+            devtrace.emit(
+                "route", "end", title="Agent fell back to the classic pipeline",
+                data={"path": "classic", "reason": "agent unavailable or answer not grounded"},
+            )
 
         intent = classify_intent(message) if live_frame is None else None
         if intent == SMALLTALK:
@@ -396,6 +452,16 @@ class ChatService:
         # audio nearest the playhead. Adding it here is additive: every question
         # `is_recency_seeking` already claimed behaves exactly as before.
         prefer_recent = is_recency_seeking(message) or is_frame_question(message)
+        devtrace.emit(
+            "plan", "end", title="Plan the retrieval",
+            data={
+                "intent": intent,
+                "mode": mode,
+                "search_query": devtrace.preview(rewritten, 200),
+                "prefer_recent": prefer_recent,
+                "k": 12 if coverage_query else 8,
+            },
+        )
 
         retrieval = self._retrieval()
         passages = await retrieval.retrieve(
@@ -549,6 +615,17 @@ class ChatService:
 
         allowed_ids = {p.chunk_id for p in passages}
         unknown = [c for c in cited_ids if c not in allowed_ids]
+        devtrace.emit(
+            "validate", "error" if unknown else "end", title="Validate citations",
+            data={
+                "retrieved_ids": sorted(allowed_ids)[:20],
+                "cited_ids": cited_ids[:10],
+                "unknown_ids": unknown[:10],
+                "verdict": "refuse: unknown id" if unknown else (
+                    "ok" if cited_ids else "uncited: one repair retry"
+                ),
+            },
+        )
         if unknown:
             log.warning("unknown citation(s) rejected: %s", unknown)
             return refuse()

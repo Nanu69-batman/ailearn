@@ -28,6 +28,26 @@ class LLMResult:
     cited_ids: list[str] = field(default_factory=list)
 
 
+async def _traced(label: str, impl, *, system: str, user_prompt: str, passages: Sequence, mode: str):
+    """Run one provider call inside a developer-view trace span."""
+    from app import devtrace
+
+    with devtrace.span(
+        "llm", title="Generate the answer", at=label,
+        data={
+            "mode": mode,
+            "passages_in_prompt": len(passages),
+            "passage_ids": [getattr(p, "chunk_id", None) for p in list(passages)[:10]],
+            "prompt_chars": len(system) + len(user_prompt),
+            "prompt_tail": devtrace.preview(user_prompt[-400:], 240),
+        },
+    ) as out:
+        result = await impl(system=system, user_prompt=user_prompt, passages=passages, mode=mode)
+        out["reply"] = devtrace.preview(result.text, 260)
+        out["cited_ids"] = list(result.cited_ids)[:10]
+        return result
+
+
 class LLMProvider(Protocol):
     async def complete(
         self,
@@ -53,6 +73,14 @@ class DeterministicStubLLM:
         self.calls: int = 0
 
     async def complete(
+        self, *, system: str, user_prompt: str, passages: Sequence, mode: str
+    ) -> LLMResult:
+        return await _traced(
+            "API · offline stub LLM", self._complete,
+            system=system, user_prompt=user_prompt, passages=passages, mode=mode,
+        )
+
+    async def _complete(
         self, *, system: str, user_prompt: str, passages: Sequence, mode: str
     ) -> LLMResult:
         self.last_system = system
@@ -179,6 +207,14 @@ class GeminiChatLLM:
         self._model = model
 
     async def complete(
+        self, *, system: str, user_prompt: str, passages: Sequence, mode: str
+    ) -> LLMResult:
+        return await _traced(
+            f"Gemini · {self._model}", self._complete,
+            system=system, user_prompt=user_prompt, passages=passages, mode=mode,
+        )
+
+    async def _complete(
         self, *, system: str, user_prompt: str, passages: Sequence, mode: str
     ) -> LLMResult:
         try:
