@@ -41,7 +41,7 @@ function idOf(v: unknown): string {
 
 export function DataView({ data, T }: { data: Record<string, unknown>; T?: number }) {
   const rows: Row[] = Object.entries(data).map(([key, value]) => ({ key, label: label(key), value }));
-  if (!rows.length) return <p className="text-sm text-zinc-500">This step carried no data.</p>;
+  if (!rows.length) return <p className="text-sm text-[var(--dev-faint)]">This step carried no data.</p>;
   const retrieved = new Set(
     (Array.isArray(data.retrieved_ids) ? data.retrieved_ids : []).map((x) => String(x)),
   );
@@ -49,7 +49,7 @@ export function DataView({ data, T }: { data: Record<string, unknown>; T?: numbe
     <dl className="space-y-3">
       {rows.map((r) => (
         <div key={r.key} className="dev-in">
-          <dt className="mb-1 text-[10.5px] font-semibold uppercase tracking-wider text-zinc-500">{r.label}</dt>
+          <dt className="mb-1 text-[10.5px] font-semibold uppercase tracking-wider text-[var(--dev-faint)]">{r.label}</dt>
           <dd>
             <Value k={r.key} v={r.value} T={T} retrieved={retrieved} />
           </dd>
@@ -70,32 +70,32 @@ function Value({
   T?: number;
   retrieved: Set<string>;
 }) {
-  if (v === null || v === undefined) return <span className="text-sm text-zinc-600">none</span>;
-  if (k === "error") return <span className="text-sm font-medium text-red-400">{String(v)}</span>;
+  if (v === null || v === undefined) return <span className="text-sm text-[var(--dev-ghost)]">none</span>;
+  if (k === "error") return <span className="text-sm font-medium text-[var(--dev-err)]">{String(v)}</span>;
   if (typeof v === "boolean")
-    return <span className={`text-sm ${v ? "text-emerald-300" : "text-zinc-400"}`}>{v ? "yes" : "no"}</span>;
+    return <span className={`text-sm ${v ? "text-[var(--dev-ok)]" : "text-[var(--dev-muted)]"}`}>{v ? "yes" : "no"}</span>;
   if (typeof v === "number") {
-    if (k.endsWith("_ms")) return <span className="font-mono text-sm text-amber-200">{fmtMs(v)} <span className="text-zinc-500">({v} ms)</span></span>;
-    if (k === "bytes") return <span className="font-mono text-sm text-zinc-200">{(v / 1024 / 1024).toFixed(2)} MB</span>;
-    return <span className="font-mono text-sm text-zinc-100">{v.toLocaleString()}</span>;
+    if (k.endsWith("_ms")) return <span className="font-mono text-sm text-[var(--dev-warn)]">{fmtMs(v)} <span className="text-[var(--dev-faint)]">({v} ms)</span></span>;
+    if (k === "bytes") return <span className="font-mono text-sm text-[var(--dev-text)]">{(v / 1024 / 1024).toFixed(2)} MB</span>;
+    return <span className="font-mono text-sm text-[var(--dev-text)]">{v.toLocaleString()}</span>;
   }
   if (typeof v === "string") {
     if (k === "verdict") {
       const ok = v === "ok" || v === "grounded";
       return (
-        <span className={`rounded px-2 py-0.5 text-sm font-medium ${ok ? "bg-emerald-500/15 text-emerald-300" : "bg-amber-500/15 text-amber-300"}`}>
+        <span className={`rounded px-2 py-0.5 text-sm font-medium ${ok ? "bg-[var(--dev-ok-soft)] text-[var(--dev-ok)]" : "bg-[var(--dev-warn-soft)] text-[var(--dev-warn)]"}`}>
           {v}
         </span>
       );
     }
     if (v.length > 60)
-      return <p className="rounded-md border border-white/5 bg-black/30 p-2 text-[12.5px] leading-relaxed text-zinc-200">{v}</p>;
-    return <span className="text-sm text-zinc-100">{v}</span>;
+      return <p className="rounded-md border border-[var(--dev-border-soft)] bg-[var(--dev-inset)] p-2 text-[12.5px] leading-relaxed text-[var(--dev-text)]">{v}</p>;
+    return <span className="text-sm text-[var(--dev-text)]">{v}</span>;
   }
   if (Array.isArray(v)) {
     if ((k === "range_ms" || k === "span_ms") && v.length === 2)
       return (
-        <span className="font-mono text-sm text-amber-200">
+        <span className="font-mono text-sm text-[var(--dev-warn)]">
           {typeof v[0] === "number" ? fmtMs(v[0]) : "?"} → {typeof v[1] === "number" ? fmtMs(v[1]) : "?"}
         </span>
       );
@@ -104,21 +104,21 @@ function Value({
       return (
         <div className="flex flex-wrap gap-1">
           {v.map((w, i) => (
-            <span key={i} className="rounded bg-white/5 px-1.5 py-0.5 font-mono text-[11px] text-zinc-300">
+            <span key={i} className="rounded bg-[var(--dev-chip)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--dev-text-2)]">
               {Array.isArray(w) ? `${fmtMs(w[0] as number)}–${fmtMs(w[1] as number)}` : String(w)}
             </span>
           ))}
         </div>
       );
     if (isPassageList(v)) return <Passages items={v} T={T} />;
-    if (v.length === 0) return <span className="text-sm text-zinc-600">empty</span>;
+    if (v.length === 0) return <span className="text-sm text-[var(--dev-ghost)]">empty</span>;
     if (v.every((x) => typeof x !== "object" || x === null)) {
       const tone =
         k === "unknown_ids"
-          ? "bg-red-500/15 text-red-300"
+          ? "bg-[var(--dev-err-soft)] text-[var(--dev-err)]"
           : k === "cited_ids"
             ? ""
-            : "bg-white/5 text-zinc-300";
+            : "bg-[var(--dev-chip)] text-[var(--dev-text-2)]";
       return (
         <div className="flex flex-wrap gap-1">
           {v.map((x, i) => {
@@ -126,8 +126,8 @@ function Value({
             const cls =
               k === "cited_ids"
                 ? retrieved.size === 0 || retrieved.has(s)
-                  ? "bg-emerald-500/15 text-emerald-300"
-                  : "bg-red-500/15 text-red-300"
+                  ? "bg-[var(--dev-ok-soft)] text-[var(--dev-ok)]"
+                  : "bg-[var(--dev-err-soft)] text-[var(--dev-err)]"
                 : tone;
             return (
               <span key={i} title={s} className={`rounded px-1.5 py-0.5 font-mono text-[11px] ${cls}`}>
@@ -142,7 +142,7 @@ function Value({
     return (
       <div className="space-y-1.5">
         {v.map((x, i) => (
-          <div key={i} className="rounded-md border border-white/5 bg-black/30 p-2">
+          <div key={i} className="rounded-md border border-[var(--dev-border-soft)] bg-[var(--dev-inset)] p-2">
             <Nested obj={x as Record<string, unknown>} T={T} retrieved={retrieved} />
           </div>
         ))}
@@ -151,7 +151,7 @@ function Value({
   }
   if (typeof v === "object") {
     return (
-      <div className="rounded-md border border-white/5 bg-black/30 p-2">
+      <div className="rounded-md border border-[var(--dev-border-soft)] bg-[var(--dev-inset)] p-2">
         <Nested obj={v as Record<string, unknown>} T={T} retrieved={retrieved} />
       </div>
     );
@@ -164,7 +164,7 @@ function Nested({ obj, T, retrieved }: { obj: Record<string, unknown>; T?: numbe
     <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
       {Object.entries(obj).map(([k, v]) => (
         <div key={k} className="contents">
-          <span className="text-[11px] text-zinc-500">{label(k)}</span>
+          <span className="text-[11px] text-[var(--dev-faint)]">{label(k)}</span>
           <span className="min-w-0 break-words">
             <Value k={k} v={v} T={T} retrieved={retrieved} />
           </span>
@@ -178,7 +178,7 @@ function VectorBars({ values }: { values: number[] }) {
   const max = Math.max(1e-6, ...values.map((x) => Math.abs(x)));
   return (
     <div>
-      <div className="flex h-12 items-center gap-1 rounded-md border border-white/5 bg-black/30 px-2">
+      <div className="flex h-12 items-center gap-1 rounded-md border border-[var(--dev-border-soft)] bg-[var(--dev-inset)] px-2">
         {values.map((x, i) => (
           <div key={i} className="flex h-full flex-1 flex-col justify-center">
             <div
@@ -191,9 +191,9 @@ function VectorBars({ values }: { values: number[] }) {
             />
           </div>
         ))}
-        <span className="pl-1 text-[11px] text-zinc-500">…</span>
+        <span className="pl-1 text-[11px] text-[var(--dev-faint)]">…</span>
       </div>
-      <p className="mt-1 font-mono text-[10.5px] text-zinc-500">[{values.map((x) => x.toFixed(3)).join(", ")}, …]</p>
+      <p className="mt-1 font-mono text-[10.5px] text-[var(--dev-faint)]">[{values.map((x) => x.toFixed(3)).join(", ")}, …]</p>
     </div>
   );
 }
@@ -210,7 +210,7 @@ function Passages({ items, T }: { items: Array<Record<string, unknown>>; T?: num
         return (
           <div
             key={String(p.chunk_id ?? i)}
-            className="dev-in rounded-md border border-white/5 bg-black/30 p-2"
+            className="dev-in rounded-md border border-[var(--dev-border-soft)] bg-[var(--dev-inset)] p-2"
             style={{ animationDelay: `${i * 45}ms` }}
           >
             <div className="mb-1 flex flex-wrap items-center gap-1.5 text-[10.5px]">
@@ -218,36 +218,36 @@ function Passages({ items, T }: { items: Array<Record<string, unknown>>; T?: num
                 <span
                   className={`rounded px-1.5 py-0.5 font-medium ${
                     kind === "visual"
-                      ? "bg-sky-500/15 text-sky-300"
+                      ? "bg-[var(--dev-sky-soft)] text-[var(--dev-sky)]"
                       : kind === "transcript"
-                        ? "bg-violet-500/15 text-violet-300"
-                        : "bg-amber-500/15 text-amber-300"
+                        ? "bg-[var(--dev-accent-soft)] text-[var(--dev-accent-text)]"
+                        : "bg-[var(--dev-warn-soft)] text-[var(--dev-warn)]"
                   }`}
                 >
                   {kind === "visual" ? "frame" : kind === "transcript" ? "audio" : kind}
                 </span>
               )}
               {start !== null && end !== null && (
-                <span className="font-mono text-amber-200">
+                <span className="font-mono text-[var(--dev-warn)]">
                   {fmtMs(start)}–{fmtMs(end)}
                 </span>
               )}
-              {typeof p.page_no === "number" && <span className="text-amber-200">page {p.page_no}</span>}
+              {typeof p.page_no === "number" && <span className="text-[var(--dev-warn)]">page {p.page_no}</span>}
               {ok !== null && (
-                <span className={ok ? "text-emerald-300" : "text-red-400"}>
+                <span className={ok ? "text-[var(--dev-ok)]" : "text-[var(--dev-err)]"}>
                   {ok ? "✓ end ≤ T" : "✗ after T"}
                 </span>
               )}
               {typeof p.score === "number" && p.score !== 1 && (
-                <span className="text-zinc-500">dist {p.score.toFixed(3)}</span>
+                <span className="text-[var(--dev-faint)]">dist {p.score.toFixed(3)}</span>
               )}
               {p.chunk_id != null && (
-                <span className="ml-auto font-mono text-zinc-600" title={String(p.chunk_id)}>
+                <span className="ml-auto font-mono text-[var(--dev-ghost)]" title={String(p.chunk_id)}>
                   {idOf(p.chunk_id)}
                 </span>
               )}
             </div>
-            <p className="text-[12px] leading-snug text-zinc-300">{String(p.text ?? "")}</p>
+            <p className="text-[12px] leading-snug text-[var(--dev-text-2)]">{String(p.text ?? "")}</p>
           </div>
         );
       })}

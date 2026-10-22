@@ -101,10 +101,11 @@ function applyEvent(run: RunState, ev: TraceEvent): RunState {
   const prev = run.nodes[ev.step] ?? { status: "idle" as NodeStatus, count: 0, ms: null, events: [] };
   const node: NodeState = { ...prev, events: [...prev.events, ev].slice(-40) };
   if (ev.phase === "start") {
-    node.status = "active";
+    // The opening request is an instant, not a span: it is done on arrival.
+    node.status = ev.step === "request" ? "done" : "active";
     node.count += 1;
   } else if (ev.phase === "progress") {
-    node.status = "active";
+    if (run.status === "running") node.status = "active";
   } else if (ev.phase === "error") {
     node.status = "error";
     if (prev.status !== "active") node.count += 1;
@@ -129,16 +130,29 @@ function applyEvent(run: RunState, ev: TraceEvent): RunState {
   if (ev.step === "respond") {
     next.endedAt = ev.ts;
     next.status = ev.phase === "error" ? "error" : "done";
+    // The run is over, so no step is still working. A step left "active" is
+    // one whose end raced another lane (two ingest lanes embed in parallel)
+    // or that was cut short by the failure that ended the run.
+    const settled = ev.phase === "error" ? "error" : "done";
+    const nodes = { ...next.nodes };
+    for (const [id, n] of Object.entries(nodes)) {
+      if (n.status === "active") nodes[id] = { ...n, status: settled };
+    }
+    next.nodes = nodes;
   }
   return next;
 }
 
 function statusColor(s: NodeStatus): string {
-  if (s === "active") return "#a78bfa";
-  if (s === "done") return "#34d399";
-  if (s === "error") return "#f87171";
-  return "#3f3f46";
+  return `var(--dev-st-${s})`;
 }
+
+function tint(color: string, pct: number): string {
+  return `color-mix(in srgb, ${color} ${pct}%, transparent)`;
+}
+
+type Theme = "dark" | "light";
+const THEME_KEY = "malai.dev.theme";
 
 function laneOf(where: string): string {
   return where.split(" · ")[0];
@@ -161,6 +175,30 @@ export default function DevConsole() {
     "connecting",
   );
   const [packets, setPackets] = useState<Packet[]>([]);
+  const [theme, setTheme] = useState<Theme>("dark");
+
+  // Saved choice first, else the system setting. Set after mount so the
+  // server render and the first client render agree.
+  useEffect(() => {
+    let saved: string | null = null;
+    try {
+      saved = window.localStorage.getItem(THEME_KEY);
+    } catch {
+      /* storage blocked: fall through to the system setting */
+    }
+    if (saved === "light" || saved === "dark") setTheme(saved);
+    else if (window.matchMedia?.("(prefers-color-scheme: light)").matches) setTheme("light");
+  }, []);
+  const toggleTheme = () =>
+    setTheme((t) => {
+      const next: Theme = t === "dark" ? "light" : "dark";
+      try {
+        window.localStorage.setItem(THEME_KEY, next);
+      } catch {
+        /* per-viewer convenience only */
+      }
+      return next;
+    });
   const [queued, setQueued] = useState(0);
 
   const cursor = useRef(0);
@@ -188,7 +226,7 @@ export default function DevConsole() {
         const to = diagram.nodes.find((n) => n.id === ev.step);
         if (from && to) {
           const id = ++packetId.current;
-          const color = ev.phase === "error" ? "#f87171" : "#c4b5fd";
+          const color = ev.phase === "error" ? "var(--dev-st-error)" : "var(--dev-packet)";
           setPackets((p) => [...p, { id, from, to, color }]);
           window.setTimeout(() => setPackets((p) => p.filter((x) => x.id !== id)), 900);
         }
@@ -334,21 +372,21 @@ export default function DevConsole() {
   const focusDef = diagram.nodes.find((n) => n.id === focusStep);
 
   return (
-    <div className="flex min-h-screen flex-col bg-[#070a12] text-zinc-200">
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-[#0b0f1a] px-4 py-3">
+    <div data-theme={theme} className="dev-root flex min-h-screen flex-col bg-[var(--dev-bg)] text-[var(--dev-text)]">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--dev-border)] bg-[var(--dev-panel)] px-4 py-3">
         <div className="flex items-center gap-3">
           <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-violet-500 text-sm font-bold text-white">
             M
           </span>
           <div>
-            <h1 className="text-sm font-semibold text-white">Malai Pioneer · Developer view</h1>
-            <p className="text-xs text-zinc-500">
+            <h1 className="text-sm font-semibold text-[var(--dev-strong)]">Malai Pioneer · Developer view</h1>
+            <p className="text-xs text-[var(--dev-faint)]">
               Live pipeline trace: every step the API takes, where it runs, and the data it carries
             </p>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <nav className="flex rounded-lg border border-white/10 bg-black/30 p-0.5" aria-label="Flow">
+          <nav className="flex rounded-lg border border-[var(--dev-border)] bg-[var(--dev-inset)] p-0.5" aria-label="Flow">
             {(Object.keys(TAB_LABEL) as FlowTab[]).map((t) => (
               <button
                 key={t}
@@ -358,7 +396,7 @@ export default function DevConsole() {
                   setSelectedStep(null);
                 }}
                 className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
-                  tab === t ? "bg-violet-500/90 text-white shadow" : "text-zinc-400 hover:text-white"
+                  tab === t ? "bg-violet-500/90 text-white shadow" : "text-[var(--dev-muted)] hover:text-[var(--dev-strong)]"
                 }`}
               >
                 {TAB_LABEL[t]}
@@ -368,7 +406,7 @@ export default function DevConsole() {
               </button>
             ))}
           </nav>
-          <label className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-white/10 px-2.5 py-1.5 text-xs text-zinc-400">
+          <label className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-[var(--dev-border)] px-2.5 py-1.5 text-xs text-[var(--dev-muted)]">
             <input
               type="checkbox"
               checked={follow}
@@ -378,6 +416,24 @@ export default function DevConsole() {
             Follow live
           </label>
           <ConnBadge conn={conn} queued={queued} />
+          <button
+            type="button"
+            onClick={toggleTheme}
+            aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            title={theme === "dark" ? "Light mode" : "Dark mode"}
+            className="flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--dev-border)] text-[var(--dev-text-2)] transition hover:bg-[var(--dev-chip)]"
+          >
+            {theme === "dark" ? (
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="h-4 w-4" aria-hidden="true">
+                <circle cx="12" cy="12" r="4" />
+                <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
+                <path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z" />
+              </svg>
+            )}
+          </button>
         </div>
       </header>
 
@@ -394,7 +450,7 @@ export default function DevConsole() {
             agentOn={agentOn}
             tab={tab}
           />
-          <div className="relative overflow-x-auto rounded-xl border border-white/10 bg-[#0b0f1a]">
+          <div className="relative overflow-x-auto rounded-xl border border-[var(--dev-border)] bg-[var(--dev-panel)]">
             <svg
               viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
               className="block h-auto w-full min-w-[880px]"
@@ -403,7 +459,7 @@ export default function DevConsole() {
             >
               <defs>
                 <pattern id="dev-grid" width="24" height="24" patternUnits="userSpaceOnUse">
-                  <path d="M 24 0 L 0 0 0 24" fill="none" stroke="#ffffff08" strokeWidth="1" />
+                  <path d="M 24 0 L 0 0 0 24" fill="none" style={{ stroke: "var(--dev-grid)" }} strokeWidth="1" />
                 </pattern>
                 <filter id="dev-glow" x="-50%" y="-50%" width="200%" height="200%">
                   <feGaussianBlur stdDeviation="6" result="b" />
@@ -432,14 +488,16 @@ export default function DevConsole() {
                       width={VIEW_W - 12}
                       height={lane.bottom - lane.top}
                       rx={12}
-                      fill={k === "api" ? "#ffffff06" : "#ffffff03"}
-                      stroke="#ffffff10"
+                      style={{
+                        fill: k === "api" ? "var(--dev-lane-api)" : "var(--dev-lane)",
+                        stroke: "var(--dev-lane-stroke)",
+                      }}
                     />
-                    <text x={18} y={lane.top + 18} fill="#a1a1aa" fontSize={11} fontWeight={600} letterSpacing={0.6}>
+                    <text x={18} y={lane.top + 18} style={{ fill: "var(--dev-lane-label)" }} fontSize={11} fontWeight={600} letterSpacing={0.6}>
                       {lane.label.toUpperCase()}
                     </text>
                     {sub && (
-                      <text x={18} y={lane.top + 32} fill="#71717a" fontSize={10}>
+                      <text x={18} y={lane.top + 32} style={{ fill: "var(--dev-lane-sub)" }} fontSize={10}>
                         {sub}
                       </text>
                     )}
@@ -458,7 +516,7 @@ export default function DevConsole() {
                     key={key}
                     d={curve(na.x, na.y, nb.x, nb.y)}
                     fill="none"
-                    stroke={hot ? "#a78bfa" : walked ? "#6d28d9" : "#27272a"}
+                    style={{ stroke: hot ? "var(--dev-hot)" : walked ? "var(--dev-edge-walked)" : "var(--dev-edge)" }}
                     strokeWidth={hot ? 2.5 : walked ? 2 : 1.5}
                     className={hot ? "dev-flow" : undefined}
                   />
@@ -478,7 +536,7 @@ export default function DevConsole() {
                       key={`x-${k}`}
                       d={curve(na.x, na.y, nb.x, nb.y)}
                       fill="none"
-                      stroke={hot ? "#a78bfa" : "#4c1d95"}
+                      style={{ stroke: hot ? "var(--dev-hot)" : "var(--dev-edge-extra)" }}
                       strokeWidth={hot ? 2.5 : 1.6}
                       strokeDasharray="4 5"
                       className={hot ? "dev-flow" : undefined}
@@ -503,7 +561,7 @@ export default function DevConsole() {
             </svg>
             {!run && (
               <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-                <p className="rounded-lg border border-white/10 bg-black/60 px-4 py-2 text-sm text-zinc-300">
+                <p className="rounded-lg border border-[var(--dev-border)] bg-[var(--dev-overlay)] px-4 py-2 text-sm text-[var(--dev-text-2)]">
                   {tab === "ingest"
                     ? "Upload a video or PDF in the app to watch it get indexed."
                     : tab === "chat"
@@ -516,7 +574,7 @@ export default function DevConsole() {
           <EventLog run={run} focus={focusStep} onPick={setSelectedStep} />
         </section>
 
-        <aside className="flex min-h-0 flex-col rounded-xl border border-white/10 bg-[#0b0f1a]">
+        <aside className="flex min-h-0 flex-col rounded-xl border border-[var(--dev-border)] bg-[var(--dev-panel)]">
           <Inspector def={focusDef} step={focusStep} state={focusNode} run={run} />
         </aside>
       </div>
@@ -534,10 +592,10 @@ function ConnBadge({ conn, queued }: { conn: string; queued: number }) {
   };
   const [dot, label] = map[conn] ?? map.connecting;
   return (
-    <span className="flex items-center gap-2 rounded-lg border border-white/10 px-2.5 py-1.5 text-xs text-zinc-300">
+    <span className="flex items-center gap-2 rounded-lg border border-[var(--dev-border)] px-2.5 py-1.5 text-xs text-[var(--dev-text-2)]">
       <span className={`h-2 w-2 rounded-full ${dot} ${conn === "live" ? "dev-pulse" : ""}`} />
       {label}
-      {queued > 0 && <span className="text-zinc-500">· {queued} queued</span>}
+      {queued > 0 && <span className="text-[var(--dev-faint)]">· {queued} queued</span>}
     </span>
   );
 }
@@ -582,7 +640,7 @@ function NodeBox({
           height={NODE_H + 12}
           rx={16}
           fill="none"
-          stroke="#a78bfa"
+          style={{ stroke: "var(--dev-hot)" }}
           strokeWidth={2}
           filter="url(#dev-glow)"
           className="dev-pulse"
@@ -594,27 +652,29 @@ function NodeBox({
         width={NODE_W}
         height={NODE_H}
         rx={11}
-        fill={status === "idle" ? "#111827" : "#151b2e"}
-        stroke={selected ? "#e4e4e7" : color}
+        style={{
+          fill: status === "idle" ? "var(--dev-node-idle)" : "var(--dev-node)",
+          stroke: selected ? "var(--dev-select)" : color,
+        }}
         strokeWidth={selected ? 2 : status === "idle" ? 1 : 1.6}
       />
       <text
         x={node.x}
         y={node.y - 5}
         textAnchor="middle"
-        fill={status === "idle" ? "#a1a1aa" : "#f4f4f5"}
+        style={{ fill: status === "idle" ? "var(--dev-node-text-idle)" : "var(--dev-node-text)" }}
         fontSize={11.5}
         fontWeight={600}
       >
         {node.label}
       </text>
-      <text x={node.x} y={node.y + 11} textAnchor="middle" fill="#71717a" fontSize={9}>
+      <text x={node.x} y={node.y + 11} textAnchor="middle" style={{ fill: "var(--dev-node-sub)" }} fontSize={9}>
         {subText}
       </text>
       {progress !== null && (
         <g>
-          <rect x={x + 8} y={y + NODE_H - 9} width={NODE_W - 16} height={3} rx={1.5} fill="#27272a" />
-          <rect x={x + 8} y={y + NODE_H - 9} width={(NODE_W - 16) * progress} height={3} rx={1.5} fill="#a78bfa" />
+          <rect x={x + 8} y={y + NODE_H - 9} width={NODE_W - 16} height={3} rx={1.5} style={{ fill: "var(--dev-track)" }} />
+          <rect x={x + 8} y={y + NODE_H - 9} width={(NODE_W - 16) * progress} height={3} rx={1.5} style={{ fill: "var(--dev-hot)" }} />
         </g>
       )}
       {status === "active" && (
@@ -623,7 +683,7 @@ function NodeBox({
           cy={y + 2}
           r={7}
           fill="none"
-          stroke="#c4b5fd"
+          style={{ stroke: "var(--dev-packet)" }}
           strokeWidth={2}
           strokeDasharray="22 22"
           className="dev-spin"
@@ -631,14 +691,14 @@ function NodeBox({
       )}
       {(status === "done" || status === "error") && (
         <g key={`${status}-${state?.count}`} className="dev-pop">
-          <circle cx={x + NODE_W - 2} cy={y + 2} r={8} fill={color} />
+          <circle cx={x + NODE_W - 2} cy={y + 2} r={8} style={{ fill: color }} />
           <path
             d={
               status === "done"
                 ? `M ${x + NODE_W - 6} ${y + 2} l 3 3 l 5 -6`
                 : `M ${x + NODE_W - 5} ${y - 1} l 6 6 M ${x + NODE_W + 1} ${y - 1} l -6 6`
             }
-            stroke="#0b0f1a"
+            style={{ stroke: "var(--dev-check-ink)" }}
             strokeWidth={2}
             fill="none"
             strokeLinecap="round"
@@ -646,12 +706,12 @@ function NodeBox({
         </g>
       )}
       {state && state.count > 1 && (
-        <text x={x + 6} y={y - 5} fill="#a78bfa" fontSize={10} fontWeight={700}>
+        <text x={x + 6} y={y - 5} style={{ fill: "var(--dev-hot)" }} fontSize={10} fontWeight={700}>
           ×{state.count}
         </text>
       )}
       {state?.ms != null && (
-        <text x={node.x} y={y + NODE_H + 13} textAnchor="middle" fill="#71717a" fontSize={9.5}>
+        <text x={node.x} y={y + NODE_H + 13} textAnchor="middle" style={{ fill: "var(--dev-node-sub)" }} fontSize={9.5}>
           {state.ms >= 1000 ? `${(state.ms / 1000).toFixed(2)} s` : `${Math.round(state.ms)} ms`}
         </text>
       )}
@@ -683,8 +743,8 @@ function PacketDot({ packet }: { packet: Packet }) {
   }, [packet]);
   return (
     <g pointerEvents="none">
-      <circle ref={halo} cx={packet.from.x} cy={packet.from.y} r={11} fill={packet.color} opacity={0.25} filter="url(#dev-glow)" />
-      <circle ref={dot} cx={packet.from.x} cy={packet.from.y} r={5} fill={packet.color} />
+      <circle ref={halo} cx={packet.from.x} cy={packet.from.y} r={11} style={{ fill: packet.color }} opacity={0.25} filter="url(#dev-glow)" />
+      <circle ref={dot} cx={packet.from.x} cy={packet.from.y} r={5} style={{ fill: packet.color }} />
     </g>
   );
 }
@@ -707,13 +767,13 @@ function RunBar({
   const total = run ? ((run.endedAt ?? run.events.at(-1)?.ts ?? run.startedAt) - run.startedAt) : 0;
   const steps = run ? Object.keys(run.nodes).length : 0;
   return (
-    <div className="flex flex-wrap items-center gap-3 rounded-xl border border-white/10 bg-[#0b0f1a] px-3 py-2 text-xs">
-      <label className="flex items-center gap-2 text-zinc-400">
+    <div className="flex flex-wrap items-center gap-3 rounded-xl border border-[var(--dev-border)] bg-[var(--dev-panel)] px-3 py-2 text-xs">
+      <label className="flex items-center gap-2 text-[var(--dev-muted)]">
         Run
         <select
           value={run?.run_id ?? ""}
           onChange={(e) => onPick(e.target.value)}
-          className="max-w-[320px] rounded-md border border-white/10 bg-black/40 px-2 py-1 text-zinc-200"
+          className="max-w-[320px] rounded-md border border-[var(--dev-border)] bg-[var(--dev-inset)] px-2 py-1 text-[var(--dev-text)]"
         >
           {runs.length === 0 && <option value="">No runs yet</option>}
           {runs.map((r) => (
@@ -730,28 +790,28 @@ function RunBar({
           <span
             className={`rounded-full px-2 py-0.5 font-medium ${
               run.status === "running"
-                ? "bg-violet-500/20 text-violet-300"
+                ? "bg-[var(--dev-accent-soft)] text-[var(--dev-accent-text)]"
                 : run.status === "done"
-                  ? "bg-emerald-500/15 text-emerald-300"
-                  : "bg-red-500/15 text-red-300"
+                  ? "bg-[var(--dev-ok-soft)] text-[var(--dev-ok)]"
+                  : "bg-[var(--dev-err-soft)] text-[var(--dev-err)]"
             }`}
           >
             {run.status}
           </span>
-          <span className="text-zinc-400">
+          <span className="text-[var(--dev-muted)]">
             {steps} steps · {run.events.length} events · {total.toFixed(2)} s
           </span>
           <button
             type="button"
             onClick={() => onReplay(run.run_id)}
-            className="ml-auto rounded-md border border-violet-400/40 bg-violet-500/10 px-2.5 py-1 font-medium text-violet-200 transition hover:bg-violet-500/25"
+            className="ml-auto rounded-md border border-[var(--dev-accent-border)] bg-[var(--dev-accent-soft)] px-2.5 py-1 font-medium text-[var(--dev-accent-text)] transition hover:bg-[var(--dev-accent-soft-2)]"
           >
             ▶ Replay
           </button>
         </>
       )}
       {tab === "chat" && (
-        <span className="text-zinc-500">{agentOn ? "Agent enabled: tool calls loop through the gate" : "Classic RAG pipeline"}</span>
+        <span className="text-[var(--dev-faint)]">{agentOn ? "Agent enabled: tool calls loop through the gate" : "Classic RAG pipeline"}</span>
       )}
     </div>
   );
@@ -772,37 +832,37 @@ function EventLog({
     box.current?.scrollTo({ top: box.current.scrollHeight, behavior: "smooth" });
   }, [count]);
   return (
-    <div className="rounded-xl border border-white/10 bg-[#0b0f1a]">
-      <div className="border-b border-white/10 px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
+    <div className="rounded-xl border border-[var(--dev-border)] bg-[var(--dev-panel)]">
+      <div className="border-b border-[var(--dev-border)] px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--dev-muted)]">
         Event log
       </div>
       <div ref={box} className="max-h-56 overflow-y-auto px-1 py-1 font-mono text-[11.5px]">
-        {!run && <p className="px-2 py-3 text-zinc-500">Waiting for the first run…</p>}
+        {!run && <p className="px-2 py-3 text-[var(--dev-faint)]">Waiting for the first run…</p>}
         {run?.events.map((ev) => (
           <button
             key={ev.seq}
             type="button"
             onClick={() => onPick(ev.step)}
-            className={`dev-in flex w-full items-center gap-3 rounded px-2 py-1 text-left hover:bg-white/5 ${
-              focus === ev.step ? "bg-white/[0.04]" : ""
+            className={`dev-in flex w-full items-center gap-3 rounded px-2 py-1 text-left hover:bg-[var(--dev-chip)] ${
+              focus === ev.step ? "bg-[var(--dev-chip)]" : ""
             }`}
           >
-            <span className="w-14 shrink-0 text-zinc-500">+{(ev.ts - run.startedAt).toFixed(2)}s</span>
+            <span className="w-14 shrink-0 text-[var(--dev-faint)]">+{(ev.ts - run.startedAt).toFixed(2)}s</span>
             <span
               className={`w-16 shrink-0 ${
                 ev.phase === "error"
-                  ? "text-red-400"
+                  ? "text-[var(--dev-err)]"
                   : ev.phase === "start" || ev.phase === "progress"
-                    ? "text-violet-300"
-                    : "text-emerald-300"
+                    ? "text-[var(--dev-accent-text)]"
+                    : "text-[var(--dev-ok)]"
               }`}
             >
               {ev.phase}
             </span>
-            <span className="w-24 shrink-0 text-zinc-300">{ev.step}</span>
-            <span className="min-w-0 flex-1 truncate text-zinc-400">{ev.title}</span>
-            <span className="hidden shrink-0 text-zinc-500 md:inline">{ev.where}</span>
-            <span className="w-16 shrink-0 text-right text-zinc-500">
+            <span className="w-24 shrink-0 text-[var(--dev-text-2)]">{ev.step}</span>
+            <span className="min-w-0 flex-1 truncate text-[var(--dev-muted)]">{ev.title}</span>
+            <span className="hidden shrink-0 text-[var(--dev-faint)] md:inline">{ev.where}</span>
+            <span className="w-16 shrink-0 text-right text-[var(--dev-faint)]">
               {ev.ms != null ? (ev.ms >= 1000 ? `${(ev.ms / 1000).toFixed(2)}s` : `${Math.round(ev.ms)}ms`) : ""}
             </span>
           </button>
@@ -825,8 +885,8 @@ function Inspector({
 }) {
   if (!step || !state) {
     return (
-      <div className="p-4 text-sm text-zinc-500">
-        <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Inspector</h2>
+      <div className="p-4 text-sm text-[var(--dev-faint)]">
+        <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--dev-muted)]">Inspector</h2>
         Click any step on the diagram to see the data it received and produced.
       </div>
     );
@@ -843,28 +903,28 @@ function Inspector({
   const T = run?.events.find((e) => e.step === "request")?.data.T_ms;
   return (
     <div key={`${step}-${last.seq}`} className="dev-in flex min-h-0 flex-1 flex-col">
-      <div className="border-b border-white/10 p-4">
-        <h2 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Inspector</h2>
-        <p className="mt-1 text-base font-semibold text-white">{def?.label ?? step}</p>
-        <p className="text-sm text-zinc-300">{last.title}</p>
+      <div className="border-b border-[var(--dev-border)] p-4">
+        <h2 className="text-[11px] font-semibold uppercase tracking-wider text-[var(--dev-muted)]">Inspector</h2>
+        <p className="mt-1 text-base font-semibold text-[var(--dev-strong)]">{def?.label ?? step}</p>
+        <p className="text-sm text-[var(--dev-text-2)]">{last.title}</p>
         <div className="mt-2 flex flex-wrap gap-1.5 text-[11px]">
-          <span className="rounded-full bg-white/5 px-2 py-0.5 text-zinc-300">📍 {last.where}</span>
+          <span className="rounded-full bg-[var(--dev-chip)] px-2 py-0.5 text-[var(--dev-text-2)]">📍 {last.where}</span>
           <span
             className="rounded-full px-2 py-0.5"
-            style={{ background: `${statusColor(state.status)}22`, color: statusColor(state.status) }}
+            style={{ background: tint(statusColor(state.status), 15), color: statusColor(state.status) }}
           >
             {state.status}
           </span>
           {state.ms != null && (
-            <span className="rounded-full bg-white/5 px-2 py-0.5 text-zinc-300">
+            <span className="rounded-full bg-[var(--dev-chip)] px-2 py-0.5 text-[var(--dev-text-2)]">
               ⏱ {state.ms >= 1000 ? `${(state.ms / 1000).toFixed(2)} s` : `${Math.round(state.ms)} ms`}
             </span>
           )}
           {state.count > 1 && (
-            <span className="rounded-full bg-violet-500/15 px-2 py-0.5 text-violet-300">ran ×{state.count}</span>
+            <span className="rounded-full bg-[var(--dev-accent-soft)] px-2 py-0.5 text-[var(--dev-accent-text)]">ran ×{state.count}</span>
           )}
           {typeof T === "number" && (
-            <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-amber-300">T = {fmtMs(T)}</span>
+            <span className="rounded-full bg-[var(--dev-warn-soft)] px-2 py-0.5 text-[var(--dev-warn)]">T = {fmtMs(T)}</span>
           )}
         </div>
       </div>

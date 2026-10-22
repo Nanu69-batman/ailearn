@@ -93,3 +93,51 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .dev-pulse, .dev-spin, .dev-pop, .dev-flow, .dev-in { animation: none !important; }
 }
+
+/* Developer view themes. Every colour on /dev reads one of these tokens. */
+.dev-root[data-theme="dark"] {
+  color-scheme: dark;
+  --dev-bg: #070a12; --dev-panel: #0b0f1a;
+  --dev-border: rgb(255 255 255 / 0.1); --dev-border-soft: rgb(255 255 255 / 0.05);
+  --dev-inset: rgb(0 0 0 / 0.3); --dev-overlay: rgb(0 0 0 / 0.6); --dev-chip: rgb(255 255 255 / 0.05);
+  --dev-strong: #ffffff; --dev-text: #e4e4e7; --dev-text-2: #d4d4d8;
+  --dev-muted: #a1a1aa; --dev-faint: #71717a; --dev-ghost: #52525b;
+  --dev-accent-text: #c4b5fd; --dev-accent-soft: rgb(139 92 246 / 0.15);
+  --dev-accent-soft-2: rgb(139 92 246 / 0.28); --dev-accent-border: rgb(167 139 250 / 0.4);
+  --dev-ok: #6ee7b7; --dev-ok-soft: rgb(16 185 129 / 0.15);
+  --dev-err: #f87171; --dev-err-soft: rgb(239 68 68 / 0.15);
+  --dev-warn: #fcd34d; --dev-warn-soft: rgb(245 158 11 / 0.12);
+  --dev-sky: #7dd3fc; --dev-sky-soft: rgb(14 165 233 / 0.15);
+  --dev-grid: rgb(255 255 255 / 0.03); --dev-lane: rgb(255 255 255 / 0.012);
+  --dev-lane-api: rgb(255 255 255 / 0.024); --dev-lane-stroke: rgb(255 255 255 / 0.06);
+  --dev-lane-label: #a1a1aa; --dev-lane-sub: #71717a;
+  --dev-edge: #27272a; --dev-edge-walked: #6d28d9; --dev-edge-extra: #4c1d95;
+  --dev-hot: #a78bfa; --dev-packet: #c4b5fd;
+  --dev-node-idle: #111827; --dev-node: #151b2e; --dev-node-text-idle: #a1a1aa;
+  --dev-node-text: #f4f4f5; --dev-node-sub: #71717a; --dev-track: #27272a;
+  --dev-select: #e4e4e7; --dev-check-ink: #0b0f1a;
+  --dev-st-active: #a78bfa; --dev-st-done: #34d399; --dev-st-error: #f87171; --dev-st-idle: #3f3f46;
+}
+.dev-root[data-theme="light"] {
+  color-scheme: light;
+  --dev-bg: #f4f5fa; --dev-panel: #ffffff;
+  --dev-border: #e4e4e7; --dev-border-soft: #eef0f4;
+  --dev-inset: #f7f7fb; --dev-overlay: rgb(255 255 255 / 0.88); --dev-chip: #f1f1f6;
+  --dev-strong: #18181b; --dev-text: #27272a; --dev-text-2: #3f3f46;
+  --dev-muted: #52525b; --dev-faint: #71717a; --dev-ghost: #a1a1aa;
+  --dev-accent-text: #6d28d9; --dev-accent-soft: rgb(139 92 246 / 0.12);
+  --dev-accent-soft-2: rgb(139 92 246 / 0.22); --dev-accent-border: rgb(139 92 246 / 0.45);
+  --dev-ok: #047857; --dev-ok-soft: rgb(16 185 129 / 0.14);
+  --dev-err: #b91c1c; --dev-err-soft: rgb(239 68 68 / 0.12);
+  --dev-warn: #b45309; --dev-warn-soft: rgb(245 158 11 / 0.14);
+  --dev-sky: #0369a1; --dev-sky-soft: rgb(14 165 233 / 0.14);
+  --dev-grid: rgb(15 23 42 / 0.05); --dev-lane: rgb(15 23 42 / 0.02);
+  --dev-lane-api: rgb(124 58 237 / 0.04); --dev-lane-stroke: #e4e4e7;
+  --dev-lane-label: #52525b; --dev-lane-sub: #a1a1aa;
+  --dev-edge: #d4d4d8; --dev-edge-walked: #a78bfa; --dev-edge-extra: #c4b5fd;
+  --dev-hot: #7c3aed; --dev-packet: #7c3aed;
+  --dev-node-idle: #ffffff; --dev-node: #f5f3ff; --dev-node-text-idle: #71717a;
+  --dev-node-text: #18181b; --dev-node-sub: #71717a; --dev-track: #e4e4e7;
+  --dev-select: #18181b; --dev-check-ink: #ffffff;
+  --dev-st-active: #7c3aed; --dev-st-done: #059669; --dev-st-error: #dc2626; --dev-st-idle: #d4d4d8;
+}
