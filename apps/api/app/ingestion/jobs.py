@@ -1015,12 +1015,15 @@ def ingest_media_windows(
         finally:
             pool.shutdown(wait=True)
 
-    def lane_in_ctx(kind: str):
-        return contextvars.copy_context().run(lane, kind)
-
     if pipelined and len(run_stages) == 2:
         with ThreadPoolExecutor(max_workers=2) as lanes:
-            futures = [lanes.submit(lane_in_ctx, k) for k in run_stages]
+            # Copy the context HERE, on the calling thread, one copy per lane:
+            # a copy taken inside the pool thread is that thread's own empty
+            # context, which lost the active job (stage progress) and the
+            # developer-view run (every transcribe/describe/embed step).
+            futures = [
+                lanes.submit(contextvars.copy_context().run, lane, k) for k in run_stages
+            ]
             for f in futures:
                 f.result()
     else:

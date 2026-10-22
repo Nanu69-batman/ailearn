@@ -314,3 +314,17 @@ def test_chat_pending_past_frontier_and_strict_gate_before(env):
     ok = _chat(store, 200_000)
     assert ok.processing_pending is False and ok.grounded
     assert all(c.end_ms <= 200_000 for c in ok.citations)
+
+
+def test_pipelined_lanes_keep_the_job_and_trace_context(env):
+    """Both lanes run on pool threads; their steps must reach the job's trace run."""
+    from app import devtrace
+
+    _, store, _, _ = env
+    devtrace.clear()
+    job = _run(store, mode="full")
+    assert job.status == "done", job.error
+    mine = [e for e in devtrace.events_after(0, limit=5000) if e["run_id"] == job.job_id]
+    steps = {e["step"] for e in mine}
+    assert {"transcribe", "describe", "chunk", "embed", "index"} <= steps
+    assert mine[0]["step"] == "request" and mine[-1]["step"] == "respond"
