@@ -14,6 +14,7 @@ their Mermaid sources are in [diagrams/src/](diagrams/src/):
 | Diagram | PNG |
 |---|---|
 | System overview | [0-system-overview.png](diagrams/0-system-overview.png) |
+| The RAG pipeline at a glance | [9-rag-pipeline.png](diagrams/9-rag-pipeline.png) |
 | (a) Hosting topology | [1-hosting-topology.png](diagrams/1-hosting-topology.png) |
 | (b) Ingest pipeline | [2-ingest-pipeline.png](diagrams/2-ingest-pipeline.png) |
 | Inside the visual lane | [5-visual-lane.png](diagrams/5-visual-lane.png) |
@@ -75,6 +76,68 @@ decides what the learner may see at the moment they paused, calls the AI
 services, and checks every answer's sources before showing it. The AI services
 never decide what is allowed; they only write text from what the server gives
 them.
+
+## The RAG pipeline at a glance
+
+Malai Pioneer is a retrieval-augmented generation (RAG) system. No model is
+trained or fine-tuned on the course. The lesson files are indexed once, and for
+every question the relevant pieces are retrieved and handed to the model, which
+may answer only from them.
+
+```mermaid
+%%{init: {"theme": "base", "fontFamily": "Arial, Helvetica, sans-serif", "themeVariables": {"fontSize": "16px", "fontFamily": "Arial, Helvetica, sans-serif", "lineColor": "#64748b", "primaryTextColor": "#0f172a"}, "flowchart": {"curve": "basis", "padding": 14, "wrappingWidth": 340}}}%%
+flowchart TB
+  subgraph INDEX["PART 1 · INDEXING: done once, when a lesson file is uploaded"]
+    direction LR
+    F["Lesson files<br/>video, PDF,<br/>slides, image"]:::person
+    X["Turn everything into text<br/>speech to text (Groq),<br/>what is on screen (Gemini),<br/>text of each PDF page"]:::ai
+    C["Split into small pieces<br/>each stamped with its start<br/>and end time, or its page"]:::server
+    E["Embed each piece<br/>numbers that capture<br/>its meaning"]:::ai
+    S[("Search index<br/>(Pinecone)<br/>pieces + numbers + times")]:::store
+    F --> X --> C --> E --> S
+  end
+  subgraph QUERY["PART 2 · ANSWERING: every time a learner asks"]
+    direction LR
+    Q["Learner pauses<br/>at 4:10 and asks<br/>a question"]:::person
+    QE["Embed the question<br/>the same way"]:::ai
+    R["R · RETRIEVE<br/>find the pieces closest<br/>in meaning, only from<br/>this learner's materials"]:::store
+    G1["Spoiler guard<br/>keep a piece only if it<br/>ends before 4:10"]:::check
+    A["A · AUGMENT<br/>put the surviving pieces,<br/>with their IDs, into<br/>the AI's instructions"]:::server
+    GEN["G · GENERATE<br/>the AI writes an answer<br/>using only those pieces,<br/>citing their IDs"]:::ai
+    V{"Every cited ID is<br/>one of the pieces<br/>it was given?"}:::check
+    OK["Answer with<br/>clickable sources"]:::good
+    NO["Honest refusal:<br/>not covered yet"]:::stop
+    Q --> QE --> R --> G1 --> A --> GEN --> V
+    V -->|"yes"| OK
+    V -->|"no"| NO
+  end
+  INDEX ==>|"the search index built in Part 1 is what Part 2 searches"| QUERY
+
+  classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
+  classDef server fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:1.5px
+  classDef ai fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px
+  classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:1.5px
+  classDef check fill:#ffffff,stroke:#dc2626,color:#7f1d1d,stroke-width:2px
+  classDef good fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:2px
+  classDef stop fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:1.5px
+```
+
+- **Part 1, indexing**, is section (b) below: speech is transcribed by Groq,
+  frames are described by Gemini, PDF text is read, and everything is cut into
+  timestamped pieces and embedded (`llama-text-embed-v2` on Pinecone when
+  hosted).
+- **R, retrieve.** The question is embedded the same way, and a vector search
+  finds the closest pieces within the learner's own materials. The **spoiler
+  guard** (`end_ms <= T`) is not a separate pass in practice: it is part of the
+  search filter itself, and every piece returned is checked again in Python. It
+  is drawn as its own step because it is the rule that matters most.
+- **A, augment.** The surviving pieces go into the prompt with their IDs and
+  times, as the only material the model may use.
+- **G, generate.** The model (Nemotron through OpenRouter, or Gemini) writes the
+  answer and cites piece IDs. Any ID it was not given, or an answer with no
+  citations, means a refusal instead of an answer.
+- Section (c) shows the full question flow, including the agentic tutor, which
+  runs the same retrieve step through its tools.
 
 ## (a) Hosting topology
 

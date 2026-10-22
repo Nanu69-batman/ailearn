@@ -1,0 +1,35 @@
+%%{init: {"theme": "base", "fontFamily": "Arial, Helvetica, sans-serif", "themeVariables": {"fontSize": "16px", "fontFamily": "Arial, Helvetica, sans-serif", "lineColor": "#64748b", "primaryTextColor": "#0f172a"}, "flowchart": {"curve": "basis", "padding": 14, "wrappingWidth": 340}}}%%
+flowchart TB
+  subgraph INDEX["PART 1 · INDEXING: done once, when a lesson file is uploaded"]
+    direction LR
+    F["Lesson files<br/>video, PDF,<br/>slides, image"]:::person
+    X["Turn everything into text<br/>speech to text (Groq),<br/>what is on screen (Gemini),<br/>text of each PDF page"]:::ai
+    C["Split into small pieces<br/>each stamped with its start<br/>and end time, or its page"]:::server
+    E["Embed each piece<br/>numbers that capture<br/>its meaning"]:::ai
+    S[("Search index<br/>(Pinecone)<br/>pieces + numbers + times")]:::store
+    F --> X --> C --> E --> S
+  end
+  subgraph QUERY["PART 2 · ANSWERING: every time a learner asks"]
+    direction LR
+    Q["Learner pauses<br/>at 4:10 and asks<br/>a question"]:::person
+    QE["Embed the question<br/>the same way"]:::ai
+    R["R · RETRIEVE<br/>find the pieces closest<br/>in meaning, only from<br/>this learner's materials"]:::store
+    G1["Spoiler guard<br/>keep a piece only if it<br/>ends before 4:10"]:::check
+    A["A · AUGMENT<br/>put the surviving pieces,<br/>with their IDs, into<br/>the AI's instructions"]:::server
+    GEN["G · GENERATE<br/>the AI writes an answer<br/>using only those pieces,<br/>citing their IDs"]:::ai
+    V{"Every cited ID is<br/>one of the pieces<br/>it was given?"}:::check
+    OK["Answer with<br/>clickable sources"]:::good
+    NO["Honest refusal:<br/>not covered yet"]:::stop
+    Q --> QE --> R --> G1 --> A --> GEN --> V
+    V -->|"yes"| OK
+    V -->|"no"| NO
+  end
+  INDEX ==>|"the search index built in Part 1 is what Part 2 searches"| QUERY
+
+  classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
+  classDef server fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:1.5px
+  classDef ai fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px
+  classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:1.5px
+  classDef check fill:#ffffff,stroke:#dc2626,color:#7f1d1d,stroke-width:2px
+  classDef good fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:2px
+  classDef stop fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:1.5px
