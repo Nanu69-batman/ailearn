@@ -271,14 +271,10 @@ stack, chat latency under load, and concurrent users.
 - The evaluation (a) is 29 questions on one lecture and one PDF.
 - Near-duplicate screen descriptions can crowd the search results (found in
   (a)); this causes most of the remaining misses.
-- One real lecture (11 minutes) has been exercised end to end. There is no
-  long-form video, no long multi-page document, and no multi-subject coverage.
 - Ingest throughput is bound by free tiers: Pinecone Inference's 5M embedding
   tokens a month, and Gemini's quota for frame descriptions. A spent quota
   stops ingest with a `503` until it resets.
 - Job state, the in-flight guard, sessions and subjects live in process memory
   (sessions and subjects are mirrored to local files). A restart loses running
   jobs.
-- YouTube ingest is unverified here and often blocked from datacenter IPs when
-  hosted.
 - The LMS launch signature check has no dedicated test.
