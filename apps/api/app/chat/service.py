@@ -7,7 +7,6 @@ import logging
 from collections.abc import Sequence
 
 from app import devtrace
-from app.chat import streaming
 from app.chat.completed import (
     COMPLETED_K,
     COMPLETED_T_MS,
@@ -391,7 +390,6 @@ class ChatService:
             data={"path": "agent" if use_agent else "classic"},
         )
         if use_agent:
-            streaming.status("Reading the lesson")
             resp = await self._agent_answer(
                 session=session,
                 message=message,
@@ -465,7 +463,6 @@ class ChatService:
             },
         )
 
-        streaming.status("Searching the lesson")
         retrieval = self._retrieval()
         passages = await retrieval.retrieve(
             rewritten,

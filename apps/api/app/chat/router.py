@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from typing import Annotated
 
 import httpx
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import StreamingResponse
 
 from app.chat.launch import (
     DEV_SECRET,
@@ -212,8 +210,8 @@ def _require_session_token(
         raise HTTPException(status_code=401, detail="invalid launch")
 
 
-def _authorize_chat(body: ChatRequest, request: Request) -> None:
-    """Rate limit, session and token checks shared by both chat routes."""
+@router.post("/chat", response_model=ChatResponse)
+async def post_chat(body: ChatRequest, request: Request) -> ChatResponse:
     from app.config import settings
 
     if not _check_rate_limit(_client_ip(request)):
@@ -228,9 +226,6 @@ def _authorize_chat(body: ChatRequest, request: Request) -> None:
         token=body.session_token,
     )
     _use_thread(session.id, body.thread_id)
-
-
-async def _answer(body: ChatRequest) -> ChatResponse:
     service = get_service()
     try:
         return await service.chat(
@@ -257,73 +252,6 @@ async def _answer(body: ChatRequest) -> ChatResponse:
         # M5: log specifics server-side; never leak provider internals.
         log.error("chat provider error: %s", f"{name}: {exc}")
         raise HTTPException(status_code=502, detail="upstream provider error") from exc
-
-
-@router.post("/chat", response_model=ChatResponse)
-async def post_chat(body: ChatRequest, request: Request) -> ChatResponse:
-    _authorize_chat(body, request)
-    return await _answer(body)
-
-
-def _sse(event: str, data) -> str:
-    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
-
-
-@router.post("/chat/stream")
-async def post_chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
-    """``POST /chat`` as Server-Sent Events, so the answer appears as it is written.
-
-    Auth failures are still plain HTTP errors (checked before streaming starts).
-    Then: ``status`` events (``{"text"}``, what the tutor is doing), ``text``
-    events (``{"text"}``, the answer so far, markers stripped; empty means start
-    over), and exactly one final ``done`` (the validated :class:`ChatResponse`,
-    which replaces the preview) or ``error`` (``{"status", "detail"}``).
-    """
-    from app.chat import streaming
-
-    _authorize_chat(body, request)
-    sink = streaming.StreamSink()
-    bound = streaming.bind(sink)
-    try:
-        # The task copies this context: the sink and the chat thread.
-        task = asyncio.create_task(_answer(body))
-    finally:
-        streaming.unbind(bound)
-    # If the learner closes the tab the answer still finishes and is saved to
-    # the chat history; this only stops an unread exception from being logged.
-    task.add_done_callback(lambda t: t.cancelled() or t.exception())
-
-    async def events():
-        yield _sse("status", {"text": "Thinking"})
-        while True:
-            getter = asyncio.ensure_future(sink.queue.get())
-            await asyncio.wait({getter, task}, return_when=asyncio.FIRST_COMPLETED)
-            if getter.done():
-                kind, value = getter.result()
-                yield _sse(kind, {"text": value})
-                continue
-            getter.cancel()
-            break
-        while not sink.queue.empty():
-            kind, value = sink.queue.get_nowait()
-            yield _sse(kind, {"text": value})
-        exc = task.exception()
-        if exc is None:
-            yield _sse("done", task.result().model_dump(mode="json"))
-        elif isinstance(exc, HTTPException):
-            yield _sse("error", {"status": exc.status_code, "detail": exc.detail})
-        elif isinstance(exc, QuotaExhaustedError):
-            yield _sse("error", {"status": 503, "detail": str(exc)})
-        else:
-            log.error("chat stream failed: %s", type(exc).__name__)
-            yield _sse("error", {"status": 500, "detail": "internal error"})
-
-    return StreamingResponse(
-        events(),
-        media_type="text/event-stream",
-        # No proxy buffering, or the "stream" arrives all at once at the end.
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
 
 
 def _resolve_thread(session_id: str, thread_id: str | None) -> str:
