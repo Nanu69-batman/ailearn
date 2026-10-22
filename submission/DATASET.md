@@ -36,7 +36,7 @@ chunks, 93 match in full, 4 partly, and none are missed.
 2. Go to **Dashboard**, create a subject (for example "Engineering Mathematics")
    and open it.
 3. In the file upload form, choose `test-data/Partial-derivatives.mp4`. Pick
-   **Stream: first ~6 minutes now, the rest as you watch** to start asking after
+   **Stream: first ~2 minutes now, the rest as you watch** to start asking after
    the first windows, or **Process everything now** to ingest it all in one job.
    Upload.
 4. Upload `test-data/UNIT-1-001.pdf` to the same subject.

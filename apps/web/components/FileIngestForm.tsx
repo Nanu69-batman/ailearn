@@ -382,7 +382,7 @@ export default function FileIngestForm({
             </label>
             <label className="flex items-center gap-2">
               <input type="radio" name="ingest-mode" className="accent-violet-600" checked={mode === "stream"} onChange={() => setMode("stream")} />
-              Stream: first ~6 minutes now, the rest as you watch
+              Stream: first ~2 minutes now, the rest as you watch
             </label>
           </fieldset>
         )}

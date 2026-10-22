@@ -658,7 +658,9 @@ def ingest_media(
 #: Progressive ingest. A window is a whole number of visual frame intervals so
 #: frame indices partition cleanly across windows.
 WINDOW_MS = 120_000
-INITIAL_WINDOWS = 3
+#: Stream mode processes this many windows at upload (one = the first two
+#: minutes); the player's position requests queue the rest as it plays.
+INITIAL_WINDOWS = 1
 LOOKAHEAD_MS = 2 * WINDOW_MS
 assert WINDOW_MS % round(visual_mod.FRAME_INTERVAL_S * 1000) == 0
 

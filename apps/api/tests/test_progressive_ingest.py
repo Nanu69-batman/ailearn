@@ -77,6 +77,9 @@ def env(tmp_path, monkeypatch):
     uploads.mkdir()
     monkeypatch.setattr(ingestion_router, "UPLOAD_DIR", uploads)
     monkeypatch.setattr(jobs_mod, "media_duration_ms", lambda p: DUR)
+    # These tests exercise a multi-window head start; the shipped default (one
+    # window) is pinned by test_stream_default_processes_the_first_two_minutes.
+    monkeypatch.setattr(jobs_mod, "INITIAL_WINDOWS", 3)
     monkeypatch.setattr(audio_mod, "transcribe", _fake_transcribe)
     monkeypatch.setattr(visual_mod, "extract_visual_pass", _fake_visual)
     CALLS.clear()
@@ -328,3 +331,16 @@ def test_pipelined_lanes_keep_the_job_and_trace_context(env):
     steps = {e["step"] for e in mine}
     assert {"transcribe", "describe", "chunk", "embed", "index"} <= steps
     assert mine[0]["step"] == "request" and mine[-1]["step"] == "respond"
+
+
+def test_stream_default_processes_the_first_two_minutes(env, monkeypatch):
+    _, store, _, _ = env
+    monkeypatch.setattr(jobs_mod, "INITIAL_WINDOWS", 1)
+    job = _run(store, mode="stream")
+    assert job.status == "done", job.error
+    assert CALLS == [(0, 120_000)]
+    assert jobs_mod.job_payload(job)["processed_through_ms"] == 120_000
+
+
+def test_shipped_stream_head_start_is_one_window():
+    assert jobs_mod.INITIAL_WINDOWS * jobs_mod.WINDOW_MS == 120_000

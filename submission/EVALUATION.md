@@ -180,7 +180,7 @@ from code constants and was not timed.
 | Embedding calls for a 253-text video | 257 before, 4 now | 257 and 7 measured; 4 by construction |
 | Vision time for one 2-minute window | 114.9 s down to 54.6 s | measured, one run each, noisy |
 | Frame bytes per call | down about 59% | measured |
-| Time to first usable answers (stream) | first 6 minutes of video | measured on demo video |
+| Video processed before the first answers (stream) | first 2 minutes (one window) | by construction; was 6 minutes |
 | Transcript-first / overlapped lanes speed-up | not measured yet | tests only, fakes |
 | Whisper time for one 2-minute window | about 29 s down to about 15 s | measured, two runs each, loaded machine |
 | Groq transcription, one 2-minute window | 2.4-3.4 s | measured, 3 full windows, one run each |

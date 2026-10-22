@@ -98,7 +98,7 @@ How it works:
   first, so a window becomes askable quickly. Stage V (frame descriptions) runs
   in a second lane in parallel, one window behind.
 - **Modes.** `full` processes every window in one job. `stream` processes the
-  first 3 windows (6 minutes) at upload. After that the player reports its
+  first window (2 minutes) at upload. After that the player reports its
   position (`POST /courses/{id}/resources/{rid}/position`), and the API queues up
   to two transcript windows ahead of the playhead plus a visual catch-up job.
 - **Frontiers live in the store, not in memory.** Chunks carry
