@@ -11,7 +11,7 @@ below with the file that covers it.
 | README and setup documentation | [../README.md](../README.md): quickstart, environment variables, tests |
 | API documentation | [API.md](API.md) |
 | Sample dataset | [DATASET.md](DATASET.md); the files are in [../test-data/](../test-data/) and the golden set is in [eval/](eval/) |
-| Evaluation results and testing details | [EVALUATION.md](EVALUATION.md); raw results in [eval-results/](eval-results/) |
+| Evaluation results and testing details | [EVALUATION.md](EVALUATION.md): first on our own lecture video and PDF (29 questions, real embedder and AI), then a synthetic spoiler stress test; raw results in [eval-results/](eval-results/) |
 | Demo video | [My Video-2.mp4](My%20Video-2.mp4) |
 | Deployment instructions | [DEPLOYMENT.md](DEPLOYMENT.md) |
 | Live pipeline view (Developer view) | The **Developer view** button in the app's header; described in [ARCHITECTURE.md](ARCHITECTURE.md#f-developer-view-the-live-pipeline-trace) |

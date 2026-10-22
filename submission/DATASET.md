@@ -8,7 +8,9 @@ fully labelled course for the offline evaluation.
 |---|---|---|---|
 | `test-data/Partial-derivatives.mp4` | Whiteboard lecture video on partial derivatives. 655.5 s (about 11 min), 1280x720 H.264 with AAC audio | 15,403,788 bytes (about 15 MB) | Demo video: transcript, on-screen frames, live frame, stream ingest |
 | `test-data/UNIT-1-001.pdf` | Lecture notes, *System Modelling Techniques - I: Functions of Several Variables, Partial Derivatives, Chain Rule, Implicit Functions, Exact Differentials, and Potential Function Reconstruction* (Prof. Pravin Chandra, GGSIPU). 41 pages with a text layer (about 66,000 extracted characters), so no OCR is needed | 475,959 bytes (about 465 KB) | Companion document for the same subject. Citations carry `page_no` |
-| `submission/eval/golden.jsonl` | 25 labelled questions (16 answer, 9 refuse) | 25 lines | Offline RAG evaluation ([EVALUATION.md](EVALUATION.md)) |
+| `submission/eval/golden-partial-derivatives.jsonl` | 29 labelled questions on the two files above (19 answer, 10 withhold) | 29 lines | Evaluation on our own course material ([EVALUATION.md](EVALUATION.md#a-evaluation-on-our-own-course-material)) |
+| `submission/eval/partial-derivatives-chunks.jsonl` | The two files above as the app indexed them: 263 video pieces and 97 PDF pieces, with times and pages | 360 lines | Lets anyone re-run that evaluation without our index |
+| `submission/eval/golden.jsonl` | 25 labelled questions (16 answer, 9 refuse) | 25 lines | Synthetic spoiler stress test ([EVALUATION.md](EVALUATION.md)) |
 | `submission/eval/fixture-course.md` | Human-readable description of the synthetic *Bioenergetics 101* course the golden set is about. The source of truth for its chunks is `apps/api/app/eval/fixture.py` | | Explains every gold location |
 
 The video and the PDF are on the same topic, so one subject can hold both. A
@@ -92,9 +94,39 @@ web player does this automatically.
 
 Ingest uses the Gemini quota: one embedding per chunk, batched 64 texts per call,
 plus vision calls for frames. On the free tier, a fresh full ingest of the
-11-minute video takes minutes. See [EVALUATION.md](EVALUATION.md#c-performance).
+11-minute video takes minutes. See [EVALUATION.md](EVALUATION.md#d-performance).
 
-## The golden set
+## The golden set on our own course
+
+`submission/eval/golden-partial-derivatives.jsonl` has 29 questions written
+from the lecture and the PDF notes, in the same format as the synthetic set
+below. Each records where the learner paused, whether the question should be
+answered, and the exact piece(s) of the course that contain the answer
+(`{"kind": "video", "start_ms", "end_ms"}` or `{"kind": "pdf", "page"}`).
+Spoiler questions also list `withheld_terms`: strings such as `1 + cos(2)`
+that must not appear in the answer before the lecture reaches them.
+
+| Kind | Count | Expected |
+|---|---|---|
+| Video, taught before the pause (`video_before`) | 10 | answer |
+| On screen, shown before the pause (`video_screen`) | 2 | answer |
+| PDF notes (`pdf`) | 7 | answer |
+| Taught after the pause (`video_later`) | 5 | withhold |
+| Asks to skip ahead or spoil (`adversarial`) | 2 | withhold |
+| Not in the course (`unanswerable`) | 3 | withhold |
+
+Example (paused at 7:00; the answer, 4, is said at 6:15 and shown on the board
+at 6:20-6:28):
+
+```json
+{"id": "pd-v5", "type": "video_before", "expected": "answer", "pause_at_ms": 420000, "question": "What is the partial derivative of f with respect to x at the point (1, 2)?", "gold_sources": [{"kind": "video", "start_ms": 375110, "end_ms": 380110}, {"kind": "video", "start_ms": 384000, "end_ms": 388000}, "..."]}
+```
+
+The same question asked at 1:00 is a spoiler (`pd-l1`), and the answer must not
+contain `= 4`. Results and the commands to re-run are in
+[EVALUATION.md](EVALUATION.md#a-evaluation-on-our-own-course-material).
+
+## The synthetic golden set
 
 `submission/eval/golden.jsonl` has one JSON object per line:
 
@@ -133,6 +165,5 @@ python -m app.eval.harness                       # prints the scoreboard JSON
 python -m app.eval.harness --k 5 --threshold 0.08 --out ../../submission/eval-results/<name>.json
 ```
 
-Note: the golden set covers the synthetic fixture course, not the two demo files
-above. The demo files are checked by the live probes listed in
-[EVALUATION.md](EVALUATION.md#live-probes-on-the-real-stack).
+Note: this synthetic set covers the invented fixture course. The two demo files
+are covered by the golden set on our own course, above.

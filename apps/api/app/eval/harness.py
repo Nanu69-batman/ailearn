@@ -26,6 +26,13 @@ Usage (from ``apps/api``)::
 
     python -m app.eval.harness
     python -m app.eval.harness --golden ../../submission/eval/golden.jsonl --k 5
+
+    # The real demo course (the lecture video + UNIT-1 PDF, exported chunks),
+    # with the production embedder (needs PINECONE_API_KEY):
+    python -m app.eval.harness \\
+        --golden ../../submission/eval/golden-partial-derivatives.jsonl \\
+        --chunks ../../submission/eval/partial-derivatives-chunks.jsonl \\
+        --embedder pinecone
 """
 
 from __future__ import annotations
@@ -45,6 +52,7 @@ from app.eval.fixture import (
     FIXTURE_COURSE_ID,
     build_fixture_chunks,
 )
+from app.ingestion.chunking import Chunk
 from app.ingestion.embedder import HashingEmbedder
 from app.retrieval.service import RetrievalService, RetrievedPassage
 from app.retrieval.store import ChromaVectorStore
@@ -238,6 +246,101 @@ class ItemResult:
     max_score: float = 0.0
 
 
+def load_course_chunks(path: str | Path) -> tuple[list[Chunk], str, list[str]]:
+    """A course exported as JSONL chunks: ``(chunks, course_id, resource_ids)``.
+
+    Every resource in the file is treated as granted, and documents as marked
+    done, which is how the lesson page reads a PDF beside the video.
+    """
+    chunks: list[Chunk] = []
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        meta = {k: row[k] for k in ("kind", "title") if row.get(k)}
+        chunks.append(
+            Chunk(
+                chunk_id=row["chunk_id"],
+                resource_id=row["resource_id"],
+                course_id=row["course_id"],
+                source_type=row["source_type"],
+                text=row["text"],
+                start_ms=row.get("start_ms"),
+                end_ms=row.get("end_ms"),
+                page_no=row.get("page_no"),
+                metadata=meta,
+            )
+        )
+    if not chunks:
+        raise ValueError(f"{path}: no chunks")
+    allowed = list(dict.fromkeys(c.resource_id for c in chunks))
+    return chunks, chunks[0].course_id, allowed
+
+
+class CachedEmbedder:
+    """Embeds each distinct text once. The harness rebuilds a store per item,
+    so a networked embedder would otherwise re-embed the course every time."""
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+        self._docs: dict[str, list[float]] = {}
+        self._queries: dict[str, list[float]] = {}
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        missing = list(dict.fromkeys(t for t in texts if t not in self._docs))
+        if missing:
+            for t, v in zip(missing, self._inner.embed_documents(missing)):
+                self._docs[t] = v
+        return [self._docs[t] for t in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        if text not in self._queries:
+            self._queries[text] = self._inner.embed_query(text)
+        return self._queries[text]
+
+    def __call__(self, text: str) -> list[float]:
+        return self.embed_query(text)
+
+
+#: Embedders the harness can run with. "hashing" is offline and the default.
+EMBEDDERS = ("hashing", "pinecone", "gemini")
+
+
+def make_embedder(name: str):
+    """The named embedder, wrapped in a cache. Network ones need their key."""
+    from app.config import settings
+
+    if name == "hashing":
+        return HashingEmbedder()
+    if name == "pinecone":
+        from app.ingestion.embedder import PineconeEmbedder
+
+        if not settings.pinecone_api_key:
+            raise SystemExit("--embedder pinecone needs PINECONE_API_KEY")
+        return CachedEmbedder(
+            PineconeEmbedder(settings.pinecone_embed_model, settings.pinecone_api_key)
+        )
+    if name == "gemini":
+        from app.ingestion.embedder import GeminiEmbedder
+
+        if not settings.embedding_api_key:
+            raise SystemExit("--embedder gemini needs EMBEDDING_API_KEY")
+        return CachedEmbedder(
+            GeminiEmbedder(settings.embedding_model, settings.embedding_api_key)
+        )
+    raise ValueError(f"unknown embedder {name!r}; choose from {EMBEDDERS}")
+
+
+def embedder_label(name: str) -> str:
+    from app.config import settings
+
+    return {
+        "hashing": "HashingEmbedder (offline)",
+        "pinecone": f"Pinecone Inference {settings.pinecone_embed_model}",
+        "gemini": f"Gemini {settings.embedding_model}",
+    }.get(name, name)
+
+
 def load_golden(path: str | Path) -> list[dict]:
     items: list[dict] = []
     with open(path, encoding="utf-8") as fh:
@@ -284,16 +387,27 @@ async def _evaluate_async(
     items: list[dict],
     k: int = DEFAULT_K,
     threshold: float = DEFAULT_THRESHOLD,
+    *,
+    chunks=None,
+    course_id: str = FIXTURE_COURSE_ID,
+    allowed: list[str] | None = None,
+    embedder=None,
 ) -> tuple[list[ItemResult], dict]:
-    embedder = HashingEmbedder()
-    chunks = build_fixture_chunks()
+    embedder = embedder or HashingEmbedder()
+    chunks = chunks if chunks is not None else build_fixture_chunks()
+    allowed = allowed if allowed is not None else ALLOWED_RESOURCES
     with tempfile.TemporaryDirectory(
         prefix="eval-chroma-", ignore_cleanup_errors=True  # Windows holds Chroma file locks
     ) as tmp:
-        return await _evaluate_with_tmp(items, chunks, embedder, tmp, k, threshold)
+        return await _evaluate_with_tmp(
+            items, chunks, embedder, tmp, k, threshold, course_id, allowed
+        )
 
 
-async def _evaluate_with_tmp(items, chunks, embedder, tmp, k, threshold):
+async def _evaluate_with_tmp(
+    items, chunks, embedder, tmp, k, threshold,
+    course_id=FIXTURE_COURSE_ID, allowed=ALLOWED_RESOURCES,
+):
     raw_store = ChromaVectorStore(
         path=Path(tmp) / "full", embedder=embedder, collection="eval_full"
     )
@@ -310,7 +424,7 @@ async def _evaluate_with_tmp(items, chunks, embedder, tmp, k, threshold):
         # production retrieval service ranks the visible pool, then the leakage
         # assertion re-checks the final set. Anything failing the assertion is
         # a harness/implementation bug, never prompt behavior.
-        visible = apply_strict_cutoff(chunks, pause_at_ms, ALLOWED_RESOURCES)
+        visible = apply_strict_cutoff(chunks, pause_at_ms, allowed)
         vis_store = ChromaVectorStore(
             path=Path(tmp) / f"vis{n_stores}", embedder=embedder, collection="eval_vis"
         )
@@ -319,8 +433,8 @@ async def _evaluate_with_tmp(items, chunks, embedder, tmp, k, threshold):
         started = time.perf_counter()
         retrieved = await service.retrieve(
             item["question"],
-            FIXTURE_COURSE_ID,
-            ALLOWED_RESOURCES,
+            course_id,
+            allowed,
             pause_at_ms,
             k=k,
         )
@@ -330,16 +444,16 @@ async def _evaluate_with_tmp(items, chunks, embedder, tmp, k, threshold):
         # the strict cutoff enforce the same end_ms <= T rule.
         raw_hits = await raw_service.retrieve(
             item["question"],
-            FIXTURE_COURSE_ID,
-            ALLOWED_RESOURCES,
+            course_id,
+            allowed,
             pause_at_ms,
             k=k,
         )
-        if detect_leakage(raw_hits, pause_at_ms, ALLOWED_RESOURCES, resource_of):
+        if detect_leakage(raw_hits, pause_at_ms, allowed, resource_of):
             gap_items += 1
         retrieved_ids = [p.chunk_id for p in retrieved]
         retrieved_gold = [cid for cid in retrieved_ids if cid in set(gold_ids)]
-        leakage = detect_leakage(retrieved, pause_at_ms, ALLOWED_RESOURCES, resource_of)
+        leakage = detect_leakage(retrieved, pause_at_ms, allowed, resource_of)
         decision = (
             "refuse"
             if should_refuse(retrieved, gold_ids, threshold)
@@ -373,12 +487,30 @@ def run_eval(
     golden_path: str | Path | None = None,
     k: int = DEFAULT_K,
     threshold: float = DEFAULT_THRESHOLD,
+    chunks_path: str | Path | None = None,
+    embedder: str = "hashing",
 ) -> dict:
-    """Load the golden set, run gated retrieval per item, return scoreboard."""
+    """Load the golden set, run gated retrieval per item, return scoreboard.
+
+    ``chunks_path`` swaps the synthetic fixture course for an exported real
+    one; ``embedder`` picks the embedding model (see :data:`EMBEDDERS`).
+    """
     path = Path(golden_path) if golden_path else GOLDEN_DEFAULT
     items = load_golden(path)
-    results, scoreboard = asyncio.run(_evaluate_async(items, k=k, threshold=threshold))
+    course: dict = {}
+    if chunks_path:
+        chunks, course_id, allowed = load_course_chunks(chunks_path)
+        course = {"chunks": chunks, "course_id": course_id, "allowed": allowed}
+    results, scoreboard = asyncio.run(
+        _evaluate_async(
+            items, k=k, threshold=threshold, embedder=make_embedder(embedder), **course
+        )
+    )
     scoreboard["golden_path"] = str(path)
+    scoreboard["chunks_path"] = (
+        str(chunks_path) if chunks_path else "fixture (app/eval/fixture.py)"
+    )
+    scoreboard["embedder"] = embedder_label(embedder)
     scoreboard["k"] = k
     scoreboard["threshold"] = threshold
     scoreboard["items"] = [
@@ -403,8 +535,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--k", type=int, default=DEFAULT_K)
     parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD)
     parser.add_argument("--out", default="")
+    parser.add_argument("--chunks", default="", help="exported course chunks (JSONL)")
+    parser.add_argument("--embedder", default="hashing", choices=EMBEDDERS)
     args = parser.parse_args(argv)
-    scoreboard = run_eval(args.golden, k=args.k, threshold=args.threshold)
+    scoreboard = run_eval(
+        args.golden, k=args.k, threshold=args.threshold,
+        chunks_path=args.chunks or None, embedder=args.embedder,
+    )
     rendered = json.dumps(scoreboard, indent=2)
     if args.out:
         Path(args.out).write_text(rendered, encoding="utf-8")

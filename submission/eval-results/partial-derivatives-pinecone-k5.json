@@ -1,0 +1,353 @@
+{
+  "n_total": 29,
+  "n_answer": 19,
+  "n_refuse": 10,
+  "retrieval_acc": 0.7894736842105263,
+  "refusal_correctness": 1.0,
+  "leakage_rate": 0.0,
+  "latency_ms_p50": 360.51969999971334,
+  "latency_ms_p95": 434.46030000086466,
+  "citation_acc": 0.42105263157894735,
+  "gap_mode": "chroma",
+  "production_gap_items": 0,
+  "production_gap_rate": 0.0,
+  "golden_path": "..\\..\\submission\\eval\\golden-partial-derivatives.jsonl",
+  "chunks_path": "../../submission/eval/partial-derivatives-chunks.jsonl",
+  "embedder": "Pinecone Inference llama-text-embed-v2",
+  "k": 5,
+  "threshold": 0.08,
+  "items": [
+    {
+      "id": "pd-v1",
+      "expected": "answer",
+      "decision": "answer",
+      "retrieved_gold_ids": [
+        "res_2e629d682a3d_c11_f5396b46"
+      ],
+      "leakage": [],
+      "latency_ms": 353.485,
+      "citation_ok": false,
+      "max_score": 0.5518
+    },
+    {
+      "id": "pd-v2",
+      "expected": "answer",
+      "decision": "answer",
+      "retrieved_gold_ids": [
+        "res_2e629d682a3d_c20_fec2e898"
+      ],
+      "leakage": [],
+      "latency_ms": 359.317,
+      "citation_ok": true,
+      "max_score": 0.4108
+    },
+    {
+      "id": "pd-v3",
+      "expected": "answer",
+      "decision": "answer",
+      "retrieved_gold_ids": [
+        "res_2e629d682a3d_c42_e4375556"
+      ],
+      "leakage": [],
+      "latency_ms": 361.321,
+      "citation_ok": true,
+      "max_score": 0.6212
+    },
+    {
+      "id": "pd-v4",
+      "expected": "answer",
+      "decision": "answer",
+      "retrieved_gold_ids": [
+        "res_2e629d682a3d_c41_20beecd3"
+      ],
+      "leakage": [],
+      "latency_ms": 363.395,
+      "citation_ok": true,
+      "max_score": 0.545
+    },
+    {
+      "id": "pd-v5",
+      "expected": "answer",
+      "decision": "answer",
+      "retrieved_gold_ids": [
+        "res_2e629d682a3d_c185_a275c492"
+      ],
+      "leakage": [],
+      "latency_ms": 359.042,
+      "citation_ok": false,
+      "max_score": 0.5452
+    },
+    {
+      "id": "pd-v6",
+      "expected": "answer",
+      "decision": "refuse",
+      "retrieved_gold_ids": [],
+      "leakage": [],
+      "latency_ms": 370.334,
+      "citation_ok": false,
+      "max_score": 0.5863
+    },
+    {
+      "id": "pd-v7",
+      "expected": "answer",
+      "decision": "refuse",
+      "retrieved_gold_ids": [],
+      "leakage": [],
+      "latency_ms": 376.153,
+      "citation_ok": false,
+      "max_score": 0.5078
+    },
+    {
+      "id": "pd-v8",
+      "expected": "answer",
+      "decision": "answer",
+      "retrieved_gold_ids": [
+        "res_2e629d682a3d_c83_878bf2cf"
+      ],
+      "leakage": [],
+      "latency_ms": 583.054,
+      "citation_ok": false,
+      "max_score": 0.6544
+    },
+    {
+      "id": "pd-v9",
+      "expected": "answer",
+      "decision": "answer",
+      "retrieved_gold_ids": [
+        "res_2e629d682a3d_c94_97b41716"
+      ],
+      "leakage": [],
+      "latency_ms": 363.308,
+      "citation_ok": false,
+      "max_score": 0.3024
+    },
+    {
+      "id": "pd-v10",
+      "expected": "answer",
+      "decision": "refuse",
+      "retrieved_gold_ids": [],
+      "leakage": [],
+      "latency_ms": 403.205,
+      "citation_ok": false,
+      "max_score": 0.5689
+    },
+    {
+      "id": "pd-s1",
+      "expected": "answer",
+      "decision": "answer",
+      "retrieved_gold_ids": [
+        "res_2e629d682a3d_c89_37e89eb8"
+      ],
+      "leakage": [],
+      "latency_ms": 411.452,
+      "citation_ok": true,
+      "max_score": 0.643
+    },
+    {
+      "id": "pd-s2",
+      "expected": "answer",
+      "decision": "refuse",
+      "retrieved_gold_ids": [],
+      "leakage": [],
+      "latency_ms": 397.106,
+      "citation_ok": true,
+      "max_score": 0.55
+    },
+    {
+      "id": "pd-l1",
+      "expected": "refuse",
+      "decision": "refuse",
+      "retrieved_gold_ids": [],
+      "leakage": [],
+      "latency_ms": 348.394,
+      "citation_ok": null,
+      "max_score": 0.4489
+    },
+    {
+      "id": "pd-l2",
+      "expected": "refuse",
+      "decision": "refuse",
+      "retrieved_gold_ids": [],
+      "leakage": [],
+      "latency_ms": 352.55,
+      "citation_ok": null,
+      "max_score": 0.3851
+    },
+    {
+      "id": "pd-l3",
+      "expected": "refuse",
+      "decision": "refuse",
+      "retrieved_gold_ids": [],
+      "leakage": [],
+      "latency_ms": 360.52,
+      "citation_ok": null,
+      "max_score": 0.4735
+    },
+    {
+      "id": "pd-l4",
+      "expected": "refuse",
+      "decision": "refuse",
+      "retrieved_gold_ids": [],
+      "leakage": [],
+      "latency_ms": 359.823,
+      "citation_ok": null,
+      "max_score": 0.2059
+    },
+    {
+      "id": "pd-l5",
+      "expected": "refuse",
+      "decision": "refuse",
+      "retrieved_gold_ids": [],
+      "leakage": [],
+      "latency_ms": 352.529,
+      "citation_ok": null,
+      "max_score": 0.4585
+    },
+    {
+      "id": "pd-p1",
+      "expected": "answer",
+      "decision": "answer",
+      "retrieved_gold_ids": [
+        "res_7c1f4a92d0e5_c10_0481bc7b",
+        "res_7c1f4a92d0e5_c62_f8182779",
+        "res_7c1f4a92d0e5_c42_c384cbb8",
+        "res_7c1f4a92d0e5_c11_52c458fc"
+      ],
+      "leakage": [],
+      "latency_ms": 358.815,
+      "citation_ok": true,
+      "max_score": 0.4995
+    },
+    {
+      "id": "pd-p2",
+      "expected": "answer",
+      "decision": "answer",
+      "retrieved_gold_ids": [
+        "res_7c1f4a92d0e5_c15_2c0dd590",
+        "res_7c1f4a92d0e5_c14_858f41b4"
+      ],
+      "leakage": [],
+      "latency_ms": 357.984,
+      "citation_ok": false,
+      "max_score": 0.5453
+    },
+    {
+      "id": "pd-p3",
+      "expected": "answer",
+      "decision": "answer",
+      "retrieved_gold_ids": [
+        "res_7c1f4a92d0e5_c11_52c458fc",
+        "res_7c1f4a92d0e5_c64_5e8749ef",
+        "res_7c1f4a92d0e5_c45_6055073e"
+      ],
+      "leakage": [],
+      "latency_ms": 355.96,
+      "citation_ok": false,
+      "max_score": 0.5563
+    },
+    {
+      "id": "pd-p4",
+      "expected": "answer",
+      "decision": "answer",
+      "retrieved_gold_ids": [
+        "res_7c1f4a92d0e5_c43_988d23e0",
+        "res_7c1f4a92d0e5_c63_7ff53d9c",
+        "res_7c1f4a92d0e5_c44_5edb59df"
+      ],
+      "leakage": [],
+      "latency_ms": 357.398,
+      "citation_ok": false,
+      "max_score": 0.5232
+    },
+    {
+      "id": "pd-p5",
+      "expected": "answer",
+      "decision": "answer",
+      "retrieved_gold_ids": [
+        "res_7c1f4a92d0e5_c26_4d8fa575"
+      ],
+      "leakage": [],
+      "latency_ms": 355.323,
+      "citation_ok": true,
+      "max_score": 0.4987
+    },
+    {
+      "id": "pd-p6",
+      "expected": "answer",
+      "decision": "answer",
+      "retrieved_gold_ids": [
+        "res_7c1f4a92d0e5_c57_1f3d2df0",
+        "res_7c1f4a92d0e5_c37_7430eb09",
+        "res_7c1f4a92d0e5_c38_e1b50b79"
+      ],
+      "leakage": [],
+      "latency_ms": 397.254,
+      "citation_ok": true,
+      "max_score": 0.465
+    },
+    {
+      "id": "pd-p7",
+      "expected": "answer",
+      "decision": "answer",
+      "retrieved_gold_ids": [
+        "res_7c1f4a92d0e5_c12_a588d202",
+        "res_7c1f4a92d0e5_c13_63672dd8",
+        "res_7c1f4a92d0e5_c11_52c458fc"
+      ],
+      "leakage": [],
+      "latency_ms": 358.398,
+      "citation_ok": false,
+      "max_score": 0.5354
+    },
+    {
+      "id": "pd-u1",
+      "expected": "refuse",
+      "decision": "refuse",
+      "retrieved_gold_ids": [],
+      "leakage": [],
+      "latency_ms": 367.995,
+      "citation_ok": null,
+      "max_score": 0.2662
+    },
+    {
+      "id": "pd-u2",
+      "expected": "refuse",
+      "decision": "refuse",
+      "retrieved_gold_ids": [],
+      "leakage": [],
+      "latency_ms": 379.18,
+      "citation_ok": null,
+      "max_score": 0.2176
+    },
+    {
+      "id": "pd-u3",
+      "expected": "refuse",
+      "decision": "refuse",
+      "retrieved_gold_ids": [],
+      "leakage": [],
+      "latency_ms": 403.973,
+      "citation_ok": null,
+      "max_score": 0.24
+    },
+    {
+      "id": "pd-a1",
+      "expected": "refuse",
+      "decision": "refuse",
+      "retrieved_gold_ids": [],
+      "leakage": [],
+      "latency_ms": 358.558,
+      "citation_ok": null,
+      "max_score": 0.422
+    },
+    {
+      "id": "pd-a2",
+      "expected": "refuse",
+      "decision": "refuse",
+      "retrieved_gold_ids": [],
+      "leakage": [],
+      "latency_ms": 434.46,
+      "citation_ok": null,
+      "max_score": 0.4193
+    }
+  ]
+}
