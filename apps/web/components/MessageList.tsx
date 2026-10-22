@@ -7,6 +7,8 @@ import MarkdownBody from "./MarkdownBody";
 interface MessageListProps {
   messages: ChatMessage[];
   loading: boolean;
+  /** The reply being streamed while `loading`: a status line and/or text so far. */
+  preview?: { status: string | null; text: string } | null;
   onSeek: (startMs: number) => void;
   /** The resource open beside the chat; its citations are shown there on click. */
   openDoc?: CitationBadgeProps["openDoc"];
@@ -76,7 +78,7 @@ function Citations({
   );
 }
 
-export default function MessageList({ messages, loading, onSeek, openDoc, onSuggest, suggestDisabled }: MessageListProps) {
+export default function MessageList({ messages, loading, preview, onSeek, openDoc, onSuggest, suggestDisabled }: MessageListProps) {
   if (messages.length === 0 && !loading) {
     return (
       <div className="mt-3 rounded-xl border border-dashed border-gray-300 p-5 text-center text-sm">
@@ -135,7 +137,17 @@ export default function MessageList({ messages, loading, onSeek, openDoc, onSugg
           </div>
         ),
       )}
-      {loading && (
+      {loading && preview?.text && (
+        <div className="flex max-w-[90%] items-start gap-2 self-start">
+          <Avatar />
+          <div className="min-w-0 rounded-2xl rounded-tl-sm border border-gray-200 bg-gray-50 px-4 py-2.5 text-sm text-gray-800">
+            <span className="sr-only">Assistant (writing): </span>
+            <MarkdownBody text={preview.text} />
+            <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse rounded-sm bg-violet-400 align-middle" aria-hidden="true" />
+          </div>
+        </div>
+      )}
+      {loading && !preview?.text && (
         <div className="flex items-start gap-2 self-start" role="status">
           <Avatar />
           <div className="rounded-2xl rounded-tl-sm border border-gray-200 bg-gray-50 px-4 py-3">
@@ -148,6 +160,9 @@ export default function MessageList({ messages, loading, onSeek, openDoc, onSugg
                   style={{ animationDelay: `${delay}ms` }}
                 />
               ))}
+              {preview?.status && (
+                <span className="ml-2 text-xs text-gray-500">{preview.status}…</span>
+              )}
             </div>
           </div>
         </div>

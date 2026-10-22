@@ -10,6 +10,7 @@ import {
   isSessionExpiredError,
   postChat,
   postChatWithFrame,
+  streamChat,
   listThreads,
   createThread,
   renameThread,
@@ -118,6 +119,9 @@ export default function ChatPanel({
   const [tab, setTab] = useState<"chat" | "quiz">("chat");
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  // The answer as it is being written (POST /chat/stream). Only a preview: the
+  // validated response replaces it, and a refusal replaces it entirely.
+  const [preview, setPreview] = useState<{ status: string | null; text: string } | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   // Distinct 401 state: session binding rejected — must rejoin, never a
   // silent mock fallback.
@@ -263,7 +267,7 @@ export default function ChatPanel({
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, sending]);
+  }, [messages, sending, preview]);
 
   // Auto-grow the textarea up to ~6 lines, then scroll inside it.
   useEffect(() => {
@@ -353,16 +357,22 @@ export default function ChatPanel({
         // unchanged — this is what every pre-existing question still takes.
         res = offline
           ? mockChatAnswer(mode, text)
-          : await postChat({
-              session_id: sessionId,
-              session_token: sessionToken,
-              video_id: videoId,
-              current_time_ms: getCurrentTimeMs(),
-              message: text,
-              mode,
-              thread_id: threadId,
-              completed_resource_ids: completedResourceIds,
-            });
+          : await streamChat(
+              {
+                session_id: sessionId,
+                session_token: sessionToken,
+                video_id: videoId,
+                current_time_ms: getCurrentTimeMs(),
+                message: text,
+                mode,
+                thread_id: threadId,
+                completed_resource_ids: completedResourceIds,
+              },
+              {
+                onStatus: (status) => setPreview((p) => ({ status, text: p?.text ?? "" })),
+                onText: (t) => setPreview((p) => ({ status: p?.status ?? null, text: t })),
+              },
+            );
       }
 
       // A refusal is signalled by the bubble's style (kind "refused"), not by
@@ -427,6 +437,7 @@ export default function ChatPanel({
     } finally {
       setSending(false);
       setCapturing(false);
+      setPreview(null);
     }
   }
 
@@ -537,6 +548,7 @@ export default function ChatPanel({
         <MessageList
           messages={messages}
           loading={sending}
+          preview={preview}
           onSeek={onSeek}
           openDoc={openDoc}
           onSuggest={(text) => (/^quiz me/i.test(text) ? setTab("quiz") : void send(text))}
