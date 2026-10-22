@@ -23,28 +23,37 @@ export interface Diagram {
 }
 
 export const VIEW_W = 1320;
-export const VIEW_H = 560;
+export const VIEW_H = 612;
 export const NODE_W = 112;
 export const NODE_H = 56;
 
 export const LANES: Record<Lane, { top: number; bottom: number; label: string }> = {
   browser: { top: 12, bottom: 118, label: "Browser · Next.js on Vercel" },
-  api: { top: 128, bottom: 314, label: "API · FastAPI on Render" },
-  models: { top: 324, bottom: 440, label: "AI models" },
-  store: { top: 450, bottom: 548, label: "Vector database" },
+  api: { top: 128, bottom: 304, label: "API · FastAPI on Render" },
+  models: { top: 314, bottom: 498, label: "AI models" },
+  store: { top: 508, bottom: 600, label: "Vector database" },
 };
 
-const Y = { browser: 70, api: 226, apiHi: 186, apiLo: 270, models: 388, store: 504 };
+const Y = {
+  browser: 70,
+  api: 220,
+  apiHi: 180,
+  apiLo: 262,
+  models: 410,
+  modelsHi: 372,
+  modelsLo: 452,
+  store: 556,
+};
 
 export const DIAGRAMS: Record<FlowTab, Diagram> = {
   ingest: {
     nodes: [
       { id: "request", label: "Upload file", lane: "browser", x: 90, y: Y.browser },
       { id: "extract", label: "Read & plan", lane: "api", x: 250, y: Y.api },
-      { id: "transcribe", label: "Transcribe audio", lane: "models", x: 420, y: Y.models, role: "asr" },
-      { id: "describe", label: "Describe frames", lane: "models", x: 590, y: Y.models, role: "vision" },
-      { id: "chunk", label: "Chunk + timestamps", lane: "api", x: 770, y: Y.api },
-      { id: "embed", label: "Embed chunks", lane: "models", x: 950, y: Y.models, role: "embed" },
+      { id: "transcribe", label: "Transcribe audio", lane: "models", x: 500, y: Y.modelsHi, role: "asr" },
+      { id: "describe", label: "Describe frames", lane: "models", x: 500, y: Y.modelsLo, role: "vision" },
+      { id: "chunk", label: "Chunk + timestamps", lane: "api", x: 760, y: Y.api },
+      { id: "embed", label: "Embed chunks", lane: "models", x: 940, y: Y.models, role: "embed" },
       { id: "index", label: "Upsert vectors", lane: "store", x: 1100, y: Y.store, role: "store" },
       { id: "respond", label: "Ready to ask", lane: "browser", x: 1236, y: Y.browser },
     ],
@@ -63,15 +72,15 @@ export const DIAGRAMS: Record<FlowTab, Diagram> = {
   chat: {
     nodes: [
       { id: "request", label: "Ask question", lane: "browser", x: 80, y: Y.browser },
-      { id: "scope", label: "Scope check", lane: "api", x: 200, y: Y.api },
-      { id: "route", label: "Agent or RAG?", lane: "api", x: 322, y: Y.api },
-      { id: "plan", label: "Plan query", lane: "api", x: 448, y: Y.apiHi },
-      { id: "tool", label: "Agent tool call", lane: "api", x: 448, y: Y.apiLo },
-      { id: "embed_query", label: "Embed question", lane: "models", x: 578, y: Y.models, role: "embed" },
-      { id: "search", label: "Vector search", lane: "store", x: 708, y: Y.store, role: "store" },
-      { id: "gate", label: "Gate end_ms ≤ T", lane: "api", x: 838, y: Y.api },
-      { id: "llm", label: "LLM writes answer", lane: "models", x: 968, y: Y.models, role: "llm" },
-      { id: "validate", label: "Validate citations", lane: "api", x: 1098, y: Y.api },
+      { id: "scope", label: "Scope check", lane: "api", x: 236, y: Y.apiHi },
+      { id: "route", label: "Agent or RAG?", lane: "api", x: 236, y: Y.apiLo },
+      { id: "plan", label: "Plan query", lane: "api", x: 410, y: Y.apiHi },
+      { id: "tool", label: "Agent tool call", lane: "api", x: 410, y: Y.apiLo },
+      { id: "embed_query", label: "Embed question", lane: "models", x: 570, y: Y.models, role: "embed" },
+      { id: "search", label: "Vector search", lane: "store", x: 720, y: Y.store, role: "store" },
+      { id: "gate", label: "Gate end_ms ≤ T", lane: "api", x: 860, y: Y.api },
+      { id: "llm", label: "LLM writes answer", lane: "models", x: 1000, y: Y.models, role: "llm" },
+      { id: "validate", label: "Validate citations", lane: "api", x: 1120, y: Y.api },
       { id: "respond", label: "Answer + citations", lane: "browser", x: 1236, y: Y.browser },
     ],
     edges: [

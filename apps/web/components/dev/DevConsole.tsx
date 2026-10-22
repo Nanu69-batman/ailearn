@@ -17,13 +17,12 @@ import {
   TAB_LABEL,
   VIEW_H,
   VIEW_W,
-  curve,
   flowTab,
-  pointOn,
   type DiagramNode,
   type FlowTab,
 } from "./flows";
 import { DataView, fmtMs } from "./DataView";
+import { routeEdge, type Box, type Pt } from "./route";
 
 export interface TraceEvent {
   seq: number;
@@ -64,9 +63,48 @@ interface RunState {
 
 interface Packet {
   id: number;
-  from: DiagramNode;
-  to: DiagramNode;
+  d: string;
   color: string;
+}
+
+type Layout = Record<FlowTab, Record<string, Pt>>;
+const LAYOUT_KEY = "malai.dev.layout.v2";
+
+function defaultLayout(): Layout {
+  const out = {} as Layout;
+  for (const t of Object.keys(DIAGRAMS) as FlowTab[]) {
+    out[t] = Object.fromEntries(DIAGRAMS[t].nodes.map((n) => [n.id, { x: n.x, y: n.y }]));
+  }
+  return out;
+}
+
+/** The diagram's nodes at their current (possibly dragged) positions. */
+function placed(tab: FlowTab, layout: Layout): DiagramNode[] {
+  return DIAGRAMS[tab].nodes.map((n) => ({ ...n, ...(layout[tab]?.[n.id] ?? {}) }));
+}
+
+/** Keep a dragged box inside its own lane and the canvas. */
+function clampToLane(n: DiagramNode, x: number, y: number): Pt {
+  const lane = LANES[n.lane];
+  return {
+    x: Math.round(Math.min(VIEW_W - NODE_W / 2 - 12, Math.max(NODE_W / 2 + 12, x))),
+    y: Math.round(Math.min(lane.bottom - NODE_H / 2 - 16, Math.max(lane.top + NODE_H / 2 + 8, y))),
+  };
+}
+
+/** The lane titles in each row's top-left corner: lines keep off them. */
+const LABEL_BOXES: Box[] = Object.values(LANES).map((lane) => ({
+  l: 12,
+  r: 24 + lane.label.length * 7.4,
+  t: lane.top + 4,
+  b: lane.top + 24,
+}));
+
+function edgePath(nodes: DiagramNode[], a: string, b: string): string | null {
+  const na = nodes.find((n) => n.id === a);
+  const nb = nodes.find((n) => n.id === b);
+  if (!na || !nb) return null;
+  return routeEdge(na, nb, nodes.filter((n) => n.id !== a && n.id !== b), LABEL_BOXES);
 }
 
 type WhereMap = Record<string, string>;
@@ -200,6 +238,51 @@ export default function DevConsole() {
       return next;
     });
   const [queued, setQueued] = useState(0);
+  const [layout, setLayout] = useState<Layout>(defaultLayout);
+  const layoutRef = useRef(layout);
+  layoutRef.current = layout;
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
+
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(LAYOUT_KEY) ?? "null") as Layout | null;
+      if (saved) {
+        const base = defaultLayout();
+        for (const t of Object.keys(base) as FlowTab[]) base[t] = { ...base[t], ...(saved[t] ?? {}) };
+        setLayout(base);
+      }
+    } catch {
+      /* no saved layout */
+    }
+    // ?tab=quiz&theme=light opens a specific view (handy for a demo link).
+    const q = new URLSearchParams(window.location.search);
+    const t = q.get("tab");
+    if (t === "ingest" || t === "chat" || t === "quiz") {
+      setTab(t);
+      setFollow(false);
+    }
+    const th = q.get("theme");
+    if (th === "light" || th === "dark") setTheme(th);
+  }, []);
+
+  const saveLayout = (next: Layout) => {
+    try {
+      window.localStorage.setItem(LAYOUT_KEY, JSON.stringify(next));
+    } catch {
+      /* per-viewer convenience only */
+    }
+  };
+  const moveNode = (id: string, p: Pt) =>
+    setLayout((l) => ({ ...l, [tab]: { ...l[tab], [id]: p } }));
+  const resetLayout = () => {
+    const base = defaultLayout();
+    setLayout((l) => {
+      const next = { ...l, [tab]: base[tab] };
+      saveLayout(next);
+      return next;
+    });
+  };
 
   const cursor = useRef(0);
   const queue = useRef<TraceEvent[]>([]);
@@ -220,14 +303,12 @@ export default function DevConsole() {
       const current = runsRef.current[ev.run_id] ?? emptyRun(ev);
       const updated = applyEvent(current, ev);
       const t = flowTab(ev.flow);
-      const diagram = DIAGRAMS[t];
-      if (current.last && current.last !== ev.step) {
-        const from = diagram.nodes.find((n) => n.id === current.last);
-        const to = diagram.nodes.find((n) => n.id === ev.step);
-        if (from && to) {
+      if (current.last && current.last !== ev.step && t === tabRef.current) {
+        const d = edgePath(placed(t, layoutRef.current), current.last, ev.step);
+        if (d) {
           const id = ++packetId.current;
           const color = ev.phase === "error" ? "var(--dev-st-error)" : "var(--dev-packet)";
-          setPackets((p) => [...p, { id, from, to, color }]);
+          setPackets((p) => [...p, { id, d, color }]);
           window.setTimeout(() => setPackets((p) => p.filter((x) => x.id !== id)), 900);
         }
       }
@@ -265,7 +346,7 @@ export default function DevConsole() {
         quiz: s.quiz ?? latestByTab.quiz ?? null,
       }));
       const newest = events[events.length - 1];
-      if (newest) setTab(flowTab(newest.flow));
+      if (newest && followRef.current) setTab(flowTab(newest.flow));
     },
     [],
   );
@@ -367,9 +448,26 @@ export default function DevConsole() {
   const runId = selectedRun[tab] ?? tabRuns[0]?.run_id ?? null;
   const run = runId ? runs[runId] : undefined;
   const diagram = DIAGRAMS[tab];
+  const nodes = useMemo(() => placed(tab, layout), [tab, layout]);
+  const moved = useMemo(
+    () => DIAGRAMS[tab].nodes.some((n) => layout[tab][n.id]?.x !== n.x || layout[tab][n.id]?.y !== n.y),
+    [tab, layout],
+  );
+  const routes = useMemo(() => {
+    const keys = new Set(diagram.edges.map(([a, b]) => `${a}>${b}`));
+    for (const k of run?.trail ?? []) keys.add(k);
+    const out: Record<string, string> = {};
+    for (const k of keys) {
+      const [a, b] = k.split(">");
+      const d = edgePath(nodes, a, b);
+      if (d) out[k] = d;
+    }
+    return out;
+  }, [diagram, nodes, run?.trail]);
+  const svgRef = useRef<SVGSVGElement>(null);
   const focusStep = selectedStep ?? run?.last ?? null;
   const focusNode = focusStep ? run?.nodes[focusStep] : undefined;
-  const focusDef = diagram.nodes.find((n) => n.id === focusStep);
+  const focusDef = nodes.find((n) => n.id === focusStep);
 
   return (
     <div data-theme={theme} className="dev-root flex min-h-screen flex-col bg-[var(--dev-bg)] text-[var(--dev-text)]">
@@ -452,6 +550,7 @@ export default function DevConsole() {
           />
           <div className="relative overflow-x-auto rounded-xl border border-[var(--dev-border)] bg-[var(--dev-panel)]">
             <svg
+              ref={svgRef}
               viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
               className="block h-auto w-full min-w-[880px]"
               role="img"
@@ -461,6 +560,26 @@ export default function DevConsole() {
                 <pattern id="dev-grid" width="24" height="24" patternUnits="userSpaceOnUse">
                   <path d="M 24 0 L 0 0 0 24" fill="none" style={{ stroke: "var(--dev-grid)" }} strokeWidth="1" />
                 </pattern>
+                {(["idle", "walked", "hot"] as const).map((m) => (
+                  <marker
+                    key={m}
+                    id={`dev-arrow-${m}`}
+                    viewBox="0 0 10 10"
+                    refX="9"
+                    refY="5"
+                    markerWidth="7"
+                    markerHeight="7"
+                    orient="auto-start-reverse"
+                    markerUnits="userSpaceOnUse"
+                  >
+                    <path
+                      d="M 0 1 L 9 5 L 0 9 z"
+                      style={{
+                        fill: m === "hot" ? "var(--dev-hot)" : m === "walked" ? "var(--dev-edge-walked)" : "var(--dev-edge)",
+                      }}
+                    />
+                  </marker>
+                ))}
                 <filter id="dev-glow" x="-50%" y="-50%" width="200%" height="200%">
                   <feGaussianBlur stdDeviation="6" result="b" />
                   <feMerge>
@@ -506,16 +625,15 @@ export default function DevConsole() {
               })}
 
               {diagram.edges.map(([a, b]) => {
-                const na = diagram.nodes.find((n) => n.id === a)!;
-                const nb = diagram.nodes.find((n) => n.id === b)!;
                 const key = `${a}>${b}`;
                 const walked = run?.trail.includes(key);
                 const hot = run?.lastEdge === key;
                 return (
                   <path
                     key={key}
-                    d={curve(na.x, na.y, nb.x, nb.y)}
+                    d={routes[key]}
                     fill="none"
+                    markerEnd={`url(#dev-arrow-${hot ? "hot" : walked ? "walked" : "idle"})`}
                     style={{ stroke: hot ? "var(--dev-hot)" : walked ? "var(--dev-edge-walked)" : "var(--dev-edge)" }}
                     strokeWidth={hot ? 2.5 : walked ? 2 : 1.5}
                     className={hot ? "dev-flow" : undefined}
@@ -526,16 +644,14 @@ export default function DevConsole() {
               {run?.trail
                 .filter((k) => !diagram.edges.some(([a, b]) => `${a}>${b}` === k))
                 .map((k) => {
-                  const [a, b] = k.split(">");
-                  const na = diagram.nodes.find((n) => n.id === a);
-                  const nb = diagram.nodes.find((n) => n.id === b);
-                  if (!na || !nb) return null;
+                  if (!routes[k]) return null;
                   const hot = run.lastEdge === k;
                   return (
                     <path
                       key={`x-${k}`}
-                      d={curve(na.x, na.y, nb.x, nb.y)}
+                      d={routes[k]}
                       fill="none"
+                      markerEnd={`url(#dev-arrow-${hot ? "hot" : "walked"})`}
                       style={{ stroke: hot ? "var(--dev-hot)" : "var(--dev-edge-extra)" }}
                       strokeWidth={hot ? 2.5 : 1.6}
                       strokeDasharray="4 5"
@@ -544,10 +660,13 @@ export default function DevConsole() {
                   );
                 })}
 
-              {diagram.nodes.map((n) => (
+              {nodes.map((n) => (
                 <NodeBox
                   key={n.id}
                   node={n}
+                  svg={svgRef}
+                  onMove={(x, y) => moveNode(n.id, clampToLane(n, x, y))}
+                  onDrop={() => saveLayout(layoutRef.current)}
                   state={run?.nodes[n.id]}
                   sub={run?.nodes[n.id]?.events.at(-1)?.where ?? (n.role ? where[n.role] : undefined)}
                   selected={focusStep === n.id}
@@ -559,6 +678,18 @@ export default function DevConsole() {
                 <PacketDot key={p.id} packet={p} />
               ))}
             </svg>
+            <div className="absolute bottom-2 left-4 flex items-center gap-2 text-[11px] text-[var(--dev-faint)]">
+              <span className="hidden sm:inline">Drag a step to move it within its row</span>
+              {moved && (
+                <button
+                  type="button"
+                  onClick={resetLayout}
+                  className="rounded-md border border-[var(--dev-border)] bg-[var(--dev-panel)] px-2 py-0.5 text-[var(--dev-text-2)] hover:bg-[var(--dev-chip)]"
+                >
+                  Reset layout
+                </button>
+              )}
+            </div>
             {!run && (
               <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
                 <p className="rounded-lg border border-[var(--dev-border)] bg-[var(--dev-overlay)] px-4 py-2 text-sm text-[var(--dev-text-2)]">
@@ -606,13 +737,28 @@ function NodeBox({
   sub,
   selected,
   onClick,
+  svg,
+  onMove,
+  onDrop,
 }: {
   node: DiagramNode;
   state?: NodeState;
   sub?: string;
   selected: boolean;
   onClick: () => void;
+  svg: React.RefObject<SVGSVGElement | null>;
+  onMove: (x: number, y: number) => void;
+  onDrop: () => void;
 }) {
+  const drag = useRef<{ dx: number; dy: number; sx: number; sy: number; moved: boolean } | null>(null);
+  const toSvg = (e: React.PointerEvent): Pt | null => {
+    const el = svg.current;
+    const m = el?.getScreenCTM();
+    if (!el || !m) return null;
+    const p = new DOMPoint(e.clientX, e.clientY).matrixTransform(m.inverse());
+    return { x: p.x, y: p.y };
+  };
+  const [dragging, setDragging] = useState(false);
   const status = state?.status ?? "idle";
   const color = statusColor(status);
   const x = node.x - NODE_W / 2;
@@ -625,8 +771,34 @@ function NodeBox({
   const subText = sub ? (sub.length > 24 ? sub.slice(0, 23) + "…" : sub) : "";
   return (
     <g
-      onClick={onClick}
-      className="cursor-pointer"
+      onPointerDown={(e) => {
+        const p = toSvg(e);
+        if (!p) return;
+        (e.currentTarget as Element).setPointerCapture(e.pointerId);
+        drag.current = { dx: p.x - node.x, dy: p.y - node.y, sx: e.clientX, sy: e.clientY, moved: false };
+      }}
+      onPointerMove={(e) => {
+        const d = drag.current;
+        if (!d) return;
+        if (!d.moved && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 4) return;
+        d.moved = true;
+        setDragging(true);
+        const p = toSvg(e);
+        if (p) onMove(p.x - d.dx, p.y - d.dy);
+      }}
+      onPointerUp={() => {
+        const d = drag.current;
+        drag.current = null;
+        setDragging(false);
+        if (d?.moved) onDrop();
+        else onClick();
+      }}
+      onPointerCancel={() => {
+        drag.current = null;
+        setDragging(false);
+      }}
+      style={{ touchAction: "none" }}
+      className={dragging ? "cursor-grabbing" : "cursor-grab"}
       role="button"
       tabIndex={0}
       aria-label={`${node.label}: ${status}`}
@@ -722,15 +894,18 @@ function NodeBox({
 function PacketDot({ packet }: { packet: Packet }) {
   const dot = useRef<SVGCircleElement>(null);
   const halo = useRef<SVGCircleElement>(null);
+  const track = useRef<SVGPathElement>(null);
   useEffect(() => {
-    const { from, to } = packet;
+    const path = track.current;
+    if (!path) return;
+    const total = path.getTotalLength();
     const start = performance.now();
     const dur = 620;
     let raf = 0;
     const frame = (now: number) => {
       const t = Math.min(1, (now - start) / dur);
       const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-      const p = pointOn(from.x, from.y, to.x, to.y, e);
+      const p = path.getPointAtLength(total * e);
       for (const el of [dot.current, halo.current]) {
         el?.setAttribute("cx", String(p.x));
         el?.setAttribute("cy", String(p.y));
@@ -743,8 +918,9 @@ function PacketDot({ packet }: { packet: Packet }) {
   }, [packet]);
   return (
     <g pointerEvents="none">
-      <circle ref={halo} cx={packet.from.x} cy={packet.from.y} r={11} style={{ fill: packet.color }} opacity={0.25} filter="url(#dev-glow)" />
-      <circle ref={dot} cx={packet.from.x} cy={packet.from.y} r={5} style={{ fill: packet.color }} />
+      <path ref={track} d={packet.d} fill="none" stroke="none" />
+      <circle ref={halo} cx={-20} cy={-20} r={11} style={{ fill: packet.color }} opacity={0.25} filter="url(#dev-glow)" />
+      <circle ref={dot} cx={-20} cy={-20} r={5} style={{ fill: packet.color }} />
     </g>
   );
 }
