@@ -416,7 +416,7 @@ def test_gate_uses_end_ms_never_start_ms():
     This chunk *looks* covered -- it starts before the learner reached T. But
     its tail runs past T, so quoting it leaks material the learner has not
     reached. A gate relaxed to ``start_ms`` measured a 48% spoiler rate
-    (submission/eval-results/baseline.json).
+    (an early eval measurement).
     """
     t = TWENTY_MIN_MS
     spanning = _video(

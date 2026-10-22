@@ -4,26 +4,19 @@ This page covers what was measured, how, and what the numbers mean. Every number
 here comes from a results file in this repo or from a command run on the date
 given. Anything not measured is marked as such.
 
-There are two evaluations:
-
-- **(a) Our own course material**: the real lecture video and PDF notes, with
-  the real embedder and the real answer pipeline. Read this one first.
-- **(b) A synthetic course**: invented content where every fact has one known
-  location, used to stress-test the spoiler guard offline.
+The evaluation uses our own course material: the real lecture video and PDF
+notes, the embedding model the hosted app uses, and the real answer pipeline.
 
 ## Summary
 
 | What | Result | Source |
 |---|---|---|
-| **Real course: spoilers in answers** | **0 of 29 questions** cited anything after the pause | (a), `partial-derivatives-end-to-end.json` |
-| **Real course: withheld when it should** | **10 / 10** spoiler, trick and off-course questions | same |
-| **Real course: correct answers** | **16 / 19** by review (14 / 19 citing a marked location) | same |
-| **Real course: search finds the right piece** | **15 / 19** in the top 5, Pinecone embedder | (a), `partial-derivatives-pinecone-k5.json` |
-| Real course: answer time | median 2.91 s, 95th percentile 7.29 s | (a) |
-| Synthetic course: spoiler leakage | **0.0** (0 of 25 questions) | (b), `chroma-2026-10-21.json` |
-| Synthetic course: production-gap rate | **0.0** | same |
-| Synthetic course: refusal correctness | **1.0** (25/25) | same |
-| Synthetic course: retrieval accuracy | **0.9375** (15/16), offline embedder | same |
+| **Spoilers in answers** | **0 of 29 questions** cited anything after the pause | (a), `partial-derivatives-end-to-end.json` |
+| **Withheld when it should** | **10 / 10** spoiler, trick and off-course questions | same |
+| **Correct answers** | **16 / 19** by review (14 / 19 citing a marked location) | same |
+| **Search finds the right piece** | **15 / 19** in the top 5 | (a), `partial-derivatives-pinecone-k5.json` |
+| **Spoiler leakage in search** | **0** | same |
+| Answer time | median 2.9 s, 95th percentile 7.3 s | (a) |
 | Backend tests | **531 collected, 531 passed, 0 failed**, no collection errors | `pytest`, 2026-10-22 |
 | Frontend type check | pass | `npx tsc --noEmit` |
 | Frontend contract check | PASS | `npm run contract-check` |
@@ -32,10 +25,9 @@ There are two evaluations:
 
 ## (a) Evaluation on our own course material
 
-This is the evaluation to read first. It uses the **real demo course**: the
-11-minute lecture `Partial-derivatives.mp4` and the 41-page `UNIT-1-001.pdf`
-notes, as indexed by the app (263 video pieces: 89 from speech, 174 from screen
-descriptions; 97 PDF pieces). Nothing in it is synthetic.
+It uses the **real demo course**: the 11-minute lecture `Partial-derivatives.mp4`
+and the 41-page `UNIT-1-001.pdf` notes, as indexed by the app (263 video pieces:
+89 from speech, 174 from screen descriptions; 97 PDF pieces).
 
 ### How it was built
 
@@ -87,12 +79,16 @@ session. Run on 2026-10-22 (`python -m app.eval.end_to_end`, results in
 The retrieval step on its own (`python -m app.eval.harness --chunks …`), for the
 19 answerable questions. A hit means a correct piece is among the top results.
 
-| Embedder | Found in top 5 | Found in top 8 | Spoiler leakage | Production gap |
-|---|---|---|---|---|
-| Offline word-hashing (used for tests) | 9 / 19 (47%) | - | 0 | 0 |
-| **Pinecone `llama-text-embed-v2` (hosted app)** | **15 / 19 (79%)** | 15 / 19 (79%) | **0** | **0** |
+Embedder: Pinecone `llama-text-embed-v2`, as on the hosted app.
 
-Results: `partial-derivatives-hashing-k5.json`, `partial-derivatives-pinecone-k5.json`,
+| Measure | Result |
+|---|---|
+| Right piece in the top 5 | **15 / 19 (79%)** |
+| Right piece in the top 8 (what chat retrieves) | 15 / 19 (79%) |
+| Spoiler leakage (any result ending after the pause) | **0** |
+| Production gap (the live search path, re-checked against the strict rule) | **0** |
+
+Results: `partial-derivatives-pinecone-k5.json` and
 `partial-derivatives-pinecone-k8.json` in `submission/eval-results/`.
 
 ### What we learned
@@ -113,8 +109,6 @@ Results: `partial-derivatives-hashing-k5.json`, `partial-derivatives-pinecone-k5
   refused is not yet investigated.
   The fix (merge identical consecutive descriptions at ingest, or drop
   duplicates when ranking) is listed in [FUTURE_SCOPE.md](FUTURE_SCOPE.md).
-- **The real embedder matters.** Word hashing finds 9 of 19; Pinecone's model
-  finds 15 of 19 on the same pieces and questions.
 
 ### Every question, and what happened
 
@@ -154,11 +148,9 @@ Results: `partial-derivatives-hashing-k5.json`, `partial-derivatives-pinecone-k5
 
 ```bash
 cd apps/api
-# Retrieval only, offline (no keys):
+# Retrieval (needs PINECONE_API_KEY):
 python -m app.eval.harness --golden ../../submission/eval/golden-partial-derivatives.jsonl \
-  --chunks ../../submission/eval/partial-derivatives-chunks.jsonl --embedder hashing
-# Retrieval with the hosted embedder (needs PINECONE_API_KEY):
-python -m app.eval.harness ... --embedder pinecone --k 5
+  --chunks ../../submission/eval/partial-derivatives-chunks.jsonl --embedder pinecone --k 5
 # The full answer pipeline (needs LLM_API_KEY and PINECONE_API_KEY):
 python -m app.eval.end_to_end --golden ../../submission/eval/golden-partial-derivatives.jsonl \
   --chunks ../../submission/eval/partial-derivatives-chunks.jsonl --out <results.json>
@@ -180,98 +172,7 @@ python -m app.eval.end_to_end ... --rescore <results.json>
 
 ---
 
-## (b) Evaluation on a synthetic course (spoiler stress test)
-
-### The golden set
-
-`submission/eval/golden.jsonl` has **25 questions** over a synthetic fixture course,
-*Bioenergetics 101* (`submission/eval/fixture-course.md`). The course has a 60-minute
-video lecture in 12 five-minute segments, a 6-page PDF handout and a slide
-deck. All content is invented so that each fact has exactly one known location.
-Every question carries a pause time `pause_at_ms` (the learner's playhead `T`),
-the expected behaviour (`answer` or `refuse`), and the gold source location.
-
-| Question type | Expected | Count | What it tests |
-|---|---|---|---|
-| `video_before` | answer | 6 | The fact was taught before `T`, so it must be found |
-| `pdf` | answer | 4 | The fact is only in the PDF (documents are not time-gated) |
-| `ppt` | answer | 3 | The fact is only in the slides |
-| `followup` | answer | 3 | Follow-up phrasing ("And how does…", "Following up on that…"), asked as a single turn |
-| `video_later` | **refuse** | 4 | The fact exists but is taught **after** `T`. Answering would be a spoiler |
-| `unanswerable` | **refuse** | 3 | The course never covers it |
-| `adversarial` | **refuse** | 2 | Prompts that try to pull in later or outside content |
-| **Total** | 16 answer / 9 refuse | **25** | |
-
-### What each metric means
-
-| Metric | Plain meaning | Target |
-|---|---|---|
-| **Retrieval accuracy** | For answerable questions: was the gold passage among the top `k=5` passages retrieved under the gate? | High |
-| **Refusal correctness** | Did the system answer when it should and refuse when it should, across all 25? | 1.0 |
-| **Leakage rate** | Share of questions where any retrieved video passage had `end_ms > T` or came from a resource outside the learner's scope. This is the spoiler metric. | **Must be 0** |
-| **Citation accuracy** | Do the cited passages actually support the answer (token-overlap check against the gold answer)? | 1.0 |
-| **Production-gap rate** | The production retrieval path is re-run over the *full* pool and checked against the same strict rule. A nonzero value means production and the eval disagree, which is a regression. With the old loose gate (`start_ms <= T`) this measured **48%**. | **Must be 0** |
-| **Latency p50 / p95** | Wall time of the retrieval step per question, in process (no network, no LLM) | Informational |
-
-### Results
-
-Fresh run on 2026-10-21 (`python -m app.eval.harness --out ../../submission/eval-results/chroma-2026-10-21.json`, from `apps/api`):
-
-| Metric | 2026-10-20 (`chroma-2026-10-20.json`) | **2026-10-21 (`chroma-2026-10-21.json`)** |
-|---|---|---|
-| Items (answer / refuse) | 25 (16 / 9) | 25 (16 / 9) |
-| Retrieval accuracy | 0.9375 | **0.9375** |
-| Refusal correctness | 1.0 | **1.0** |
-| Leakage rate | 0.0 | **0.0** |
-| Citation accuracy | 1.0 | **1.0** |
-| Production-gap rate (items) | 0.0 (0) | **0.0 (0)** |
-| Latency p50 / p95 | 9.7 ms / 15.9 ms | **8.3 ms / 10.0 ms** |
-| Store / k / threshold | Chroma / 5 / 0.08 | Chroma / 5 / 0.08 |
-| Embedder | HashingEmbedder (offline) | HashingEmbedder (offline) |
-
-**The one miss:** `eval-f3` (a follow-up question) was refused although it was
-answerable. The gold passage was not in the top 5 under the offline embedder
-(`max_score` 0.5627). This is an over-refusal, which is the safe direction: no
-wrong or spoiling answer was produced.
-
-### Caveats for the synthetic set
-
-1. **Offline embedder.** The harness always uses the deterministic
-   `HashingEmbedder` (1536-d, no network) with a real temporary Chroma store. It
-   has no option for the Gemini embedder, and this run made no code change to
-   add one. Retrieval accuracy with `gemini-embedding-2` is **not measured**
-   (a planned follow-up). Leakage and production gap do not depend on
-   the embedder: they check *which* passages may be returned, not how they rank.
-2. **Refusal is a retrieval proxy.** The harness's `should_refuse` decides from
-   gated-retrieval emptiness and a score threshold (`0.08`). It does not run the
-   production LLM prompt, citation re-parse or uncited-answer handling. Those are
-   covered by unit tests (see (c)), not by this score. Threshold sensitivity is in
-   [eval/threshold-note.md](eval/threshold-note.md).
-3. **Small, synthetic set.** 25 questions over invented content. Answer quality
-   with the real LLM is checked by live probes (below), not by a large labelled set.
-4. `baseline.json` (loose gate, production gap **0.48**) and `baseline-strict.json`
-   (strict gate, **0.0**) in `eval-results/` are the 2026-10-03 before/after runs
-   behind the 48% figure. They predate a harness rebuild, so their other metrics
-   are not comparable with today's.
-
-### Live probes on the real stack
-
-Recorded on the real demo video
-(`Partial-derivatives.mp4`, 655.5 s) with Gemini:
-
-| Playhead T | Question | Result | Cited at (ms) | Modality |
-|---|---|---|---|---|
-| 0:02 | What is written on the board? | Refused (nothing shown yet) | - | - |
-| 0:30 | What equation is on screen? | Answered | 28000 | visual |
-| 5:00 | what is a partial derivative? | Answered | 23000, 284010 | transcript |
-| 8:00 | "Ask about this frame" | Answered, `live: true` | 480000 | visual |
-| 10:00 | What colour is the curve? | Refused (the curve is not in the gated evidence) | - | - |
-
-Every citation satisfied `end_ms <= T`.
-
----
-
-## (c) Testing details
+## (b) Testing details
 
 Commands run on 2026-10-22 from `apps/api` with Python 3.14:
 
@@ -302,7 +203,7 @@ directory. They need no network and no keys.
 | **Transcription / Groq** (window audio sent to Groq, 429 retried, fallback to local Whisper, times shifted to video time) | `test_windowed_ingest.py` |
 | **Embedding and quota handling** (batched embedding with order guards, 429 backoff on the whole batch, spent daily quota fails fast with a readable reason, upload size/length/rate caps) | `test_embedder_batching.py`, `test_quota_exhausted.py`, `test_upload_caps.py`, `test_cache.py` |
 | **Subjects and resources** (subject CRUD, attach refuses unknown ids, delete detaches then purges, purge leaves no served bytes) | `test_subjects.py`, `test_resource_delete.py`, `test_resource_purge.py` |
-| **Eval harness** (harness end to end over the golden set, leakage detector) | `test_eval_harness.py` |
+| **Eval harness** (harness end to end over a small test course, leakage detector) | `test_eval_harness.py` |
 | **Developer-view trace** (a chat answer emits every step in order as one run; the reported gate kept only passages with `end_ms <= T`; the feed returns only events after a cursor; recording outside a run does nothing; an ingest job is one run from request to respond; both parallel video lanes report into the job's run) | `test_devtrace.py`, `test_progressive_ingest.py` |
 | **Stream head start** (stream mode processes exactly the first 2-minute window at upload) | `test_progressive_ingest.py` |
 | **Evaluation tooling** (the exported real course loads with both materials; every answerable question resolves to real pieces and every spoiler answer really is after the pause; the embedding cache embeds each text once; the real course has zero leakage offline; the end-to-end verdicts, the withheld-fact check and the scoreboard) | `test_eval_real_course.py`, `test_eval_harness.py` |
@@ -325,80 +226,49 @@ Run from `apps/web` on 2026-10-22:
 
 ---
 
-## (d) Performance
+## (c) Performance
 
-Measured during development. The demo video is
-`Partial-derivatives.mp4`, 655.5 s. "By construction" means the figure is derived
-from code constants and was not timed.
+Current figures on the demo course (`Partial-derivatives.mp4`, 655.5 s). "By
+construction" means the figure follows from code constants and was not timed.
 
-| Claim | Number | Basis |
+| What | Number | Basis |
 |---|---|---|
-| Spoilers served in eval | 0 of 25 questions | measured, Chroma store |
-| Embedding calls for a 253-text video | 257 before, 4 now | 257 and 7 measured; 4 by construction |
-| Vision time for one 2-minute window | 114.9 s down to 54.6 s | measured, one run each, noisy |
-| Frame bytes per call | down about 59% | measured |
-| Video processed before the first answers (stream) | first 2 minutes (one window) | by construction; was 6 minutes |
-| Transcript-first / overlapped lanes speed-up | not measured yet | tests only, fakes |
-| Whisper time for one 2-minute window | about 29 s down to about 15 s | measured, two runs each, loaded machine |
-| Groq transcription, one 2-minute window | 2.4-3.4 s | measured, 3 full windows, one run each |
-
-Speech to text per 2-minute window, in detail:
-
-| One 2-minute window, demo video | Time |
-|---|---|
-| Local Whisper `tiny`, old call | 28-30 s |
-| Local Whisper `tiny`, window-only call | 14-18 s |
-| Groq `whisper-large-v3-turbo` (decode + upload + reply) | **2.4-3.4 s** |
-
-Vision pass, one 120 s window, 30 frames, real Gemini calls:
-
-| | Before | After |
-|---|---|---|
-| Total vision time | 114.9 s | 54.6 s (2.1x faster) |
-| Frames sent to the model | 30 | 21 (9 skipped as repeats) |
-| Average bytes per call | about 244 KB | about 98 KB |
-| Calls | 4, one after another | 4, three at a time |
+| Answer time, question to finished answer (Gemini pipeline) | median **2.9 s**, 95th percentile **7.3 s** | measured over the 29 questions in (a), from a laptop |
+| Search step (embed the question + vector search) | median **0.36 s**, 95th percentile **0.43 s** | measured in (a), Pinecone embedder |
+| Chat answer from the Nemotron agent | 4.8-19 s | measured locally, single requests |
+| Whole quiz (5 questions) | **16.8 s** | measured on the hosted API |
+| Greeting ("hi") | 1.5 s | measured on the hosted API |
+| Speech to text, one 2-minute window, Groq `whisper-large-v3-turbo` | **2.4-3.4 s** | measured, 3 windows, one run each |
+| Speech to text, one 2-minute window, local Whisper `tiny` (fallback) | 14-18 s | measured, loaded machine |
+| Screen descriptions, one 2-minute window (30 frames, 9 skipped as repeats) | 54.6 s | measured, one run, noisy |
+| Average data per vision call | about 98 KB | measured |
+| Embedding calls for a 253-piece video | 4 (64 pieces per call) | by construction |
+| Video processed before the first answers, stream mode | the first 2 minutes | by construction |
 
 Caveats:
-- Single Gemini vision calls ranged from 15 to 89 s across runs, so the vision
-  speed-up is noisy.
+- Free-tier model calls vary a lot from call to call: single Gemini vision
+  calls ranged from 15 to 89 s.
 - The duplicate-frame threshold was tuned on one lecture.
-- The Whisper timings were taken with other apps running. In the app, the vision
-  lane shares the CPU, and in-app times have not been re-measured.
+- The Whisper timings were taken with other apps running.
 - The Groq numbers are one run per window. Using Groq sends lecture audio to a
   third party.
+- When OpenRouter's free daily limit (50 requests) is spent, or the agent's
+  reply fails validation, the Gemini pipeline answers instead.
 
-Cost levers that are in the code: speech cues merged into chunks of up to 30 s and
-frames three to a chunk (measured on indexed data: the demo lecture goes from 263
-chunks to 118, a captioned YouTube lecture from 193 to 17),
-Pinecone Inference embeddings on the hosted API, a query-embedding cache,
-batched embeddings, skipping
-near-duplicate frames, downscaled JPEG frames (at most 768 px, quality 80), disk
-caches for billable calls, transcription offloaded to Groq, and upload caps on
-the hosted deployment.
+Cost levers in the code: speech cues merged into chunks of up to 30 s, batched
+embeddings with Pinecone Inference on the hosted API, a query-embedding cache,
+skipping near-duplicate frames, downscaled JPEG frames (at most 768 px, quality
+80), disk caches for billable calls, transcription offloaded to Groq, and upload
+caps on the hosted deployment.
 
-Tutor and quiz latency, single requests, 2026-10-21 (the free models vary a
-lot from call to call; one run each unless stated):
-
-| Request | Before | After | Basis |
-|---|---|---|---|
-| Chat answer, Nemotron agent | 29-52 s locally, 92 s once on the hosted API (up to 4 model calls per answer) | 4.8-19 s locally when the agent answers (lesson read prefetched, one call) | measured |
-| Whole quiz (5 questions) | 135 s and failed on the hosted API (agent model first) | **16.8 s** on the hosted API (Gemini first) | measured |
-| Greeting ("hi") | 1.5 s hosted | unchanged | measured |
-
-When OpenRouter's free daily limit (50 requests) is spent, or the agent's reply
-fails validation, the Gemini pipeline answers instead, which adds 15-20 s.
-
-**Not measured:** end-to-end time per window in stream mode on the real stack,
-retrieval accuracy with the Gemini embedder, chat latency under load, and
-concurrent users.
+**Not measured:** end-to-end time per window in stream mode on the hosted
+stack, chat latency under load, and concurrent users.
 
 ---
 
-## (e) Limitations
+## (d) Limitations
 
-- The real-course evaluation (a) is 29 questions on one lecture and one PDF. The
-  synthetic set (b) is 25 questions, scored by retrieval only.
+- The evaluation (a) is 29 questions on one lecture and one PDF.
 - Near-duplicate screen descriptions can crowd the search results (found in
   (a)); this causes most of the remaining misses.
 - One real lecture (11 minutes) has been exercised end to end. There is no

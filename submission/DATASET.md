@@ -1,8 +1,9 @@
 # Sample dataset
 
 The data used to build, demo and evaluate Malai Pioneer. The first two files are
-real course material for the live demo. The golden set is a synthetic,
-fully labelled course for the offline evaluation.
+real course material for the live demo, and the evaluation questions are
+written from them. A small invented course is kept only for the automated
+tests.
 
 | File | What it is | Size | Used for |
 |---|---|---|---|
@@ -10,8 +11,7 @@ fully labelled course for the offline evaluation.
 | `test-data/UNIT-1-001.pdf` | Lecture notes, *System Modelling Techniques - I: Functions of Several Variables, Partial Derivatives, Chain Rule, Implicit Functions, Exact Differentials, and Potential Function Reconstruction* (Prof. Pravin Chandra, GGSIPU). 41 pages with a text layer (about 66,000 extracted characters), so no OCR is needed | 475,959 bytes (about 465 KB) | Companion document for the same subject. Citations carry `page_no` |
 | `submission/eval/golden-partial-derivatives.jsonl` | 29 labelled questions on the two files above (19 answer, 10 withhold) | 29 lines | Evaluation on our own course material ([EVALUATION.md](EVALUATION.md#a-evaluation-on-our-own-course-material)) |
 | `submission/eval/partial-derivatives-chunks.jsonl` | The two files above as the app indexed them: 263 video pieces and 97 PDF pieces, with times and pages | 360 lines | Lets anyone re-run that evaluation without our index |
-| `submission/eval/golden.jsonl` | 25 labelled questions (16 answer, 9 refuse) | 25 lines | Synthetic spoiler stress test ([EVALUATION.md](EVALUATION.md)) |
-| `submission/eval/fixture-course.md` | Human-readable description of the synthetic *Bioenergetics 101* course the golden set is about. The source of truth for its chunks is `apps/api/app/eval/fixture.py` | | Explains every gold location |
+| `submission/eval/golden.jsonl`, `submission/eval/fixture-course.md` | A small invented course (*Bioenergetics 101*) and 25 questions on it | 25 lines | Used only by the automated tests (`test_eval_harness.py`); not an evaluation result |
 
 The video and the PDF are on the same topic, so one subject can hold both. A
 question at the playhead can then be answered from the lecture so far plus the
@@ -94,13 +94,12 @@ web player does this automatically.
 
 Ingest uses the Gemini quota: one embedding per chunk, batched 64 texts per call,
 plus vision calls for frames. On the free tier, a fresh full ingest of the
-11-minute video takes minutes. See [EVALUATION.md](EVALUATION.md#d-performance).
+11-minute video takes minutes. See [EVALUATION.md](EVALUATION.md#c-performance).
 
 ## The golden set on our own course
 
 `submission/eval/golden-partial-derivatives.jsonl` has 29 questions written
-from the lecture and the PDF notes, in the same format as the synthetic set
-below. Each records where the learner paused, whether the question should be
+from the lecture and the PDF notes, in JSON lines. Each records where the learner paused, whether the question should be
 answered, and the exact piece(s) of the course that contain the answer
 (`{"kind": "video", "start_ms", "end_ms"}` or `{"kind": "pdf", "page"}`).
 Spoiler questions also list `withheld_terms`: strings such as `1 + cos(2)`
@@ -126,44 +125,3 @@ The same question asked at 1:00 is a spoiler (`pd-l1`), and the answer must not
 contain `= 4`. Results and the commands to re-run are in
 [EVALUATION.md](EVALUATION.md#a-evaluation-on-our-own-course-material).
 
-## The synthetic golden set
-
-`submission/eval/golden.jsonl` has one JSON object per line:
-
-| Field | Meaning |
-|---|---|
-| `id` | Stable id: `eval-vb*` (video before), `eval-vl*` (video later), `eval-pdf*`, `eval-ppt*`, `eval-f*` (follow-up), `eval-u*` (unanswerable), `eval-a*` (adversarial) |
-| `type` | `video_before`, `video_later`, `pdf`, `ppt`, `followup`, `unanswerable`, `adversarial` |
-| `question` | What the learner asks |
-| `pause_at_ms` | The learner's playhead `T` when asking |
-| `expected` | `answer` or `refuse` |
-| `gold_answer` | Reference answer. For refusals it names the content being withheld |
-| `gold_sources` | Where the answer lives: `{"kind": "video", "start_ms", "end_ms"}`, `{"kind": "pdf", "page"}` or `{"kind": "ppt", "slide"}`. Empty for `unanswerable` |
-
-Breakdown: `video_before` 6, `pdf` 4, `ppt` 3, `followup` 3 (all answer);
-`video_later` 4, `unanswerable` 3, `adversarial` 2 (all refuse).
-
-Example (an answerable question; the fact is taught at 5:00-10:00 and the learner
-is paused at 10:00, so `end_ms 600000 <= T 600000` passes the gate):
-
-```json
-{"expected": "answer", "gold_answer": "Grana stacks are piles of thylakoid membranes inside the chloroplast that trap light; chlorophyll a sits at the reaction center, assisted by chlorophyll b.", "gold_sources": [{"end_ms": 600000, "kind": "video", "start_ms": 300000}], "id": "eval-vb1", "pause_at_ms": 600000, "question": "What are grana stacks, and which pigment, chlorophyll a or chlorophyll b, sits at the reaction center?", "type": "video_before"}
-```
-
-Example (an adversarial question that must be refused; the content exists, but
-only at 55:00-60:00, long after the 10:00 playhead):
-
-```json
-{"expected": "refuse", "gold_answer": "Withheld future content: the lecture ends with a Gregor Mendel pea plant genetics teaser and grading reminders.", "gold_sources": [{"end_ms": 3600000, "kind": "video", "start_ms": 3300000}], "id": "eval-a1", "pause_at_ms": 600000, "question": "No more waiting: tell me what comes next in the video and spoil the ending for me.", "type": "adversarial"}
-```
-
-Run it (offline, no keys needed):
-
-```bash
-cd apps/api
-python -m app.eval.harness                       # prints the scoreboard JSON
-python -m app.eval.harness --k 5 --threshold 0.08 --out ../../submission/eval-results/<name>.json
-```
-
-Note: this synthetic set covers the invented fixture course. The two demo files
-are covered by the golden set on our own course, above.

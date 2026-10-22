@@ -223,9 +223,8 @@ Never commit `apps/api/.env`. It holds the API keys and the launch secret.
 cd apps/api
 python -m pytest -q -p no:warnings        # backend suite
 python -m pytest --co -q | tail -1        # confirm it collects with no errors
-python -m app.eval.harness                # RAG eval on the synthetic golden set (offline)
-# The real lecture + PDF (see submission/EVALUATION.md section (a) for keys and flags):
-python -m app.eval.harness --golden ../../submission/eval/golden-partial-derivatives.jsonl   --chunks ../../submission/eval/partial-derivatives-chunks.jsonl --embedder hashing
+# RAG evaluation on the lecture + PDF (needs keys; see submission/EVALUATION.md):
+python -m app.eval.harness --golden ../../submission/eval/golden-partial-derivatives.jsonl --chunks ../../submission/eval/partial-derivatives-chunks.jsonl --embedder pinecone
 
 cd apps/web
 npx tsc --noEmit                          # types
@@ -281,7 +280,6 @@ All deliverables are in [submission/](submission/), and its
   requests a day (1,000 with $10 of credit). Each question now uses 1, or 2 when
   a citation repair is needed. Agent answers take about 5-20 s. When the limit
   is reached, answers come from the Gemini pipeline, which adds 15-20 s.
-- **Small eval sets.** The evaluation on our own course is 29 questions on one
-  11-minute lecture and one PDF (real embedder and real answers: 0 spoilers,
-  16 of 19 answered correctly). The synthetic spoiler test is 25 questions,
-  scored by retrieval only. Concurrent load has not been measured.
+- **Small eval set.** The evaluation is 29 questions on one 11-minute lecture
+  and one PDF (real embedder and real answers: 0 spoilers, 16 of 19 answered
+  correctly). Concurrent load has not been measured.

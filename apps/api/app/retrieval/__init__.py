@@ -18,7 +18,7 @@ Two rules the implementation must not lose:
 
 1. The comparison is on ``end_ms``, never ``start_ms``. A gate relaxed to
    ``start_ms`` was measured at a **48% spoiler rate**
-   (``submission/eval-results/baseline.json``).
+   (an early eval measurement).
 2. ``end_ms IS NULL`` is **EXCLUDE**, deliberately -- not an UNKNOWN
    three-valued-logic accident. ADR-002 §5.1 explicitly forbids a future
    "simplification" that drops the null check. Chroma cannot express
