@@ -1,0 +1,24 @@
+%%{init: {"theme": "base", "fontFamily": "Arial, Helvetica, sans-serif", "themeVariables": {"fontSize": "16px", "fontFamily": "Arial, Helvetica, sans-serif", "lineColor": "#64748b", "primaryTextColor": "#0f172a"}, "flowchart": {"curve": "basis", "padding": 14, "wrappingWidth": 340}}}%%
+flowchart TD
+  W["A 2-minute section of video"]:::server --> S["Take a picture of the screen<br/>every 4 seconds"]:::server
+  S --> D{"Looks the same as<br/>the last picture kept?"}:::check
+  D -->|"yes"| X["Skip it: no AI call needed.<br/>The previous picture now<br/>covers this time too"]:::server
+  D -->|"no"| R["Shrink the picture<br/>to save data"]:::server
+  R --> B["Send 8 pictures at a time"]:::server
+  B --> P["Gemini writes what each one shows:<br/>equations, labels, slide titles,<br/>diagrams, colours"]:::ai
+  P --> CHK{"Did the AI describe a picture<br/>we actually sent?"}:::check
+  CHK -->|"no"| DROP["Ignored and logged.<br/>Never guessed"]:::stop
+  CHK -->|"yes"| TS["Time comes from when we took<br/>the picture, never from the AI"]:::good
+  P -->|"AI busy"| RT["Wait and retry"]:::server
+  RT -->|"still failing"| GAP["Recorded as<br/>partly described"]:::stop
+  X -.-> TS
+  TS --> M["Group 3 pictures into<br/>one piece (12 seconds)"]:::server
+  M --> E[("Added to the search index<br/>next to the spoken text")]:::store
+
+  classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
+  classDef server fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:1.5px
+  classDef ai fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px
+  classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:1.5px
+  classDef check fill:#ffffff,stroke:#dc2626,color:#7f1d1d,stroke-width:2px
+  classDef good fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:2px
+  classDef stop fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:1.5px

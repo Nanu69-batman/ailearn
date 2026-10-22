@@ -1,0 +1,27 @@
+%%{init: {"theme": "base", "fontFamily": "Arial, Helvetica, sans-serif", "themeVariables": {"fontSize": "16px", "fontFamily": "Arial, Helvetica, sans-serif", "lineColor": "#64748b", "primaryTextColor": "#0f172a"}, "flowchart": {"curve": "basis", "padding": 14, "wrappingWidth": 340}}}%%
+flowchart TD
+  UP["1. Teacher uploads a video, PDF,<br/>slides or image"]:::person --> CAP{"Within the size, length<br/>and upload limits?"}:::check
+  CAP -->|"no"| REJ["Rejected,<br/>nothing is saved"]:::stop
+  CAP -->|"yes"| SAVE[("2. Save the file")]:::store
+  SAVE --> KIND{"What kind of file?"}:::server
+  KIND -->|"PDF or slides"| DOC["Read the text on each page"]:::server
+  KIND -->|"image"| IMG["AI describes the picture"]:::ai
+  KIND -->|"video"| WIN["3. Cut the video into<br/>2-minute sections"]:::server
+  WIN --> T["Turn speech into text<br/>with the time of every sentence<br/>(Groq)"]:::ai
+  WIN --> V["Take a picture of the screen<br/>every 4 seconds; AI writes<br/>what it shows (Gemini)"]:::ai
+  T --> CH["4. Cut into small pieces,<br/>each stamped with when it<br/>starts and ends in the video"]:::server
+  V --> CH
+  DOC --> CH
+  IMG --> CH
+  CH --> EMB["5. Turn each piece into numbers<br/>that capture its meaning<br/>(embeddings)"]:::ai
+  EMB --> IDX[("6. Save in the search index<br/>(Pinecone)")]:::store
+  IDX --> READY["Ready: learners can ask about<br/>everything processed so far"]:::good
+  STREAM["Stream mode: only the first 2 minutes<br/>are processed now; the next sections are<br/>processed while the learner watches"]:::person -.-> WIN
+
+  classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
+  classDef server fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:1.5px
+  classDef ai fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px
+  classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:1.5px
+  classDef check fill:#ffffff,stroke:#dc2626,color:#7f1d1d,stroke-width:2px
+  classDef good fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:2px
+  classDef stop fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:1.5px

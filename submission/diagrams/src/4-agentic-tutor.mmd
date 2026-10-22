@@ -1,0 +1,21 @@
+%%{init: {"theme": "base", "fontFamily": "Arial, Helvetica, sans-serif", "themeVariables": {"fontSize": "16px", "fontFamily": "Arial, Helvetica, sans-serif", "lineColor": "#64748b", "primaryTextColor": "#0f172a"}, "flowchart": {"curve": "basis", "padding": 14, "wrappingWidth": 340}}}%%
+flowchart TD
+  Q["Question at the paused moment"]:::person --> PRE{"Just chatting?<br/>(hi, who are you)"}:::server
+  PRE -->|"yes"| CONV["Friendly short reply,<br/>no sources needed"]:::good
+  PRE -->|"no"| PF["The server fetches the lesson first:<br/>matching pieces, or everything watched<br/>so far for a summary"]:::server
+  PF --> TOOLS["Every lookup only sees what has<br/>already played, and only the learner's<br/>own materials"]:::check
+  TOOLS --> AG["AI tutor (Nemotron) answers<br/>in one go, naming its sources"]:::ai
+  AG --> VAL{"Check the answer"}:::check
+  VAL -->|"every source was really given to it"| GR["Answer with sources"]:::good
+  VAL -->|"forgot its sources"| REP["Ask it once more<br/>to add them"]:::server
+  REP --> VAL
+  VAL -->|"clearly labelled<br/>'Not from the video'"| SUP["General-knowledge answer,<br/>shown with that label"]:::good
+  VAL -->|"made-up source, or AI busy"| FB["Hand over to the<br/>standard path"]:::stop
+
+  classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
+  classDef server fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:1.5px
+  classDef ai fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px
+  classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:1.5px
+  classDef check fill:#ffffff,stroke:#dc2626,color:#7f1d1d,stroke-width:2px
+  classDef good fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:2px
+  classDef stop fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:1.5px

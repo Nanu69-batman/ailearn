@@ -85,6 +85,7 @@ build context to exactly those files plus `apps/api`.
    | `ALLOW_UNSIGNED_LAUNCH` | `false` | Only launches signed by the web app's server route are accepted |
    | `LOCAL_WHISPER_FALLBACK` | `false` | The local Whisper model does not fit in 512 MB. If Groq fails, the window fails visibly instead of skipping speech |
    | `MAX_UPLOAD_MB` / `MAX_VIDEO_MINUTES` / `MAX_UPLOADS_PER_HOUR` | `100` / `15` / `10` | Protect the free model quota |
+   | `DEV_TRACE` | `true` (default) for the demo | Records pipeline steps for the Developer view (`GET /dev/trace`). The feed has no auth: set `false` when real learners use the site |
 
 3. The first build takes several minutes. Watch **Logs** until you see
    `pinecone store ready (pinecone:ailearn-llama, dim=1024)` and uvicorn listening.
@@ -153,6 +154,11 @@ Then use the web app:
    opens the page with the cited text highlighted.
 6. Tick the PDF as done in the course checklist, go back to the video, and ask
    something the notes cover: the answer can now cite PDF pages too.
+7. Click **Developer view** in the header. In the new window, ask a question
+   in the app: the AI Tutor diagram plays each step (scope check, search,
+   timestamp gate, model, citation check), and clicking a step shows its data.
+   Upload a short video and the Ingestion diagram shows transcription, frame
+   description, chunking, embedding and storage for each 2-minute section.
 
 ## 5. Rollback
 

@@ -14,4 +14,5 @@ below with the file that covers it.
 | Evaluation results and testing details | [EVALUATION.md](EVALUATION.md); raw results in [eval-results/](eval-results/) |
 | Demo video | [My Video-2.mp4](My%20Video-2.mp4) |
 | Deployment instructions | [DEPLOYMENT.md](DEPLOYMENT.md) |
+| Live pipeline view (Developer view) | The **Developer view** button in the app's header; described in [ARCHITECTURE.md](ARCHITECTURE.md#f-developer-view-the-live-pipeline-trace) |
 | Future scope (known gaps and planned fixes) | [FUTURE_SCOPE.md](FUTURE_SCOPE.md) |

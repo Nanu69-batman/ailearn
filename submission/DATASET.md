@@ -44,6 +44,10 @@ chunks, 93 match in full, 4 partly, and none are missed.
    open the **Quiz** tab for a practice quiz on what you've watched.
 6. Tick the PDF as done in the course checklist to let the chat and quiz read
    it beside the video.
+7. Optional: click **Developer view** in the header before uploading or
+   asking. It shows each step live, with the data it used: for the PDF, 97
+   chunks extracted, embedded and stored; for a question, the passages found
+   and the timestamp check on each one.
 
 Accepted types: video (for example `.mp4`), `.pdf`, `.pptx`, `.png`, `.jpg`,
 `.jpeg`, `.webp`. Hosted uploads are limited by `MAX_UPLOAD_MB` and

@@ -1,0 +1,23 @@
+%%{init: {"theme": "base", "fontFamily": "Arial, Helvetica, sans-serif", "themeVariables": {"fontSize": "16px", "fontFamily": "Arial, Helvetica, sans-serif", "lineColor": "#64748b", "primaryTextColor": "#0f172a"}, "flowchart": {"curve": "basis", "padding": 14, "wrappingWidth": 340}}}%%
+flowchart LR
+  subgraph APP["While the app is used"]
+    U["Teacher uploads, or learner<br/>asks a question or a quiz"]:::person
+    S["Each step on the server notes<br/>what it did, where it ran,<br/>how long it took, and the data"]:::server
+  end
+  M[("Recent steps kept in<br/>the server's memory")]:::store
+  subgraph DEV["Developer view (separate window)"]
+    P["Checks for new steps<br/>a few times a second"]:::person
+    DIA["Animated diagram: a dot travels<br/>between steps, each step lights up,<br/>then gets a tick and its time"]:::good
+    INS["Inspector: the real data, e.g. the<br/>pieces found, the spoiler check,<br/>and which sources were confirmed"]:::good
+  end
+  U --> S --> M --> P
+  P --> DIA
+  P --> INS
+
+  classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
+  classDef server fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:1.5px
+  classDef ai fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px
+  classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:1.5px
+  classDef check fill:#ffffff,stroke:#dc2626,color:#7f1d1d,stroke-width:2px
+  classDef good fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:2px
+  classDef stop fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:1.5px

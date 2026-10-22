@@ -73,6 +73,7 @@ protect the model quota with `MAX_UPLOAD_MB`, `MAX_VIDEO_MINUTES` and
 | GET | `/subjects/{subject_id}/resources` | — | List a subject's attached resources |
 | POST | `/subjects/{subject_id}/resources` | — | Attach an existing resource to a subject |
 | DELETE | `/subjects/{subject_id}/resources/{resource_id}` | — | Detach a resource from a subject |
+| GET | `/dev/trace` | — | Pipeline step events for the Developer view (see below) |
 
 ## POST /lms/session
 
@@ -363,6 +364,47 @@ retrieval registry. Subject response: `{"id", "name", "description",
   (required). `404` unknown subject; `422` unknown resource — a subject must
   never hold a scope entry that resolves to nothing.
 - `DELETE /subjects/{subject_id}/resources/{resource_id}` → `200` subject · `404`.
+
+## GET /dev/trace
+
+The feed behind the **Developer view** (`/dev` in the web app). Each ingest job,
+chat answer and quiz is a *run*, and each step in it is one event.
+
+Query parameters: `after` (int, default `0`): return only events with
+`seq > after`. `course_id` (optional): only that course's events.
+
+```json
+{
+  "enabled": true,
+  "latest": 412,
+  "agent": true,
+  "where": {"asr": "Groq · whisper-large-v3-turbo", "embed": "Pinecone Inference · llama-text-embed-v2", "...": "..."},
+  "events": [
+    {
+      "seq": 405, "ts": 1792660363.5, "run_id": "chat_3f9c0a1b2d", "flow": "chat",
+      "course_id": "demo", "step": "gate", "phase": "end",
+      "title": "Strict timestamp gate", "where": "API · FastAPI on Render", "ms": null,
+      "data": {"T_ms": 120000, "rule": "keep a video chunk only if end_ms <= T",
+               "candidates": 24, "eligible": 9, "kept": 8, "max_end_ms": 118400,
+               "passages": [{"chunk_id": "res_…_c3_…", "kind": "transcript", "start_ms": 96000, "end_ms": 118400, "text": "…"}]}
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `flow` | `ingest`, `chat`, `quiz` or `grade` |
+| `step` | Ingest: `request`, `extract`, `transcribe`, `describe`, `chunk`, `embed`, `index`, `respond`. Chat: `request`, `scope`, `route`, `plan`, `tool`, `embed_query`, `search`, `gate`, `llm`, `validate`, `respond`. Quiz: `request`, `plan`, `search`, `gate`, `sample`, `llm`, `validate`, `respond` |
+| `phase` | `start`, `end`, `error`, `progress` (embedding count) or `info` |
+| `ms` | How long the step took, on its `end` or `error` event |
+| `data` | What the step carried: ids, times, counts and text previews of at most a few hundred characters. Never keys or full prompts |
+
+Events live in a ring buffer of 4,000 in the API process. A restart clears
+them, and `latest` going down tells the client to start again from `0`. With
+`DEV_TRACE=false`, `enabled` is `false` and nothing is recorded. The route has
+no auth, so anyone who can reach the API can read recent questions; see
+[FUTURE_SCOPE.md](FUTURE_SCOPE.md).
 
 ## Auth and signing
 

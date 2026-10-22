@@ -1,0 +1,34 @@
+%%{init: {"theme": "base", "fontFamily": "Arial, Helvetica, sans-serif", "themeVariables": {"fontSize": "16px", "fontFamily": "Arial, Helvetica, sans-serif", "lineColor": "#64748b", "primaryTextColor": "#0f172a"}, "flowchart": {"curve": "basis", "padding": 14, "wrappingWidth": 340}}}%%
+flowchart TD
+  Q["1. Learner pauses at, say, 4:10<br/>and asks a question"]:::person --> AUTH{"A real, signed-in session?"}:::check
+  AUTH -->|"no"| NO["Rejected"]:::stop
+  AUTH -->|"yes"| SC["2. Work out what they may read:<br/>this video up to 4:10, plus any<br/>material they ticked as done"]:::server
+  SC --> HAS{"AI tutor available?"}:::server
+
+  subgraph AGENT["AI tutor path (Nemotron)"]
+    PF["3a. Fetch matching lesson pieces,<br/>only from before 4:10"]:::server
+    PF --> AG["AI tutor writes an answer<br/>and names its sources"]:::ai
+    AG --> AV{"Was every source really<br/>given to it just now?"}:::check
+  end
+
+  subgraph CLASSIC["Standard path (Gemini)"]
+    SR["3b. Search the index for pieces<br/>that match the question"]:::store
+    SR --> GATE["Spoiler guard: drop any piece<br/>that ends after 4:10"]:::check
+    GATE --> LLM["Gemini answers using<br/>only those pieces"]:::ai
+    LLM --> CIT{"Has sources, and is every<br/>source one of those pieces?"}:::check
+  end
+
+  HAS -->|"yes"| PF
+  HAS -->|"no"| SR
+  AV -->|"yes"| OK["4. Answer with clickable sources:<br/>the exact video moment or PDF page"]:::good
+  AV -->|"no, or the tutor is busy"| SR
+  CIT -->|"yes"| OK
+  CIT -->|"no"| RF["Says it cannot answer that yet,<br/>instead of guessing"]:::stop
+
+  classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
+  classDef server fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:1.5px
+  classDef ai fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px
+  classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:1.5px
+  classDef check fill:#ffffff,stroke:#dc2626,color:#7f1d1d,stroke-width:2px
+  classDef good fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:2px
+  classDef stop fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:1.5px

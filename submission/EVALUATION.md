@@ -14,7 +14,7 @@ Anything not measured is marked as such.
 | Citation accuracy | **1.0** | same |
 | Retrieval accuracy (answerable questions) | **0.9375** (15/16) | same |
 | Retrieval latency, in process | p50 **8.3 ms**, p95 **10.0 ms** | same |
-| Backend tests | **517 collected, 517 passed, 0 failed**, no collection errors | `pytest`, 2026-10-21 |
+| Backend tests | **524 collected, 524 passed, 0 failed**, no collection errors | `pytest`, 2026-10-22 |
 | Frontend type check | pass | `npx tsc --noEmit` |
 | Frontend contract check | PASS | `npm run contract-check` |
 
@@ -115,14 +115,11 @@ Every citation satisfied `end_ms <= T`.
 
 ## (b) Testing details
 
-Commands run on 2026-10-21 from `apps/api` with Python 3.14:
+Commands run on 2026-10-22 from `apps/api` with Python 3.14:
 
 ```text
-$ python -m pytest --co -q -p no:warnings | tail -1
-517 tests collected
-
-$ python -m pytest -q -p no:warnings
-517 passed in 104.69s (0:01:44)
+$ python -m pytest -q
+524 passed, 191 warnings in 94.96s (0:01:34)
 ```
 
 The suite **collects with no errors**. This is checked separately because a
@@ -148,6 +145,8 @@ directory. They need no network and no keys.
 | **Embedding and quota handling** (batched embedding with order guards, 429 backoff on the whole batch, spent daily quota fails fast with a readable reason, upload size/length/rate caps) | `test_embedder_batching.py`, `test_quota_exhausted.py`, `test_upload_caps.py`, `test_cache.py` |
 | **Subjects and resources** (subject CRUD, attach refuses unknown ids, delete detaches then purges, purge leaves no served bytes) | `test_subjects.py`, `test_resource_delete.py`, `test_resource_purge.py` |
 | **Eval harness** (harness end to end over the golden set, leakage detector) | `test_eval_harness.py` |
+| **Developer-view trace** (a chat answer emits every step in order as one run; the reported gate kept only passages with `end_ms <= T`; the feed returns only events after a cursor; recording outside a run does nothing; an ingest job is one run from request to respond; both parallel video lanes report into the job's run) | `test_devtrace.py`, `test_progressive_ingest.py` |
+| **Stream head start** (stream mode processes exactly the first 2-minute window at upload) | `test_progressive_ingest.py` |
 | **Health** | `test_health.py` |
 
 Gap, stated plainly: the `POST /lms/session` HMAC **signature** check has no
@@ -156,15 +155,14 @@ through `test_live_frame.py`.
 
 ### Frontend checks
 
-Run from `apps/web` on 2026-10-21:
+Run from `apps/web` on 2026-10-22:
 
 | Command | Result | What it checks |
 |---|---|---|
 | `npx tsc --noEmit` | **pass** (exit 0) | Types across the Next.js app |
 | `npm run contract-check` | **PASS** | That `lib/api.ts` matches the API response shapes, that KaTeX CSS is loaded, that no message path bypasses the Markdown renderer, and that `rehype-raw` is not imported anywhere (model HTML stays inert) |
 
-`npm run build` passed on 2026-10-21 after the quiz, chats and document viewer
-changes.
+`npm run build` passed on 2026-10-22, including the Developer view (`/dev`).
 
 ---
 

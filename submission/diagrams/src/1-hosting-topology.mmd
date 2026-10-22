@@ -1,0 +1,34 @@
+%%{init: {"theme": "base", "fontFamily": "Arial, Helvetica, sans-serif", "themeVariables": {"fontSize": "16px", "fontFamily": "Arial, Helvetica, sans-serif", "lineColor": "#64748b", "primaryTextColor": "#0f172a"}, "flowchart": {"curve": "basis", "padding": 14, "wrappingWidth": 340}}}%%
+flowchart LR
+  B["Learner's<br/>browser"]:::person
+  subgraph VER["Vercel: hosts the website"]
+    direction TB
+    W["Website<br/>(Next.js)"]:::person
+    L["Sign-in helper<br/>proves the learner came<br/>from the course platform"]:::check
+    W --> L
+  end
+  subgraph RN["Render: hosts our server"]
+    direction TB
+    A["Our server<br/>(FastAPI)"]:::server
+    D[("Files on the server<br/>demo video and PDF<br/>built in")]:::store
+    A --> D
+  end
+  subgraph CLOUD["Cloud services our server calls"]
+    direction TB
+    Q["Groq<br/>speech to text"]:::ai
+    G["Gemini<br/>screen descriptions,<br/>quizzes, backup answers"]:::ai
+    O["OpenRouter<br/>AI tutor (Nemotron)"]:::ai
+    P[("Pinecone<br/>search index")]:::store
+  end
+  B -->|"opens a lesson"| VER
+  VER -->|"starts a signed session"| RN
+  B -->|"questions, quizzes, uploads,<br/>video streaming"| RN
+  RN -->|"calls when needed"| CLOUD
+
+  classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
+  classDef server fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:1.5px
+  classDef ai fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px
+  classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:1.5px
+  classDef check fill:#ffffff,stroke:#dc2626,color:#7f1d1d,stroke-width:2px
+  classDef good fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:2px
+  classDef stop fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:1.5px

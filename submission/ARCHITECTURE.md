@@ -8,7 +8,8 @@ browser plays media, captures a frame when asked, and posts requests.
 Related: [API.md](API.md) (routes), [DEPLOYMENT.md](DEPLOYMENT.md)
 (how to stand this up).
 
-PNG versions of every diagram on this page are in [diagrams/](diagrams/):
+PNG versions of every diagram on this page are in [diagrams/](diagrams/), and
+their Mermaid sources are in [diagrams/src/](diagrams/src/):
 
 | Diagram | PNG |
 |---|---|
@@ -20,35 +21,98 @@ PNG versions of every diagram on this page are in [diagrams/](diagrams/):
 | Inside the agentic tutor | [4-agentic-tutor.png](diagrams/4-agentic-tutor.png) |
 | (d) Practice quizzes | [6-practice-quiz.png](diagrams/6-practice-quiz.png) |
 | (e) Lesson page: viewers, cited passages, chats | [7-lesson-page.png](diagrams/7-lesson-page.png) |
+| (f) Developer view: the live pipeline trace | [8-developer-view.png](diagrams/8-developer-view.png) |
+
+**How to read the diagrams.** Every diagram uses the same colours:
+
+| Colour | Means |
+|---|---|
+| Blue | The learner or teacher, and what they see in the browser |
+| Purple | Our server doing the work |
+| Amber | An outside AI service (Groq, Gemini, Nemotron, embeddings) |
+| Green cylinder | Where something is stored (search index, files) |
+| Red outline | A safety check: a decision that can stop or reject something |
+| Green box | A good outcome the learner receives |
+| Red box | A refusal or a rejected item |
+
+The boxes describe each step in plain words. The text under each diagram gives
+the technical detail.
+
+## System overview
+
+```mermaid
+%%{init: {"theme": "base", "fontFamily": "Arial, Helvetica, sans-serif", "themeVariables": {"fontSize": "16px", "fontFamily": "Arial, Helvetica, sans-serif", "lineColor": "#64748b", "primaryTextColor": "#0f172a"}, "flowchart": {"curve": "basis", "padding": 14, "wrappingWidth": 340}}}%%
+flowchart LR
+  U["Learner<br/>watches a lesson, asks questions,<br/>takes quizzes"]:::person
+  W["Website<br/>video player, PDF viewer,<br/>AI tutor chat, quiz"]:::person
+  A["Our server<br/>decides what the learner may see,<br/>checks every answer's sources"]:::server
+  subgraph AI["Outside AI services"]
+    Q["Groq<br/>turns speech into text"]:::ai
+    G["Gemini<br/>describes what is on screen,<br/>writes quizzes"]:::ai
+    O["Nemotron (OpenRouter)<br/>the AI tutor"]:::ai
+  end
+  P[("Search index (Pinecone)<br/>lesson pieces, findable by meaning")]:::store
+  F[("File storage<br/>videos and PDFs")]:::store
+  U --> W
+  W -->|"questions, quizzes, uploads"| A
+  A --> Q
+  A --> G
+  A --> O
+  A --> P
+  A --> F
+
+  classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
+  classDef server fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:1.5px
+  classDef ai fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px
+  classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:1.5px
+  classDef check fill:#ffffff,stroke:#dc2626,color:#7f1d1d,stroke-width:2px
+  classDef good fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:2px
+  classDef stop fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:1.5px
+```
+
+The learner only ever talks to our server, through the website. The server
+decides what the learner may see at the moment they paused, calls the AI
+services, and checks every answer's sources before showing it. The AI services
+never decide what is allowed; they only write text from what the server gives
+them.
 
 ## (a) Hosting topology
 
 ```mermaid
+%%{init: {"theme": "base", "fontFamily": "Arial, Helvetica, sans-serif", "themeVariables": {"fontSize": "16px", "fontFamily": "Arial, Helvetica, sans-serif", "lineColor": "#64748b", "primaryTextColor": "#0f172a"}, "flowchart": {"curve": "basis", "padding": 14, "wrappingWidth": 340}}}%%
 flowchart LR
-  B["Browser<br/>video player, PDF / slide viewer,<br/>chat + quiz"]
-  subgraph VER["Vercel"]
-    W["Next.js 15 web app"]
-    L["Server route<br/>signs LMS launch (HMAC)"]
+  B["Learner's<br/>browser"]:::person
+  subgraph VER["Vercel: hosts the website"]
+    direction TB
+    W["Website<br/>(Next.js)"]:::person
+    L["Sign-in helper<br/>proves the learner came<br/>from the course platform"]:::check
+    W --> L
   end
-  subgraph RN["Render (Docker, free tier)"]
-    A["FastAPI API<br/>chat, ingest, retrieval"]
-    D[("Container disk<br/>media and documents<br/>(demo video + PDF baked in)")]
+  subgraph RN["Render: hosts our server"]
+    direction TB
+    A["Our server<br/>(FastAPI)"]:::server
+    D[("Files on the server<br/>demo video and PDF<br/>built in")]:::store
+    A --> D
   end
-  P[("Pinecone serverless<br/>vectors + Inference embeddings")]
-  O["OpenRouter API<br/>Nemotron tutor agent"]
-  G["Gemini API<br/>quiz writer, fallback LLM, vision"]
-  Q["Groq API<br/>whisper-large-v3-turbo"]
+  subgraph CLOUD["Cloud services our server calls"]
+    direction TB
+    Q["Groq<br/>speech to text"]:::ai
+    G["Gemini<br/>screen descriptions,<br/>quizzes, backup answers"]:::ai
+    O["OpenRouter<br/>AI tutor (Nemotron)"]:::ai
+    P[("Pinecone<br/>search index")]:::store
+  end
+  B -->|"opens a lesson"| VER
+  VER -->|"starts a signed session"| RN
+  B -->|"questions, quizzes, uploads,<br/>video streaming"| RN
+  RN -->|"calls when needed"| CLOUD
 
-  B --> W
-  W --> L
-  L -->|"POST /lms/session (signed)"| A
-  B -->|"POST /chat, /chat/live-frame, /quiz,<br/>/sessions/{id}/threads,<br/>/courses/{id}/ingest, /position"| A
-  B -->|"GET /resources/{id}/media (Range)"| A
-  A --> P
-  A --> D
-  A --> O
-  A --> G
-  A --> Q
+  classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
+  classDef server fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:1.5px
+  classDef ai fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px
+  classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:1.5px
+  classDef check fill:#ffffff,stroke:#dc2626,color:#7f1d1d,stroke-width:2px
+  classDef good fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:2px
+  classDef stop fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:1.5px
 ```
 
 | Component | Where | Why there |
@@ -71,24 +135,33 @@ retrying.
 ## (b) Ingest pipeline
 
 ```mermaid
+%%{init: {"theme": "base", "fontFamily": "Arial, Helvetica, sans-serif", "themeVariables": {"fontSize": "16px", "fontFamily": "Arial, Helvetica, sans-serif", "lineColor": "#64748b", "primaryTextColor": "#0f172a"}, "flowchart": {"curve": "basis", "padding": 14, "wrappingWidth": 340}}}%%
 flowchart TD
-  UP["POST /courses/{id}/ingest<br/>multipart, mode=full|stream"] --> CAP{"Size / length / rate caps"}
-  CAP -->|"over"| E413["413 or 429, nothing stored"]
-  CAP -->|"ok"| ST["Store original file<br/>on disk"]
-  ST --> KIND{"File type"}
-  KIND -->|"pdf / pptx"| DOC["pypdf / python-pptx text<br/>(OCR if no text layer and enabled)"]
-  KIND -->|"image"| IMG["Gemini describes image<br/>ungated, cited by image_no"]
-  KIND -->|"video"| WIN["Split into 120 s windows<br/>duration from container header"]
-  WIN --> T["Stage T: transcript lane<br/>window audio to Groq (or faster-whisper)"]
-  WIN --> V["Stage V: visual lane<br/>frame every 4 s, skip duplicates,<br/>Gemini describes frames"]
-  T --> CT["Merge cues into chunks of up to 30 s<br/>end = latest cue end"]
-  V --> CV["Merge 3 frames per chunk (12 s)<br/>times from frame-index arithmetic"]
-  CT --> EMB["Batch embed<br/>Pinecone llama-text-embed-v2 (hosted)<br/>or gemini-embedding-2 (local)"]
-  CV --> EMB
-  DOC --> EMB
-  IMG --> EMB
-  EMB --> VS[("Vector store<br/>Pinecone or Chroma")]
-  VS --> FR["Frontier markers on chunks:<br/>processed_through_ms (transcript)<br/>visual_through_ms (visual)"]
+  UP["1. Teacher uploads a video, PDF,<br/>slides or image"]:::person --> CAP{"Within the size, length<br/>and upload limits?"}:::check
+  CAP -->|"no"| REJ["Rejected,<br/>nothing is saved"]:::stop
+  CAP -->|"yes"| SAVE[("2. Save the file")]:::store
+  SAVE --> KIND{"What kind of file?"}:::server
+  KIND -->|"PDF or slides"| DOC["Read the text on each page"]:::server
+  KIND -->|"image"| IMG["AI describes the picture"]:::ai
+  KIND -->|"video"| WIN["3. Cut the video into<br/>2-minute sections"]:::server
+  WIN --> T["Turn speech into text<br/>with the time of every sentence<br/>(Groq)"]:::ai
+  WIN --> V["Take a picture of the screen<br/>every 4 seconds; AI writes<br/>what it shows (Gemini)"]:::ai
+  T --> CH["4. Cut into small pieces,<br/>each stamped with when it<br/>starts and ends in the video"]:::server
+  V --> CH
+  DOC --> CH
+  IMG --> CH
+  CH --> EMB["5. Turn each piece into numbers<br/>that capture its meaning<br/>(embeddings)"]:::ai
+  EMB --> IDX[("6. Save in the search index<br/>(Pinecone)")]:::store
+  IDX --> READY["Ready: learners can ask about<br/>everything processed so far"]:::good
+  STREAM["Stream mode: only the first 2 minutes<br/>are processed now; the next sections are<br/>processed while the learner watches"]:::person -.-> WIN
+
+  classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
+  classDef server fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:1.5px
+  classDef ai fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px
+  classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:1.5px
+  classDef check fill:#ffffff,stroke:#dc2626,color:#7f1d1d,stroke-width:2px
+  classDef good fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:2px
+  classDef stop fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:1.5px
 ```
 
 How it works:
@@ -121,21 +194,30 @@ text, and that text is indexed like the transcript
 (`apps/api/app/ingestion/visual.py`).
 
 ```mermaid
+%%{init: {"theme": "base", "fontFamily": "Arial, Helvetica, sans-serif", "themeVariables": {"fontSize": "16px", "fontFamily": "Arial, Helvetica, sans-serif", "lineColor": "#64748b", "primaryTextColor": "#0f172a"}, "flowchart": {"curve": "basis", "padding": 14, "wrappingWidth": 340}}}%%
 flowchart TD
-  W["120 s window of video"] --> S["ffmpeg samples a frame every 4 s<br/>frame i covers [4i, 4i+4) s"]
-  S --> D{"Near-duplicate of the<br/>last KEPT frame?<br/>64x64 grayscale grid"}
-  D -->|"yes"| X["Not sent to the model.<br/>The kept frame's span is<br/>extended over it"]
-  D -->|"no"| R["Downscale to at most 768 px,<br/>JPEG quality 80"]
-  R --> B["Batch 8 frames per request.<br/>The model sees indices, never times"]
-  B --> P["Gemini describes each frame:<br/>equations, labels, slide titles,<br/>diagrams, colours"]
-  P --> CHK{"Index in the reply was<br/>actually sampled?"}
-  CHK -->|"no"| DROP["Dropped and recorded,<br/>never clamped or reassigned"]
-  CHK -->|"yes"| T["Times from arithmetic:<br/>start = 4i s, end = end of its span"]
-  P -->|"429 or empty reply"| RT["Paced 4 s between calls,<br/>bounded retry with backoff"]
-  RT -->|"still failing"| GAP["Gap recorded:<br/>visual_status = partial"]
-  X -.->|"lengthens the span"| T
-  T --> M["Merge 3 frames per chunk (12 s)<br/>end = latest frame end"]
-  M --> E["Embed and index<br/>with the transcript chunks"]
+  W["A 2-minute section of video"]:::server --> S["Take a picture of the screen<br/>every 4 seconds"]:::server
+  S --> D{"Looks the same as<br/>the last picture kept?"}:::check
+  D -->|"yes"| X["Skip it: no AI call needed.<br/>The previous picture now<br/>covers this time too"]:::server
+  D -->|"no"| R["Shrink the picture<br/>to save data"]:::server
+  R --> B["Send 8 pictures at a time"]:::server
+  B --> P["Gemini writes what each one shows:<br/>equations, labels, slide titles,<br/>diagrams, colours"]:::ai
+  P --> CHK{"Did the AI describe a picture<br/>we actually sent?"}:::check
+  CHK -->|"no"| DROP["Ignored and logged.<br/>Never guessed"]:::stop
+  CHK -->|"yes"| TS["Time comes from when we took<br/>the picture, never from the AI"]:::good
+  P -->|"AI busy"| RT["Wait and retry"]:::server
+  RT -->|"still failing"| GAP["Recorded as<br/>partly described"]:::stop
+  X -.-> TS
+  TS --> M["Group 3 pictures into<br/>one piece (12 seconds)"]:::server
+  M --> E[("Added to the search index<br/>next to the spoken text")]:::store
+
+  classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
+  classDef server fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:1.5px
+  classDef ai fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px
+  classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:1.5px
+  classDef check fill:#ffffff,stroke:#dc2626,color:#7f1d1d,stroke-width:2px
+  classDef good fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:2px
+  classDef stop fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:1.5px
 ```
 
 - **Cost:** a 655 s lecture samples 164 frames. That's 21 requests before
@@ -156,38 +238,40 @@ configured, or when its reply fails validation. Both paths read the lesson only
 through the strict-T gate.
 
 ```mermaid
+%%{init: {"theme": "base", "fontFamily": "Arial, Helvetica, sans-serif", "themeVariables": {"fontSize": "16px", "fontFamily": "Arial, Helvetica, sans-serif", "lineColor": "#64748b", "primaryTextColor": "#0f172a"}, "flowchart": {"curve": "basis", "padding": 14, "wrappingWidth": 340}}}%%
 flowchart TD
-  Q["Learner pauses at T, asks a question"] --> S["POST /chat<br/>session_id + session_token + current_time_ms"]
-  S --> AUTH{"Session exists and<br/>HMAC token valid?"}
-  AUTH -->|"no"| X401["401 / 404"]
-  AUTH -->|"yes"| SC["Scope = granted resource_scope<br/>INTERSECTED with the open material (gated at T)<br/>+ grant INTERSECT materials marked done (read in full)"]
-  SC --> EMPTY{"Scope empty?"}
-  EMPTY -->|"yes"| RS["Refuse, scope_empty=true"]
-  EMPTY -->|"no"| HAS{"Agent configured?<br/>(OPENROUTER_API_KEY)"}
+  Q["1. Learner pauses at, say, 4:10<br/>and asks a question"]:::person --> AUTH{"A real, signed-in session?"}:::check
+  AUTH -->|"no"| NO["Rejected"]:::stop
+  AUTH -->|"yes"| SC["2. Work out what they may read:<br/>this video up to 4:10, plus any<br/>material they ticked as done"]:::server
+  SC --> HAS{"AI tutor available?"}:::server
 
-  subgraph AGENT["Agentic path: Nemotron via OpenRouter"]
-    PF["Prefetch: server runs the lesson read<br/>(search, or 0..T for summaries)"]
-    PF --> AG["Malai tutor agent<br/>answers from it, one call"]
-    PF -.->|"same gates"| GT["Time-gated tools<br/>end_ms <= T, scope filter"]
-    AG --> AV{"Reply valid?<br/>every cited id returned<br/>by a tool this turn"}
+  subgraph AGENT["AI tutor path (Nemotron)"]
+    PF["3a. Fetch matching lesson pieces,<br/>only from before 4:10"]:::server
+    PF --> AG["AI tutor writes an answer<br/>and names its sources"]:::ai
+    AG --> AV{"Was every source really<br/>given to it just now?"}:::check
   end
 
-  subgraph CLASSIC["Classic pipeline: Gemini"]
-    INT{"Intent router"}
-    INT -->|"small talk"| CONV["Conversational reply<br/>no retrieval, no citations"]
-    INT -->|"question / quiz / overview"| QRY["Vector query restricted to scope<br/>filter: end_ms <= T (in the query)<br/>+ own query over materials marked done"]
-    QRY --> PY["Python re-check: drop any passage<br/>with end_ms missing or > T"]
-    PY --> REC["Optional recency re-rank<br/>(gated pool only)"]
-    REC --> LLM["Gemini answers from surviving passages only"]
-    LLM --> CIT{"At least one citation, and every<br/>cited id in the retrieved set?"}
+  subgraph CLASSIC["Standard path (Gemini)"]
+    SR["3b. Search the index for pieces<br/>that match the question"]:::store
+    SR --> GATE["Spoiler guard: drop any piece<br/>that ends after 4:10"]:::check
+    GATE --> LLM["Gemini answers using<br/>only those pieces"]:::ai
+    LLM --> CIT{"Has sources, and is every<br/>source one of those pieces?"}:::check
   end
 
   HAS -->|"yes"| PF
-  HAS -->|"no"| INT
-  AV -->|"yes"| OKA["Answer: grounded (cited),<br/>conversational or supplemental"]
-  AV -->|"no: unknown id, uncited,<br/>rate limit (429), provider error"| INT
-  CIT -->|"no"| RF["Refuse, no citations"]
-  CIT -->|"yes"| OK["Answer + validated citations<br/>(ms range, transcript or visual)"]
+  HAS -->|"no"| SR
+  AV -->|"yes"| OK["4. Answer with clickable sources:<br/>the exact video moment or PDF page"]:::good
+  AV -->|"no, or the tutor is busy"| SR
+  CIT -->|"yes"| OK
+  CIT -->|"no"| RF["Says it cannot answer that yet,<br/>instead of guessing"]:::stop
+
+  classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
+  classDef server fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:1.5px
+  classDef ai fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px
+  classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:1.5px
+  classDef check fill:#ffffff,stroke:#dc2626,color:#7f1d1d,stroke-width:2px
+  classDef good fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:2px
+  classDef stop fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:1.5px
 ```
 
 ### Inside the agentic tutor
@@ -195,20 +279,27 @@ flowchart TD
 The agent is `app/chat/agent.py`, and its tool loop works like this:
 
 ```mermaid
+%%{init: {"theme": "base", "fontFamily": "Arial, Helvetica, sans-serif", "themeVariables": {"fontSize": "16px", "fontFamily": "Arial, Helvetica, sans-serif", "lineColor": "#64748b", "primaryTextColor": "#0f172a"}, "flowchart": {"curve": "basis", "padding": 14, "wrappingWidth": 340}}}%%
 flowchart TD
-  Q2["Question at T, scope already intersected"] --> PRE{"Small talk?"}
-  PRE -->|"no"| PF["Prefetch through call_tool:<br/>search_lesson(question), or<br/>get_lesson_content(0, T) for summary / quiz"]
-  PRE -->|"yes"| AG
-  PF -->|"handed over as that tool's result"| AG["Nemotron, Malai tutor persona<br/>answers in one call (tool_choice=none)"]
-  PF -.-> T1["Gated vector search, k=6<br/>end_ms <= T, scope filter<br/>+ materials marked done"]
-  PF -.-> T2["Passages in a time range<br/>clamped to min(to, T), in lesson order"]
-  AG --> VAL{"Validate the final reply"}
-  VAL -->|"no tools, no subject words<br/>(hi, who are you)"| CONV["mode=conversational<br/>no citations"]
-  VAL -->|"every cited id was returned this turn<br/>(a shortened id restored only if unambiguous)"| GR["mode=grounded<br/>validated citations"]
-  VAL -->|"uncited"| REP["One cite-repair turn"]
+  Q["Question at the paused moment"]:::person --> PRE{"Just chatting?<br/>(hi, who are you)"}:::server
+  PRE -->|"yes"| CONV["Friendly short reply,<br/>no sources needed"]:::good
+  PRE -->|"no"| PF["The server fetches the lesson first:<br/>matching pieces, or everything watched<br/>so far for a summary"]:::server
+  PF --> TOOLS["Every lookup only sees what has<br/>already played, and only the learner's<br/>own materials"]:::check
+  TOOLS --> AG["AI tutor (Nemotron) answers<br/>in one go, naming its sources"]:::ai
+  AG --> VAL{"Check the answer"}:::check
+  VAL -->|"every source was really given to it"| GR["Answer with sources"]:::good
+  VAL -->|"forgot its sources"| REP["Ask it once more<br/>to add them"]:::server
   REP --> VAL
-  VAL -->|"labelled Not from the video<br/>(qa mode only)"| SUP["mode=supplemental<br/>no citations"]
-  VAL -->|"unknown id, still uncited,<br/>rate limit (429), provider error"| FB["Classic pipeline above"]
+  VAL -->|"clearly labelled<br/>'Not from the video'"| SUP["General-knowledge answer,<br/>shown with that label"]:::good
+  VAL -->|"made-up source, or AI busy"| FB["Hand over to the<br/>standard path"]:::stop
+
+  classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
+  classDef server fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:1.5px
+  classDef ai fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px
+  classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:1.5px
+  classDef check fill:#ffffff,stroke:#dc2626,color:#7f1d1d,stroke-width:2px
+  classDef good fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:2px
+  classDef stop fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:1.5px
 ```
 
 - **The model chooses tools; code chooses what it sees.** Both tools run through
@@ -249,45 +340,29 @@ answers are checked in the browser with no model call; only written answers
 go back to the model for grading.
 
 ```mermaid
+%%{init: {"theme": "base", "fontFamily": "Arial, Helvetica, sans-serif", "themeVariables": {"fontSize": "16px", "fontFamily": "Arial, Helvetica, sans-serif", "lineColor": "#64748b", "primaryTextColor": "#0f172a"}, "flowchart": {"curve": "basis", "padding": 14, "wrappingWidth": 340}}}%%
 flowchart TD
-  L["Learner at T picks 3 / 5 / 10 questions<br/>and types: MCQ, numerical, written"] --> P["POST /quiz<br/>session token, video_id, T,<br/>materials marked done"]
-  P --> AUTH{"Session exists and<br/>HMAC token valid?"}
-  AUTH -->|"no"| X["401 / 404"]
-  AUTH -->|"yes"| SC["Scope = grant INTERSECT open material<br/>done list = grant INTERSECT done"]
+  L["1. Learner picks how many questions<br/>and which kinds: multiple choice,<br/>number answer, written answer"]:::person --> AUTH{"A real, signed-in session?"}:::check
+  AUTH -->|"no"| NO["Rejected"]:::stop
+  AUTH -->|"yes"| READ["2. Gather what they have watched,<br/>only up to the paused moment,<br/>plus materials ticked as done"]:::server
+  READ --> BAL["Mix: mostly what the teacher said,<br/>some of what was on screen;<br/>a new mix for every new quiz"]:::server
+  BAL --> GEN["3. One AI call writes the whole quiz<br/>(Gemini, Nemotron as backup)"]:::ai
+  GEN --> VAL{"Does each question point to a<br/>real piece of the lesson?"}:::check
+  VAL -->|"no"| DROP["That question is thrown away"]:::stop
+  VAL -->|"yes"| UI["4. Quiz appears;<br/>answers stay hidden"]:::person
+  UI --> T{"Learner answers"}:::person
+  T -->|"multiple choice or number"| LOCAL["Checked instantly in the browser,<br/>no AI call"]:::good
+  T -->|"written"| GR["AI marks it from 0 to 1 against<br/>the key points (keyword check<br/>if the AI is unavailable)"]:::ai
+  LOCAL --> REV["5. Shows the right answer, why,<br/>and a link to the exact video moment<br/>or PDF page it came from"]:::good
+  GR --> REV
 
-  subgraph READ["What the quiz may read"]
-    RNG["Open video: read everything watched,<br/>in order, no embedding<br/>store filter end_ms <= T + Python re-check"]
-    RNG --> BAL["Thin evenly over time to ~18k chars<br/>70% speech, 30% screen<br/>shifted per attempt (New quiz)"]
-    DOC["Open document: gated vector search"]
-    DONE["Materials marked done:<br/>vector search, same gate at end of time"]
-  end
-
-  SC --> RNG
-  SC --> DOC
-  SC --> DONE
-  BAL --> GEN
-  DOC --> GEN
-  DONE --> GEN
-  GEN["ONE model call writes the quiz as JSON<br/>Gemini first (~15 s end to end), Nemotron fallback<br/>passages tagged open / speech / screen<br/>half the questions conceptual"]
-  GEN --> VAL{"Per question: well-formed and<br/>chunk_id in the passages sent?"}
-  VAL -->|"no"| DROP["Dropped, never repaired"]
-  VAL -->|"yes"| SHUF["MCQ options shuffled<br/>numerical tolerance floor 1%"]
-  SHUF --> NONE{"Any question left?"}
-  NONE -->|"no"| RF["Refused: try again"]
-  NONE -->|"yes"| UI["Quiz tab<br/>answers sent but hidden"]
-
-  subgraph GRADE["Checking an answer (Submit)"]
-    T{"Question type"}
-    T -->|"MCQ / numerical"| LOCAL["Checked in the browser<br/>no request, no model call"]
-    T -->|"written"| GR["POST /quiz/grade<br/>question + model answer + key points<br/>learner text as untrusted data"]
-    GR --> GM["Model scores 0..1<br/>verdict from score: correct / partial / incorrect"]
-    GM -->|"model unavailable"| KW["Fallback: key-point word match"]
-  end
-
-  UI --> T
-  LOCAL --> REV["Reveal: right answer, explanation,<br/>clickable source (video moment or PDF page)"]
-  GM --> REV
-  KW --> REV
+  classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
+  classDef server fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:1.5px
+  classDef ai fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px
+  classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:1.5px
+  classDef check fill:#ffffff,stroke:#dc2626,color:#7f1d1d,stroke-width:2px
+  classDef good fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:2px
+  classDef stop fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:1.5px
 ```
 
 - **Same gates as chat.** The quiz never sees past the playhead, never reads a
@@ -306,20 +381,25 @@ The lesson page shows the open material beside the tutor. Clicking a citation
 shows exactly what it cites.
 
 ```mermaid
+%%{init: {"theme": "base", "fontFamily": "Arial, Helvetica, sans-serif", "themeVariables": {"fontSize": "16px", "fontFamily": "Arial, Helvetica, sans-serif", "lineColor": "#64748b", "primaryTextColor": "#0f172a"}, "flowchart": {"curve": "basis", "padding": 14, "wrappingWidth": 340}}}%%
 flowchart TD
-  CL["Course checklist<br/>materials marked done"]
-  CH["Chat tab<br/>several chats: new, switch, rename, delete"]
-  QZ["Quiz tab"]
-  CL -->|"completed_resource_ids"| API["POST /chat, /quiz<br/>server intersects with the grant"]
+  CL["Course checklist<br/>tick a material as done"]:::person
+  CH["Chat tab<br/>several separate chats"]:::person
+  QZ["Quiz tab"]:::person
+  CL -->|"done materials can be<br/>read in full"| API["Our server<br/>never goes beyond what<br/>this learner was given"]:::server
   CH --> API
   QZ --> API
-  API --> CIT["Answer or quiz question<br/>with validated citations"]
-  CIT -->|"click: video passage"| SEEK["Seek to start_ms, draw the cited<br/>span as a band on the scrub bar"]
-  CIT -->|"click: live frame"| LIVE["Seek to the captured moment"]
-  CIT -->|"click: PDF page of the open document"| HL["Open the page, highlight the cited text<br/>(matched on letters and digits)"]
-  SEEK --> V["Video player"]
-  LIVE --> V
-  HL --> DOCV["PDF viewer (react-pdf)<br/>slides via Office Online, images inline"]
+  API --> CIT["Answer or quiz question<br/>with its sources"]:::good
+  CIT -->|"click a video source"| SEEK["Video jumps to that moment;<br/>the quoted span is marked<br/>on the timeline"]:::person
+  CIT -->|"click a PDF source"| HL["PDF opens on that page with<br/>the quoted sentence highlighted"]:::person
+
+  classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
+  classDef server fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:1.5px
+  classDef ai fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px
+  classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:1.5px
+  classDef check fill:#ffffff,stroke:#dc2626,color:#7f1d1d,stroke-width:2px
+  classDef good fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:2px
+  classDef stop fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:1.5px
 ```
 
 - **Several chats per session.** Each chat (`thread_id`) has its own history;
@@ -334,6 +414,60 @@ flowchart TD
   finds it on the cited page by comparing letters and digits only, so line
   breaks, hyphenation and ligatures do not stop the match (93 of the UNIT-1
   PDF's 97 chunks match in full, the rest partly, none missed).
+
+## (f) Developer view: the live pipeline trace
+
+A **Developer view** button in the app's header opens `/dev` in its own window.
+It shows, live and animated, each step the server takes for an upload, a
+question or a quiz: where the step ran, how long it took, and the data it
+carried.
+
+```mermaid
+%%{init: {"theme": "base", "fontFamily": "Arial, Helvetica, sans-serif", "themeVariables": {"fontSize": "16px", "fontFamily": "Arial, Helvetica, sans-serif", "lineColor": "#64748b", "primaryTextColor": "#0f172a"}, "flowchart": {"curve": "basis", "padding": 14, "wrappingWidth": 340}}}%%
+flowchart LR
+  subgraph APP["While the app is used"]
+    U["Teacher uploads, or learner<br/>asks a question or a quiz"]:::person
+    S["Each step on the server notes<br/>what it did, where it ran,<br/>how long it took, and the data"]:::server
+  end
+  M[("Recent steps kept in<br/>the server's memory")]:::store
+  subgraph DEV["Developer view (separate window)"]
+    P["Checks for new steps<br/>a few times a second"]:::person
+    DIA["Animated diagram: a dot travels<br/>between steps, each step lights up,<br/>then gets a tick and its time"]:::good
+    INS["Inspector: the real data, e.g. the<br/>pieces found, the spoiler check,<br/>and which sources were confirmed"]:::good
+  end
+  U --> S --> M --> P
+  P --> DIA
+  P --> INS
+
+  classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
+  classDef server fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:1.5px
+  classDef ai fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px
+  classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:1.5px
+  classDef check fill:#ffffff,stroke:#dc2626,color:#7f1d1d,stroke-width:2px
+  classDef good fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:2px
+  classDef stop fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:1.5px
+```
+
+- **What is recorded.** `app/devtrace.py` records one event per step: the
+  ingest stages (read, transcribe, describe frames, chunk, embed, store), and
+  for a question the session check, the agent-or-classic choice, the query, the
+  embedding, the vector search, the strict-T gate (with every passage kept and
+  its time range), the model call, citation validation and the reply. Events
+  carry ids, times, counts and short text previews, never keys or full prompts.
+- **How it gets to the page.** Events sit in a bounded in-memory ring buffer
+  (4,000 events) on the API. `GET /dev/trace?after=<seq>` returns the new ones;
+  the page polls it every 0.8 s and plays them in order, so a fast answer is
+  still readable step by step. **Replay** re-animates any past run.
+- **The diagram.** Steps sit in rows by where they run (browser, server, AI
+  models, vector database). Lines leave and enter boxes at their sides and are
+  routed around every other box. Steps can be dragged within their row, and the
+  layout is saved per browser. There are dark and light themes.
+- **Recording never changes behaviour.** No trace call can raise into the
+  pipeline it observes, and the gate it reports is the same gate that ran
+  (`tests/test_devtrace.py`).
+- **Limits.** Anyone who can reach the API can read the trace, and a restart
+  clears it. `DEV_TRACE=false` turns recording off. See
+  [FUTURE_SCOPE.md](FUTURE_SCOPE.md).
 
 ## Safety invariants
 
