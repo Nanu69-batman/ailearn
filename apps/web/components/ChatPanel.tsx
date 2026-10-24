@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { ChatMessage, ChatMode, LiveFrameCapture } from "../lib/api";
 import {
   ApiError,
@@ -47,6 +47,15 @@ interface ChatPanelProps {
   completedResourceIds?: string[];
   offline: boolean;
   onRejoin?: () => void;
+  /**
+   * Fill the parent's height: the messages scroll inside the panel and the
+   * composer stays at the bottom. The parent must give the panel a height.
+   */
+  fill?: boolean;
+  /** Before the avatar, e.g. a drag handle. */
+  headerLead?: ReactNode;
+  /** Right end of the header, e.g. window buttons. */
+  headerActions?: ReactNode;
 }
 
 function newId(): string {
@@ -111,6 +120,9 @@ export default function ChatPanel({
   completedResourceIds = [],
   offline,
   onRejoin,
+  fill = false,
+  headerLead,
+  headerActions,
 }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [historyState, setHistoryState] = useState<"loading" | "ready" | "error">("loading");
@@ -141,6 +153,7 @@ export default function ChatPanel({
   // is reported and nothing is substituted in its place.
   const [frameError, setFrameError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // ---- Chats -------------------------------------------------------------
@@ -266,7 +279,10 @@ export default function ChatPanel({
   }, [sessionId, sessionToken, offline, threadId]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    // Filling a window: scroll the message box only, never the page around it.
+    const box = scrollRef.current;
+    if (box) box.scrollTo({ top: box.scrollHeight, behavior: "smooth" });
+    else bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, sending, preview]);
 
   // Auto-grow the textarea up to ~6 lines, then scroll inside it.
@@ -442,9 +458,13 @@ export default function ChatPanel({
   }
 
   return (
-    <section className="flex flex-col rounded-xl border border-gray-200 bg-white p-4 shadow-sm" aria-label="Chat with video">
+    <section
+      className={`flex flex-col rounded-xl border border-gray-200 bg-white p-4 shadow-sm ${fill ? "h-full min-h-0" : ""}`}
+      aria-label="Chat with video"
+    >
       <div className="mb-3 flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2.5">
+          {headerLead}
           <div
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 text-sm font-semibold text-white shadow-sm"
             aria-hidden="true"
@@ -460,7 +480,10 @@ export default function ChatPanel({
             </p>
           </div>
         </div>
-        {offline && <span className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-xs text-amber-600">offline mock</span>}
+        <div className="flex shrink-0 items-center gap-2">
+          {offline && <span className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-xs text-amber-600">offline mock</span>}
+          {headerActions}
+        </div>
       </div>
 
       <div className="mb-3 flex rounded-xl bg-gray-100 p-1" role="tablist" aria-label="Tutor view">
@@ -481,7 +504,7 @@ export default function ChatPanel({
       </div>
 
       {/* Both stay mounted so switching tabs keeps the chat and an unfinished quiz. */}
-      <div className={tab === "quiz" ? "" : "hidden"} role="tabpanel" aria-label="Quiz">
+      <div className={tab === "quiz" ? (fill ? "min-h-0 flex-1 overflow-y-auto pr-1" : "") : "hidden"} role="tabpanel" aria-label="Quiz">
         <QuizPanel
           sessionId={sessionId}
           sessionToken={sessionToken}
@@ -534,6 +557,7 @@ export default function ChatPanel({
         </div>
       )}
 
+      <div ref={fill ? scrollRef : undefined} className={fill ? "mt-3 min-h-0 flex-1 overflow-y-auto pr-1" : "contents"}>
       {historyState === "loading" && (
         <div className="mt-3 text-sm text-gray-400" role="status">
           Loading conversation…
@@ -553,8 +577,10 @@ export default function ChatPanel({
           openDoc={openDoc}
           onSuggest={(text) => (/^quiz me/i.test(text) ? setTab("quiz") : void send(text))}
           suggestDisabled={sending || sessionExpired}
+          fill={fill}
         />
       )}
+      </div>
 
       {sendError && !sessionExpired && (
         <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700" role="alert">
