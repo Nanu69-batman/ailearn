@@ -242,6 +242,12 @@ async def _answer(body: ChatRequest) -> ChatResponse:
             # (gated at the playhead), plus whatever was marked done.
             focus_resource_id=body.video_id,
             completed_resource_ids=body.completed_resource_ids,
+            # Only sent when narrowing, so services without the option still work.
+            **(
+                {"scope_resource_ids": body.scope_resource_ids}
+                if body.scope_resource_ids is not None
+                else {}
+            ),
         )
     except SessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail="session not found") from exc

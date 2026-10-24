@@ -210,6 +210,11 @@ export interface ChatRequest {
    * with the session grant, so this can never reach an ungranted material.
    */
   completed_resource_ids?: string[];
+  /**
+   * Narrows the session grant to these materials (a subject's), for a chat
+   * not tied to one open material. Intersected server-side: never widens it.
+   */
+  scope_resource_ids?: string[];
 }
 
 export type CitationSourceType =

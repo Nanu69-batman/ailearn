@@ -214,6 +214,12 @@ class _EmbedderFunction:
         return "ailearn"
 
 
+#: Course id of a session that spans courses (the Malai chat, which covers
+#: every subject). It drops only the course clause: the granted resource list,
+#: which is the actual authorization, and the strict-T gate still apply.
+ANY_COURSE = "*"
+
+
 def build_where(
     *,
     course_id: str,
@@ -244,9 +250,10 @@ def build_where(
     # would hand back the whole corpus.
     if not granted:
         return {"resource_id": {"$in": ["__no_granted_resource__"]}}
+    course_clause = [] if course_id == ANY_COURSE else [{"course_id": {"$eq": course_id}}]
     return {
         "$and": [
-            {"course_id": {"$eq": course_id}},
+            *course_clause,
             {"resource_id": {"$in": granted}},
             {
                 "$or": [

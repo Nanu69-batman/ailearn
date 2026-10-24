@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  Suspense,
   useCallback,
   useEffect,
   useRef,
@@ -9,6 +10,8 @@ import {
 } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { DASHBOARD_PATH, LEARNER_NAME, SUBJECTS_PATH } from "@/lib/learn";
+import { MALAI_PATH } from "@/lib/malai";
+import MalaiSidebar from "@/components/MalaiSidebar";
 
 /**
  * The chrome every route inside the `(learn)` group shares: sidebar, mobile
@@ -33,7 +36,7 @@ type NavItem = {
 const NAV_ITEMS: ReadonlyArray<NavItem> = [
   { label: "Dashboard", icon: "M3 12l9-9 9 9M5 10v10h5v-6h4v6h5V10", implemented: true, href: DASHBOARD_PATH, activePrefix: DASHBOARD_PATH },
   { label: "My Subjects", icon: "M4 19.5A2.5 2.5 0 016.5 17H20V4H6.5A2.5 2.5 0 004 6.5v13zM4 19.5A2.5 2.5 0 006.5 22H20v-5", implemented: true, href: SUBJECTS_PATH, activePrefix: SUBJECTS_PATH },
-  { label: "Malai", icon: "M12 2a7 7 0 00-7 7c0 2.4 1.2 4.5 3 5.7V17a2 2 0 002 2h4a2 2 0 002-2v-2.3c1.8-1.2 3-3.3 3-5.7a7 7 0 00-7-7zM9 22h6", implemented: false },
+  { label: "Malai", icon: "M12 2a7 7 0 00-7 7c0 2.4 1.2 4.5 3 5.7V17a2 2 0 002 2h4a2 2 0 002-2v-2.3c1.8-1.2 3-3.3 3-5.7a7 7 0 00-7-7zM9 22h6", implemented: true, href: MALAI_PATH, activePrefix: MALAI_PATH },
   { label: "Practice", icon: "M9 11l3 3L22 4M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11", implemented: false },
   { label: "Progress", icon: "M3 3v18h18M7 14l4-4 4 4 5-6", implemented: false },
   { label: "Resources", icon: "M4 4h16v16H4zM4 9h16M9 4v5", implemented: false },
@@ -53,6 +56,8 @@ const SIDEBAR_FOOTER: ReadonlyArray<NavItem> = [
 const SIDEBAR_ID = "learn-sidebar";
 const SIDEBAR_RAIL_CLASS = "w-14";
 const SIDEBAR_EXPANDED_CLASS = "w-60";
+/** Malai's chat list needs more room than the app navigation. */
+const SIDEBAR_MALAI_CLASS = "w-80";
 const SIDEBAR_COLLAPSED_KEY = "ailearn.sidebar_collapsed";
 /** Small-screen drawer. Independent of the desktop rail state on purpose. */
 const DRAWER_ID = "learn-mobile-drawer";
@@ -112,6 +117,18 @@ export default function LearnShell({ children }: { children: ReactNode }) {
    * reach the nav on a phone. At `md` and up this is ignored entirely.
    */
   const [drawerOpen, setDrawerOpen] = useState(false);
+  /**
+   * On /malai the sidebar shows Malai's chats. "Back to main sidebar" swaps in
+   * the app navigation; the Malai item swaps the chats back. Every arrival on
+   * a page starts from that page's own sidebar.
+   */
+  const onMalai = pathname.startsWith(MALAI_PATH);
+  const [mainOnMalai, setMainOnMalai] = useState(false);
+  useEffect(() => {
+    setMainOnMalai(false);
+  }, [onMalai]);
+  const showMalai = onMalai && !mainOnMalai;
+  const backToMain = useCallback(() => setMainOnMalai(true), []);
   const drawerRef = useRef<HTMLDivElement | null>(null);
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
 
@@ -256,6 +273,11 @@ export default function LearnShell({ children }: { children: ReactNode }) {
             // above is never torn down.
             if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
             e.preventDefault();
+            // Already in Malai: bring its chats back, keeping the open chat.
+            if (item.href === MALAI_PATH && onMalai) {
+              setMainOnMalai(false);
+              return;
+            }
             router.push(item.href as string);
           }}
           aria-current={active ? "page" : undefined}
@@ -295,9 +317,23 @@ export default function LearnShell({ children }: { children: ReactNode }) {
           className={[
             "sticky top-0 hidden h-screen shrink-0 flex-col overflow-y-auto bg-[#1a1f3a] text-gray-300",
             "transition-[width] duration-200 md:flex",
-            sidebarCollapsed ? SIDEBAR_RAIL_CLASS : SIDEBAR_EXPANDED_CLASS,
+            sidebarCollapsed
+              ? SIDEBAR_RAIL_CLASS
+              : showMalai
+                ? SIDEBAR_MALAI_CLASS
+                : SIDEBAR_EXPANDED_CLASS,
           ].join(" ")}
         >
+          {showMalai ? (
+            <Suspense fallback={null}>
+              <MalaiSidebar
+                collapsed={sidebarCollapsed}
+                onToggleCollapse={toggleSidebar}
+                onBack={backToMain}
+              />
+            </Suspense>
+          ) : (
+          <>
           {/* Brand row. Expanded: logo, name, collapse arrow on the right.
               Rail: the logo itself is the expand button and turns into the
               arrow on hover/focus. */}
@@ -383,13 +419,15 @@ export default function LearnShell({ children }: { children: ReactNode }) {
           >
             {SIDEBAR_FOOTER.map((item) => renderNavItem(item, sidebarCollapsed))}
           </nav>
+          </>
+          )}
         </aside>
 
         {/* Small-screen-only drawer. `md:hidden` means the persistent sidebar
             above is untouched at `md` and up; this is an addition, never a
             replacement. Stays mounted so the slide animates both ways, and is
             hidden from AT while closed. */}
-        <div className="fixed inset-0 z-40 md:hidden" aria-hidden={!drawerOpen}>
+        <div className="pointer-events-none fixed inset-0 z-40 md:hidden" aria-hidden={!drawerOpen}>
           <div
             onClick={closeDrawer}
             className={[
@@ -416,6 +454,17 @@ export default function LearnShell({ children }: { children: ReactNode }) {
                 : "pointer-events-none invisible -translate-x-full",
             ].join(" ")}
           >
+            {showMalai ? (
+              <Suspense fallback={null}>
+                <MalaiSidebar
+                  collapsed={false}
+                  onToggleCollapse={closeDrawer}
+                  onBack={backToMain}
+                  onNavigate={closeDrawer}
+                />
+              </Suspense>
+            ) : (
+            <>
             <div className="flex items-center justify-between gap-3 px-5 py-6">
               <div className="flex min-w-0 items-center gap-3">
                 <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 text-lg font-bold text-white">
@@ -476,6 +525,8 @@ export default function LearnShell({ children }: { children: ReactNode }) {
             >
               {SIDEBAR_FOOTER.map((item) => renderNavItem(item, false))}
             </nav>
+            </>
+            )}
           </div>
         </div>
 

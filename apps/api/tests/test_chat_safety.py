@@ -1730,3 +1730,36 @@ def test_gate_filter_unchanged():
     )
     assert "start_ms" not in repr(later)
     assert {"end_ms": {"$lte": 650_000}} in later["$and"][2]["$or"][1]["$and"]
+
+
+def test_subject_scope_only_narrows_the_grant():
+    """``scope_resource_ids`` intersects the grant: it can drop, never add."""
+    from app.chat.service import narrow_session
+    from app.chat.sessions import Session
+
+    session = Session(
+        id="s", learner_id="l", course_id="c", resource_id="r1",
+        lesson_id=None, resource_scope=["r1", "r2"], current_time_ms=0,
+    )
+    assert narrow_session(session, None) is session
+    assert narrow_session(session, ["r2"]).resource_scope == ["r2"]
+    # An ungranted id is ignored, not added.
+    assert narrow_session(session, ["r2", "r_other"]).resource_scope == ["r2"]
+    assert narrow_session(session, []).resource_scope == []
+    # The stored session is never modified.
+    assert session.resource_scope == ["r1", "r2"]
+
+
+def test_any_course_session_keeps_scope_and_time_gate():
+    """A cross-subject session drops only the course clause."""
+    from app.retrieval.store import ANY_COURSE
+
+    where = build_where(course_id=ANY_COURSE, resource_scope=["r1"], current_time_ms=5000)
+    clauses = where["$and"]
+    assert {"resource_id": {"$in": ["r1"]}} in clauses
+    assert not any("course_id" in c for c in clauses)
+    # The strict-T arm is still there, unchanged.
+    assert any("$or" in c for c in clauses)
+    # An empty grant still matches nothing.
+    empty = build_where(course_id=ANY_COURSE, resource_scope=[], current_time_ms=0)
+    assert empty == {"resource_id": {"$in": ["__no_granted_resource__"]}}

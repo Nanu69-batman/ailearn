@@ -64,6 +64,12 @@ class ChatRequest(BaseModel):
     completed_resource_ids: list[Annotated[str, Field(max_length=64)]] = Field(
         default_factory=list, max_length=100
     )
+    #: Narrows the session grant to these materials (e.g. one subject's), for a
+    #: chat that is not tied to one open material. Intersected with the grant
+    #: server-side: it can only ever remove materials, never add one.
+    scope_resource_ids: list[Annotated[str, Field(max_length=64)]] | None = Field(
+        default=None, max_length=256
+    )
 
 
 #: What kind of signal a citation was drawn from, for material where that

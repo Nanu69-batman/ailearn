@@ -16,6 +16,8 @@ interface MessageListProps {
   onSuggest?: (text: string) => void;
   /** Disables the suggestion chips, e.g. while a message is in flight. */
   suggestDisabled?: boolean;
+  /** Grow with the page instead of scrolling inside a fixed-height box. */
+  fill?: boolean;
 }
 
 const SUGGESTIONS = [
@@ -49,7 +51,7 @@ function KindPill({ kind }: { kind?: MessageKind }) {
     return (
       <span className="mb-1.5 inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
         <span className="h-1.5 w-1.5 rounded-full bg-amber-500" aria-hidden="true" />
-        General knowledge · not from the video
+        General knowledge · not from your materials
       </span>
     );
   }
@@ -78,7 +80,7 @@ function Citations({
   );
 }
 
-export default function MessageList({ messages, loading, preview, onSeek, openDoc, onSuggest, suggestDisabled }: MessageListProps) {
+export default function MessageList({ messages, loading, preview, onSeek, openDoc, onSuggest, suggestDisabled, fill = false }: MessageListProps) {
   if (messages.length === 0 && !loading) {
     return (
       <div className="mt-3 rounded-xl border border-dashed border-gray-300 p-5 text-center text-sm">
@@ -105,7 +107,7 @@ export default function MessageList({ messages, loading, preview, onSeek, openDo
     );
   }
   return (
-    <div className="mt-3 flex max-h-[60vh] flex-col gap-3 overflow-y-auto pr-1" aria-live="polite">
+    <div className={fill ? "flex flex-col gap-4" : "mt-3 flex max-h-[60vh] flex-col gap-3 overflow-y-auto pr-1"} aria-live="polite">
       {messages.map((m) =>
         m.role === "user" ? (
           <div

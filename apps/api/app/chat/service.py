@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 from collections.abc import Sequence
 
@@ -110,6 +111,21 @@ def effective_resource_scope(
     if focus_resource_id:
         granted = [r for r in granted if r == focus_resource_id]
     return granted
+
+
+def narrow_session(session, scope_resource_ids: Sequence[str] | None):
+    """The session with its grant narrowed to ``scope_resource_ids``.
+
+    ``None`` means no narrowing. Otherwise the grant is INTERSECTED with the
+    list, so a caller can only drop materials from what it was granted. The
+    stored session is untouched; this copy lives for one request.
+    """
+    if session is None or scope_resource_ids is None:
+        return session
+    wanted = set(scope_resource_ids)
+    return dataclasses.replace(
+        session, resource_scope=[r for r in session.resource_scope if r in wanted]
+    )
 
 
 def apply_strict_timestamp(passages: Sequence, current_time_ms: int, mode: str):
@@ -245,12 +261,13 @@ class ChatService:
         live_frame=None,
         no_frame_note: str | None = None,
         completed_resource_ids: Sequence[str] = (),
+        scope_resource_ids: Sequence[str] | None = None,
     ) -> ChatResponse:
         """Answer one learner question; flags ``visual_pending`` when visuals lag."""
         from app.chat.launch import clamp_current_time_ms
 
         visual_through: int | None = None
-        session = self._sessions.get(session_id)
+        session = narrow_session(self._sessions.get(session_id), scope_resource_ids)
         if session is not None:
             t_ms = clamp_current_time_ms(current_time_ms)
             allowed = effective_resource_scope(session.resource_scope, focus_resource_id)
@@ -280,6 +297,7 @@ class ChatService:
                 no_frame_note=no_frame_note,
                 visual_through=visual_through,
                 completed_resource_ids=completed_resource_ids,
+                scope_resource_ids=scope_resource_ids,
             )
         except BaseException as exc:
             devtrace.end_run(token, "error", data={"error": type(exc).__name__})
@@ -321,6 +339,7 @@ class ChatService:
         no_frame_note: str | None = None,
         visual_through: int | None = None,
         completed_resource_ids: Sequence[str] = (),
+        scope_resource_ids: Sequence[str] | None = None,
     ) -> ChatResponse:
         """Answer one learner question.
 
@@ -340,7 +359,7 @@ class ChatService:
         """
         from app.chat.launch import clamp_current_time_ms
 
-        session = self._sessions.get(session_id)
+        session = narrow_session(self._sessions.get(session_id), scope_resource_ids)
         if session is None:
             raise SessionNotFoundError(session_id)
 
