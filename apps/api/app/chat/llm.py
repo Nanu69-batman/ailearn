@@ -31,7 +31,12 @@ class LLMResult:
 async def _traced(label: str, impl, *, system: str, user_prompt: str, passages: Sequence, mode: str):
     """Run one provider call inside a developer-view trace span."""
     from app import devtrace
+    from app.chat import streaming
 
+    sink = streaming.current()
+    if sink is not None:
+        sink.reset()
+        sink.status("Writing the answer")
     with devtrace.span(
         "llm", title="Generate the answer", at=label,
         data={
@@ -43,6 +48,10 @@ async def _traced(label: str, impl, *, system: str, user_prompt: str, passages: 
         },
     ) as out:
         result = await impl(system=system, user_prompt=user_prompt, passages=passages, mode=mode)
+        if sink is not None and sink.deltas_since_reset == 0:
+            # A provider that does not stream (the stub, a cache hit) still
+            # shows its reply, all at once.
+            sink.delta(result.text)
         out["reply"] = devtrace.preview(result.text, 260)
         out["cited_ids"] = list(result.cited_ids)[:10]
         return result
@@ -235,18 +244,32 @@ class GeminiChatLLM:
                 )
         # Never log or echo the key; the client holds it in memory only.
         client = genai.Client(api_key=self._api_key)
-        # The SDK call is blocking. On a worker thread, so a 20-40 s answer
+        config = types.GenerateContentConfig(system_instruction=system, temperature=0.2)
+        from app.chat import streaming
+
+        sink = streaming.current()
+        # The SDK calls are blocking. On a worker thread, so a 20-40 s answer
         # does not freeze every other request on the server meanwhile.
-        resp = await asyncio.to_thread(
-            client.models.generate_content,
-            model=self._model,
-            contents=user_prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=system,
-                temperature=0.2,
-            ),
-        )
-        text = (resp.text or "").strip()
+        if sink is None:
+            resp = await asyncio.to_thread(
+                client.models.generate_content,
+                model=self._model,
+                contents=user_prompt,
+                config=config,
+            )
+            text = (resp.text or "").strip()
+        else:
+            def pull() -> str:
+                parts: list[str] = []
+                for chunk in client.models.generate_content_stream(
+                    model=self._model, contents=user_prompt, config=config
+                ):
+                    piece = chunk.text or ""
+                    parts.append(piece)
+                    sink.delta(piece)
+                return "".join(parts)
+
+            text = (await asyncio.to_thread(pull)).strip()
         result = LLMResult(text=text, cited_ids=extract_cited_ids(text))
         if cache_enabled():
             get_cache("chat").set(
