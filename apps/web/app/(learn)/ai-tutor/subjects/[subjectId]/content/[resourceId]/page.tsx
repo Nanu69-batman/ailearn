@@ -17,6 +17,7 @@ import {
 import type { PdfTarget } from "@/components/PdfView";
 import { useLearnSession } from "@/components/LearnSessionProvider";
 import { useCourseResources } from "@/components/useCourseResources";
+import { useStudyTracker } from "@/components/useStudyTracker";
 import {
   isApiConfigured,
   getSubjectResources,
@@ -302,6 +303,18 @@ export default function ContentPage() {
 
   const activeResourceId = selected ? selected.resourceId : null;
 
+  // Feeds the dashboard: last lesson opened, and time spent studying.
+  useStudyTracker(
+    subjectId && selected && selected.resourceId !== SAMPLE_CLIP_ID
+      ? {
+          subjectId,
+          subjectName: subject?.name ?? null,
+          resourceId: selected.resourceId,
+          title: selected.title,
+        }
+      : null,
+  );
+
   // Position heartbeat: tells the backend where a stream-mode video is being
   // watched so later windows are processed ahead. Throttled to ~10 s while
   // playing, immediate on seek, stopped once the server says "ready".
@@ -450,7 +463,7 @@ export default function ContentPage() {
         <div className="min-w-0 flex-1">
           <nav aria-label="Breadcrumb" className="mb-2 flex min-w-0 items-center gap-1.5 text-xs font-medium text-gray-500">
             <Link href={SUBJECTS_PATH} className="shrink-0 transition hover:text-violet-700">
-              Subjects
+              My subjects
             </Link>
             <span aria-hidden="true" className="text-gray-300">/</span>
             <Link href={subjectPath(subjectId)} className="min-w-0 truncate transition hover:text-violet-700">
@@ -617,7 +630,7 @@ export default function ContentPage() {
         <aside
           className={
             !immersive
-              ? "min-w-0 lg:sticky lg:top-20 lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:self-start"
+              ? "min-w-0 lg:sticky lg:top-6 lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:self-start"
               : `fixed inset-y-0 right-0 z-[61] w-full overflow-y-auto bg-white shadow-2xl transition-transform duration-300 ease-out sm:w-[400px] [&>section]:min-h-full [&>section]:rounded-none [&>section]:border-0 [&_[aria-live=polite]]:max-h-[calc(100dvh-220px)] ${
                   immersiveChat
                     ? "translate-x-0 animate-[immersive-chat-in_320ms_cubic-bezier(0.2,0.8,0.2,1)]"

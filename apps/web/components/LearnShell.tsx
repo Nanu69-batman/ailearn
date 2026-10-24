@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { DASHBOARD_PATH, SUBJECTS_PATH } from "@/lib/learn";
+import { DASHBOARD_PATH, LEARNER_NAME, SUBJECTS_PATH } from "@/lib/learn";
 
 /**
  * The chrome every route inside the `(learn)` group shares: sidebar, mobile
@@ -32,8 +32,8 @@ type NavItem = {
 
 const NAV_ITEMS: ReadonlyArray<NavItem> = [
   { label: "Dashboard", icon: "M3 12l9-9 9 9M5 10v10h5v-6h4v6h5V10", implemented: true, href: DASHBOARD_PATH, activePrefix: DASHBOARD_PATH },
-  { label: "My Courses", icon: "M4 19.5A2.5 2.5 0 016.5 17H20V4H6.5A2.5 2.5 0 004 6.5v13zM4 19.5A2.5 2.5 0 006.5 22H20v-5", implemented: false },
-  { label: "AI Tutor", icon: "M12 2a7 7 0 00-7 7c0 2.4 1.2 4.5 3 5.7V17a2 2 0 002 2h4a2 2 0 002-2v-2.3c1.8-1.2 3-3.3 3-5.7a7 7 0 00-7-7zM9 22h6", implemented: true, href: SUBJECTS_PATH, activePrefix: SUBJECTS_PATH },
+  { label: "My Subjects", icon: "M4 19.5A2.5 2.5 0 016.5 17H20V4H6.5A2.5 2.5 0 004 6.5v13zM4 19.5A2.5 2.5 0 006.5 22H20v-5", implemented: true, href: SUBJECTS_PATH, activePrefix: SUBJECTS_PATH },
+  { label: "Malai", icon: "M12 2a7 7 0 00-7 7c0 2.4 1.2 4.5 3 5.7V17a2 2 0 002 2h4a2 2 0 002-2v-2.3c1.8-1.2 3-3.3 3-5.7a7 7 0 00-7-7zM9 22h6", implemented: false },
   { label: "Practice", icon: "M9 11l3 3L22 4M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11", implemented: false },
   { label: "Progress", icon: "M3 3v18h18M7 14l4-4 4 4 5-6", implemented: false },
   { label: "Resources", icon: "M4 4h16v16H4zM4 9h16M9 4v5", implemented: false },
@@ -42,6 +42,10 @@ const NAV_ITEMS: ReadonlyArray<NavItem> = [
 const SIDEBAR_BOTTOM: ReadonlyArray<NavItem> = [
   { label: "Calendar", icon: "M8 2v4M16 2v4M3 9h18M5 4h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V6a2 2 0 012-2z", implemented: false },
   { label: "Notifications", icon: "M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a1.65 1.65 0 01-3.4 0", implemented: false },
+];
+
+const SIDEBAR_FOOTER: ReadonlyArray<NavItem> = [
+  { label: "Profile", icon: "M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2M12 11a4 4 0 100-8 4 4 0 000 8z", implemented: false },
   { label: "Settings", icon: "M12 15a3 3 0 100-6 3 3 0 000 6zM19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1 1 0 00-1 1.51V21a2 2 0 11-4 0v-.09a1 1 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1 1 0 00-1.51-1H3a2 2 0 110-4h.09a1 1 0 001.51-1 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 00.33 1.82h.01a1 1 0 001-1.51V3a2 2 0 114 0v.09a1 1 0 001 1.51h.01a1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82v.01a1 1 0 001.51 1H21a2 2 0 110 4h-.09a1 1 0 00-1.51 1z", implemented: false },
 ];
 
@@ -289,7 +293,7 @@ export default function LearnShell({ children }: { children: ReactNode }) {
         <aside
           id={SIDEBAR_ID}
           className={[
-            "hidden min-h-screen shrink-0 flex-col bg-[#1a1f3a] text-gray-300",
+            "sticky top-0 hidden h-screen shrink-0 flex-col overflow-y-auto bg-[#1a1f3a] text-gray-300",
             "transition-[width] duration-200 md:flex",
             sidebarCollapsed ? SIDEBAR_RAIL_CLASS : SIDEBAR_EXPANDED_CLASS,
           ].join(" ")}
@@ -371,6 +375,13 @@ export default function LearnShell({ children }: { children: ReactNode }) {
             aria-label="Secondary"
           >
             {SIDEBAR_BOTTOM.map((item) => renderNavItem(item, sidebarCollapsed))}
+          </nav>
+          <div className="mx-5 mb-4 mt-auto border-t border-white/10" />
+          <nav
+            className={sidebarCollapsed ? "flex flex-col gap-1 px-2 pb-6" : "flex flex-col gap-1 px-3 pb-6"}
+            aria-label="Account"
+          >
+            {SIDEBAR_FOOTER.map((item) => renderNavItem(item, sidebarCollapsed))}
           </nav>
         </aside>
 
@@ -457,12 +468,20 @@ export default function LearnShell({ children }: { children: ReactNode }) {
             >
               {SIDEBAR_BOTTOM.map((item) => renderNavItem(item, false))}
             </nav>
+            <div className="mx-5 my-4 border-t border-white/10" />
+            <nav
+              className="flex flex-col gap-1 px-3 pb-6"
+              aria-label="Account"
+              onClick={closeDrawer}
+            >
+              {SIDEBAR_FOOTER.map((item) => renderNavItem(item, false))}
+            </nav>
           </div>
         </div>
 
         <div className="flex min-w-0 flex-1 flex-col">
           {/* Top bar */}
-          <header className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-gray-200/80 bg-white/85 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-white/70 sm:px-6">
+          <header className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-gray-200/80 bg-white/85 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-white/70 sm:px-6 md:hidden">
             <div className="flex items-center gap-3">
               {/* Below `md` the sidebar is `hidden`, so this is the only way to
                   reach the nav on a phone. Hidden from `md` up, where the
@@ -489,7 +508,7 @@ export default function LearnShell({ children }: { children: ReactNode }) {
                   <path d="M3 6h18M3 12h18M3 18h18" />
                 </svg>
               </button>
-              <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 text-base font-bold text-white md:hidden">
+              <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 text-base font-bold text-white">
                 M
               </span>
               {/* Brand label, not a heading: each page owns its own <h1>. */}
@@ -500,7 +519,7 @@ export default function LearnShell({ children }: { children: ReactNode }) {
               <input
                 id="top-search"
                 type="search"
-                placeholder="Search courses, topics, notes…"
+                placeholder="Search subjects, topics, notes…"
                 className="w-full max-w-md rounded-full border border-gray-200 bg-gray-100 px-4 py-2 text-sm text-gray-800 placeholder-gray-400 outline-none transition focus:border-violet-400 focus:bg-white focus:ring-2 focus:ring-violet-200"
               />
             </div>
@@ -527,13 +546,37 @@ export default function LearnShell({ children }: { children: ReactNode }) {
                 <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-violet-500" />
               </button>
               <div className="flex items-center gap-2">
-                <span className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-violet-100 to-indigo-100 text-sm font-bold text-violet-700 ring-2 ring-white">N</span>
-                <span className="hidden text-sm font-medium text-gray-800 sm:inline">Nimish</span>
+                <span className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-violet-100 to-indigo-100 text-sm font-bold text-violet-700 ring-2 ring-white">{LEARNER_NAME[0]}</span>
+                <span className="hidden text-sm font-medium text-gray-800 sm:inline">{LEARNER_NAME}</span>
               </div>
             </div>
           </header>
 
-          <main className="flex-1 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">{children}</main>
+          <main className="relative flex-1 px-4 py-6 sm:px-6 lg:px-10 lg:py-10">
+            {/* Desktop has no top bar: the developer view is a floating icon
+                button in the corner, labelled by its tooltip. */}
+            <div className="group absolute right-4 top-4 z-20 hidden md:block lg:right-6 lg:top-6">
+              <button
+                type="button"
+                onClick={() =>
+                  window.open("/dev", "malai-dev-view", "width=1440,height=900")
+                }
+                aria-label="Open the developer view: a live diagram of every pipeline step"
+                className="flex h-11 w-11 items-center justify-center rounded-full bg-violet-100 text-violet-700 shadow-sm transition hover:bg-violet-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5" aria-hidden="true">
+                  <path d="M15 18l6-6-6-6M9 6l-6 6 6 6" />
+                </svg>
+              </button>
+              <span
+                role="tooltip"
+                className="pointer-events-none absolute right-0 top-full mt-2 whitespace-nowrap rounded-md bg-gray-900 px-2.5 py-1.5 text-xs font-medium text-white opacity-0 shadow transition group-focus-within:opacity-100 group-hover:opacity-100"
+              >
+                Developer view
+              </span>
+            </div>
+            {children}
+          </main>
         </div>
       </div>
     </div>

@@ -116,8 +116,11 @@ export function resourceIcon(resource: CourseResource): string {
 /** Subjects overview. The landing page's only call to action. */
 export const DASHBOARD_PATH = "/dashboard";
 
-/** "AI Tutor" sidebar target: the list of subjects. */
+/** "My subjects" sidebar target: the list of subjects. */
 export const SUBJECTS_PATH = "/ai-tutor/subjects";
+
+/** The demo learner. There is no account system, so this is the one name shown. */
+export const LEARNER_NAME = "Nimish";
 
 export function subjectPath(subjectId: string): string {
   return `${SUBJECTS_PATH}/${encodeURIComponent(subjectId)}`;

@@ -23,7 +23,6 @@ import {
   type CourseResource,
 } from "@/lib/api";
 import {
-  DASHBOARD_PATH,
   SUBJECTS_PATH,
   contentPath,
   firstParam,
@@ -205,13 +204,13 @@ export default function SubjectPage() {
       {/* ---- Header ---------------------------------------------------- */}
       <header className="flex flex-col gap-4">
         <Link
-          href={DASHBOARD_PATH}
+          href={SUBJECTS_PATH}
           className="inline-flex w-fit items-center gap-1.5 rounded-lg text-sm font-medium text-gray-500 transition hover:text-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300"
         >
           <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M15 18l-6-6 6-6" />
           </svg>
-          Dashboard
+          My subjects
         </Link>
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
