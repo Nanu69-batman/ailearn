@@ -129,3 +129,26 @@ def test_does_not_refer_to_materials(text):
 
 def test_general_prompt_asks_for_markdown():
     assert FORMAT_RULE in GENERAL_SYSTEM
+
+
+def test_every_answer_prompt_follows_the_learners_language():
+    from app.chat.agent import build_agent_system
+    from app.chat.prompts import (
+        CONVERSATIONAL_SYSTEM,
+        LANGUAGE_RULE,
+        SUPPLEMENTAL_SYSTEM,
+        system_for_mode,
+    )
+
+    for system in (
+        GENERAL_SYSTEM,
+        SUPPLEMENTAL_SYSTEM,
+        CONVERSATIONAL_SYSTEM,
+        system_for_mode("qa"),
+        build_agent_system(60_000, "qa"),
+    ):
+        assert LANGUAGE_RULE in system
+
+
+def test_format_rule_marks_key_equations_large():
+    assert "\\large" in FORMAT_RULE

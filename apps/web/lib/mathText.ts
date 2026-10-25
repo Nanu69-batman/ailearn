@@ -10,6 +10,18 @@
  */
 const DOLLARS = "$$";
 
+/** A leading KaTeX size command. Key equations are marked with `\large`. */
+const SIZE = /^\\(tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|huge|Huge)(?![A-Za-z])\s*/;
+
+/** Any enlarging size becomes `\large`, so a key equation stands out without
+ *  dwarfing the answer; a shrinking one is dropped. */
+function keySize(body: string): string {
+  const m = SIZE.exec(body);
+  if (!m) return body;
+  const rest = body.slice(m[0].length);
+  return /large|huge/i.test(m[1]) ? "\\large " + rest : rest;
+}
+
 /** `\[x\]` and `\(x\)` into dollar delimiters. */
 function dollarDelimiters(prose: string): string {
   return prose
@@ -29,7 +41,7 @@ function displayBlocks(prose: string): string {
   return prose.replace(
     /\$\$([\s\S]+?)\$\$([.,;:])?/g,
     (_m, raw: string, punct: string | undefined, offset: number, whole: string) => {
-      const body = raw.trim();
+      const body = keySize(raw.trim());
       if (!body) return _m;
       const lineStart = whole.lastIndexOf("\n", offset - 1) + 1;
       const lineEnd = whole.indexOf("\n", offset);
@@ -40,7 +52,7 @@ function displayBlocks(prose: string): string {
       const indent = m[1] + " ".repeat(m[2]?.length ?? 0);
       const inSentence = before.length > m[0].length && after.trim().length > 0;
       if (inSentence && !raw.includes("\n") && body.length <= 24) {
-        return "$" + body + "$" + (punct ?? "");
+        return "$" + body.replace(SIZE, "") + "$" + (punct ?? "");
       }
       const blank = "\n" + indent.trimEnd() + "\n" + indent;
       // Opening a list item or quote ("1. $$…"), the fence starts right there.
@@ -52,10 +64,15 @@ function displayBlocks(prose: string): string {
 }
 
 export function normalizeMath(text: string): string {
-  if (!text.includes(DOLLARS) && !text.includes("\\(") && !text.includes("\\[")) return text;
+  if (!/\$\$|\\\(|\\\[|\$\\(?:large|Large|LARGE|huge|Huge)/.test(text)) return text;
   // Split out fenced blocks and inline code; only prose is rewritten.
   const parts = text.split(/(```[\s\S]*?(?:```|$)|`[^`\n]*`)/);
   return parts
-    .map((part, i) => (i % 2 === 1 ? part : displayBlocks(dollarDelimiters(part))))
+    .map((part, i) =>
+      i % 2 === 1
+        ? part
+        // Inline maths keeps the line height: size commands are display-only.
+        : displayBlocks(dollarDelimiters(part)).replace(/(^|[^$\\])\$\\(?:large|Large|LARGE|huge|Huge)(?![A-Za-z])\s*/g, "$1$"),
+    )
     .join("");
 }

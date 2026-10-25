@@ -43,6 +43,7 @@ from app.chat.intent import (
 from app.chat.prompts import (
     ANTI_SPOILER_RULE,
     FORMAT_RULE,
+    LANGUAGE_RULE,
     LATEX_RULE,
     REFUSAL_TEXT,
     SOURCE_NARRATION_RULE,
@@ -230,6 +231,8 @@ def build_agent_system(t_ms: int, mode: str, *, has_done: bool = False) -> str:
         + LATEX_RULE
         + "\n"
         + FORMAT_RULE
+        + "\n"
+        + LANGUAGE_RULE
         + "\n"
         + f"Answer style for this turn: {MODE_HINTS.get(mode, MODE_HINTS['qa'])}"
     )
