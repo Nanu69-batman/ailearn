@@ -20,6 +20,9 @@ COPY apps/api/migrations ./migrations
 COPY test-data/Partial-derivatives.mp4 ./data/assets/uploads/res_2e629d682a3d.mp4
 COPY test-data/UNIT-1-001.pdf ./data/assets/uploads/res_7c1f4a92d0e5.pdf
 COPY apps/api/deploy/seed/subjects.json ./data/subjects.json
+# Their chapters, written once against those same indexed chunks, so the
+# chapter panel is ready at once and no restart spends LLM calls on them.
+COPY apps/api/deploy/seed/chapters/ ./data/chapters/
 RUN chown -R appuser:appuser /srv/app
 
 USER appuser

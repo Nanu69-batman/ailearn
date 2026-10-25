@@ -1,0 +1,85 @@
+{
+ "resource_id": "res_7c1f4a92d0e5",
+ "source_type": "pdf",
+ "axis": "page",
+ "method": "llm",
+ "through": 41,
+ "through_ms": null,
+ "cover_end_ms": null,
+ "complete": true,
+ "generated_at": 1792956337,
+ "chapters": [
+  {
+   "title": "Functions of Several Variables",
+   "start_ms": null,
+   "end_ms": null,
+   "page_start": 1,
+   "page_end": 3,
+   "slide_start": null,
+   "slide_end": null
+  },
+  {
+   "title": "Partial Derivatives and Differentiability",
+   "start_ms": null,
+   "end_ms": null,
+   "page_start": 4,
+   "page_end": 4,
+   "slide_start": null,
+   "slide_end": null
+  },
+  {
+   "title": "Multivariable Chain Rule",
+   "start_ms": null,
+   "end_ms": null,
+   "page_start": 5,
+   "page_end": 5,
+   "slide_start": null,
+   "slide_end": null
+  },
+  {
+   "title": "Implicit Functions and Jacobians",
+   "start_ms": null,
+   "end_ms": null,
+   "page_start": 6,
+   "page_end": 6,
+   "slide_start": null,
+   "slide_end": null
+  },
+  {
+   "title": "Exact Differentials and Potential Functions",
+   "start_ms": null,
+   "end_ms": null,
+   "page_start": 7,
+   "page_end": 10,
+   "slide_start": null,
+   "slide_end": null
+  },
+  {
+   "title": "Integrating Factors for Differential Forms",
+   "start_ms": null,
+   "end_ms": null,
+   "page_start": 11,
+   "page_end": 13,
+   "slide_start": null,
+   "slide_end": null
+  },
+  {
+   "title": "Practice Problems and Worked Examples",
+   "start_ms": null,
+   "end_ms": null,
+   "page_start": 14,
+   "page_end": 34,
+   "slide_start": null,
+   "slide_end": null
+  },
+  {
+   "title": "Advanced Multivariable Calculus Exercises",
+   "start_ms": null,
+   "end_ms": null,
+   "page_start": 35,
+   "page_end": 41,
+   "slide_start": null,
+   "slide_end": null
+  }
+ ]
+}
