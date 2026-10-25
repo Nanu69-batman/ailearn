@@ -7,10 +7,14 @@ import {
   MAIN_THREAD_ID,
   formatApiError,
   getMessages,
+  postQuizNote,
   streamChat,
   type ChatMessage,
+  type ChatMode,
   type ChatRequest,
+  type QuizScope,
 } from "@/lib/api";
+import { detectQuizIntent } from "@/lib/quizIntent";
 import { LEARNER_NAME, resourceIcon, resourceKindLabel, toSelected } from "@/lib/learn";
 import {
   addChat,
@@ -31,6 +35,15 @@ import {
 } from "@/lib/malai";
 import Link from "next/link";
 import MessageList from "@/components/MessageList";
+import QuizPanel, { type QuizOutcome, type QuizPreset } from "@/components/QuizPanel";
+import {
+  SlashMenuList,
+  commandQuestion,
+  parseCommand,
+  quizFromCommand,
+  useSlashMenu,
+  type SlashContext,
+} from "@/components/SlashCommands";
 import { initials, subjectAccent } from "@/components/SubjectCard";
 import { useSubjects } from "@/components/useSubjects";
 
@@ -76,6 +89,7 @@ function Composer({
   placeholder,
   autoFocus,
   inputRef,
+  slashContext,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -85,7 +99,10 @@ function Composer({
   placeholder: string;
   autoFocus?: boolean;
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
+  /** What this chat can read; the commands are worded for it. */
+  slashContext: SlashContext;
 }) {
+  const slash = useSlashMenu(value, onChange, slashContext);
   // Grow with the text, up to a cap.
   useEffect(() => {
     const el = inputRef.current;
@@ -102,8 +119,19 @@ function Composer({
         e.preventDefault();
         if (canSend) onSend();
       }}
-      className="flex items-end gap-2 rounded-[1.75rem] border border-gray-200 bg-white py-2 pl-5 pr-2 shadow-lg shadow-violet-900/5 transition focus-within:border-violet-300 focus-within:ring-4 focus-within:ring-violet-100"
+      className="relative flex items-end gap-2 rounded-[1.75rem] border border-gray-200 bg-white py-2 pl-5 pr-2 shadow-lg shadow-violet-900/5 transition focus-within:border-violet-300 focus-within:ring-4 focus-within:ring-violet-100"
     >
+      {slash.menu && (
+        <SlashMenuList
+          menu={slash.menu}
+          active={slash.active}
+          onPick={(i) => {
+            slash.pick(i);
+            inputRef.current?.focus();
+          }}
+          onHover={slash.setActive}
+        />
+      )}
       <label className="sr-only" htmlFor="malai-input">Message Malai</label>
       <textarea
         id="malai-input"
@@ -113,12 +141,18 @@ function Composer({
         autoFocus={autoFocus}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => {
+          if (slash.onKeyDown(e)) return;
           if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
             e.preventDefault();
             if (canSend) onSend();
           }
         }}
         placeholder={placeholder}
+        autoComplete="off"
+        role="combobox"
+        aria-expanded={slash.menu !== null}
+        aria-controls={slash.menu ? "slash-menu" : undefined}
+        aria-activedescendant={slash.menu ? `slash-opt-${slash.active}` : undefined}
         className="max-h-[180px] min-h-[2.75rem] flex-1 resize-none bg-transparent py-2.5 text-[15px] text-gray-900 placeholder-gray-400 outline-none"
       />
       <button
@@ -156,6 +190,12 @@ export default function MalaiChatView() {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   /** The chat this view just created: its messages are already on screen. */
   const createdHere = useRef<string | null>(null);
+  // The quiz panel beside the chat: the chat it belongs to (whose session it
+  // uses and where its events are written), and whether it is showing. It
+  // stays mounted while hidden, so an unfinished quiz survives a close.
+  const [quizChat, setQuizChat] = useState<MalaiChat | null>(null);
+  const [quizOpen, setQuizOpen] = useState(false);
+  const [quizPreset, setQuizPreset] = useState<QuizPreset | null>(null);
 
   useEffect(() => setMounted(true), []);
 
@@ -163,11 +203,18 @@ export default function MalaiChatView() {
   const known = (id: string | null) => (id && subjects.some((s) => s.id === id) ? id : null);
   const subjectId = chat ? known(chat.subjectId) : known(pageSubjectId);
   const subject = subjects.find((s) => s.id === subjectId) ?? null;
+  const slashContext: SlashContext = subject ? "subject" : "general";
 
   // Load the open chat's history whenever the chat changes.
   const chatSession = chat ? `${chat.sessionId}|${chat.threadId}|${chat.sessionToken}` : null;
   useEffect(() => {
     setError(null);
+    // Another chat, or a new one: the open quiz belongs to the old chat.
+    if (chatId === null || chatId !== createdHere.current) {
+      setQuizChat(null);
+      setQuizOpen(false);
+      setQuizPreset(null);
+    }
     if (!chatId) {
       createdHere.current = null;
       setMessages([]);
@@ -215,16 +262,29 @@ export default function MalaiChatView() {
   }, [messages.length, preview?.text]);
 
   const send = useCallback(async () => {
-    const text = draft.trim();
-    if (!text || loading) return;
+    const typed = draft.trim();
+    if (!typed || loading) return;
     if (subject && (subject.resource_count ?? 0) === 0) {
       setError(`“${subject.name}” has no materials yet. Add some to it, or start a chat outside the subject.`);
       return;
     }
+    // A slash command sets the answer style, or opens a quiz; so does a
+    // message that asks for a quiz in so many words ("quiz me on entropy").
+    const cmd = parseCommand(typed, slashContext);
+    const intent = cmd ? null : detectQuizIntent(typed);
+    const quizAsk = cmd?.command.quiz
+      ? { ...quizFromCommand(cmd.command, cmd.rest), request: cmd.rest ? `Quiz me: ${cmd.rest}` : "Quiz me" }
+      : intent
+        ? { ...intent, request: typed }
+        : null;
+    const mode: ChatMode = cmd?.command.mode ?? "qa";
+    const text = quizAsk ? quizAsk.request : cmd ? commandQuestion(cmd.command, cmd.rest) : typed;
     setError(null);
     setDraft("");
-    setLoading(true);
-    setPreview({ status: null, text: "" });
+    if (!quizAsk) {
+      setLoading(true);
+      setPreview({ status: null, text: "" });
+    }
     setMessages((prev) => [
       ...prev,
       { id: newMessageId(), role: "user", content: text, citations: [], created_at: new Date().toISOString() },
@@ -251,6 +311,15 @@ export default function MalaiChatView() {
         window.history.replaceState(null, "", malaiChatPath(current.id));
       }
 
+      if (quizAsk) {
+        // The quiz is written in the panel; the chat records it when it is.
+        setQuizChat(current);
+        setQuizPreset({ ...quizAsk, nonce: Date.now() });
+        setQuizOpen(true);
+        updateChat(current.id, { updatedAt: Date.now(), preview: titleFrom(text) });
+        return;
+      }
+
       const ask = (c: MalaiChat) => {
         const req: ChatRequest = {
           session_id: c.sessionId,
@@ -258,7 +327,7 @@ export default function MalaiChatView() {
           thread_id: c.threadId === MAIN_THREAD_ID ? undefined : c.threadId,
           current_time_ms: 0,
           message: text,
-          mode: "qa",
+          mode,
           completed_resource_ids: doneResourceIds(subject ? [subject] : subjects),
           // No subject: a general chat; materials are read only when asked for.
           ...(subject ? { scope_resource_ids: subject.resource_ids ?? [] } : { general: true }),
@@ -300,7 +369,65 @@ export default function MalaiChatView() {
       setLoading(false);
       setPreview(null);
     }
-  }, [draft, loading, subject, subjects, chat]);
+  }, [draft, loading, subject, subjects, chat, slashContext]);
+
+  /** What a quiz from this chat may draw from: the chat's own reach. */
+  const quizScope: QuizScope | null = quizChat
+    ? {
+        thread_id: quizChat.threadId,
+        completed_resource_ids: doneResourceIds(subject ? [subject] : subjects),
+        ...(subject ? { scope_resource_ids: subject.resource_ids ?? [] } : { general: true }),
+      }
+    : null;
+
+  const note = (content: string, refused = false): void =>
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: newMessageId(),
+        role: "assistant",
+        content,
+        citations: [],
+        created_at: new Date().toISOString(),
+        ...(refused ? { kind: "refused" as const } : {}),
+      },
+    ]);
+
+  // Quiz events land in the chat: written by the server, so they are part of
+  // the conversation Malai sees next turn. Not answering is fine.
+  const quizStarted = async (request: string, count: number): Promise<void> => {
+    if (!quizChat) return;
+    try {
+      const lines = await postQuizNote(
+        { session_id: quizChat.sessionId, thread_id: quizChat.threadId, event: "started", request, count },
+        quizChat.sessionToken,
+      );
+      setMessages((prev) => [...prev, ...lines.filter((m) => m.role === "assistant")]);
+    } catch {
+      note(`I've made you a ${count}-question quiz. It's open beside the chat.`);
+    }
+  };
+  const quizFinished = async (o: QuizOutcome): Promise<void> => {
+    if (!quizChat) return;
+    try {
+      const lines = await postQuizNote(
+        {
+          session_id: quizChat.sessionId,
+          thread_id: quizChat.threadId,
+          event: "completed",
+          count: o.count,
+          score: o.score,
+          to_review: o.toReview,
+        },
+        quizChat.sessionToken,
+      );
+      setMessages((prev) => [...prev, ...lines]);
+      updateChat(quizChat.id, { updatedAt: Date.now() });
+    } catch {
+      note(`**Quiz completed** — you scored **${o.score} / ${o.count}**.`);
+    }
+  };
+
 
   const start = (prompt: string) => {
     setDraft(prompt);
@@ -321,9 +448,10 @@ export default function MalaiChatView() {
       onSend={() => void send()}
       disabled={notReady}
       busy={loading}
-      placeholder={subject ? `Ask about ${subject.name}…` : "Ask anything about your subjects…"}
+      placeholder={subject ? `Ask about ${subject.name}, or type / for commands…` : "Ask anything, or type / for commands…"}
       autoFocus={!chatId}
       inputRef={inputRef}
+      slashContext={slashContext}
     />
   );
   const notes = (
@@ -341,7 +469,11 @@ export default function MalaiChatView() {
   const empty = chatId === null && messages.length === 0 && !loading;
 
   return (
-    <div className="relative flex min-h-[calc(100dvh-7rem)] flex-col md:min-h-[calc(100dvh-5rem)]">
+    <div
+      className={`relative flex min-h-[calc(100dvh-7rem)] flex-col transition-[margin] duration-300 md:min-h-[calc(100dvh-5rem)] ${
+        quizOpen ? "lg:mr-[27rem]" : ""
+      }`}
+    >
       {!(empty && subject) && (
         <header className="relative z-10 md:pr-16">
           <h1 className="text-2xl font-bold tracking-tight text-gray-900">Malai</h1>
@@ -355,6 +487,21 @@ export default function MalaiChatView() {
                 <span className={`h-2 w-2 rounded-full ${subjectAccent(subject.name).avatar}`} aria-hidden="true" />
                 {subject.name}
               </Link>
+            )}
+            {chat && !quizOpen && (
+              <button
+                type="button"
+                onClick={() => {
+                  setQuizChat(chat);
+                  setQuizOpen(true);
+                }}
+                className="ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-full border border-violet-200 bg-white px-3 py-1 text-xs font-medium text-violet-700 transition hover:bg-violet-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5" aria-hidden="true">
+                  <path d="M12 22a10 10 0 110-20 10 10 0 010 20zM12 16a4 4 0 110-8 4 4 0 010 8zM12 12h.01" />
+                </svg>
+                Quiz
+              </button>
             )}
           </p>
         </header>
@@ -438,6 +585,52 @@ export default function MalaiChatView() {
             </div>
           )}
         </>
+      )}
+
+      {quizChat && quizScope && (
+        <aside
+          aria-label="Quiz"
+          aria-hidden={!quizOpen}
+          className={`fixed inset-y-0 right-0 z-50 flex w-full flex-col border-l border-gray-200 bg-white shadow-2xl shadow-gray-900/10 transition-transform duration-300 ease-out sm:w-[26rem] ${
+            quizOpen ? "translate-x-0" : "pointer-events-none translate-x-full"
+          }`}
+        >
+          <div className="flex shrink-0 items-center gap-2 border-b border-gray-100 px-4 py-3">
+            <h2 className="flex-1 text-sm font-semibold text-gray-900">Quiz</h2>
+            <span className="truncate text-xs text-gray-400">{subject ? subject.name : "General"}</span>
+            <button
+              type="button"
+              onClick={() => setQuizOpen(false)}
+              aria-label="Close quiz"
+              title="Close (your quiz is kept)"
+              className="flex h-8 w-8 items-center justify-center rounded-full text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
+            >
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="h-4 w-4" aria-hidden="true">
+                <path d="M5 5l10 10M15 5 5 15" />
+              </svg>
+            </button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+            <QuizPanel
+              key={quizChat.id}
+              sessionId={quizChat.sessionId}
+              sessionToken={quizChat.sessionToken}
+              getCurrentTimeMs={() => 0}
+              scope={quizScope}
+              sourceNote={
+                subject
+                  ? `From ${subject.name}: its documents and the videos you've marked done.`
+                  : "From general knowledge on your topic. Mention your notes or lectures to quiz on your materials."
+              }
+              onSeek={() => {}}
+              offline={false}
+              preset={quizPreset}
+              onStarted={(request, count) => void quizStarted(request, count)}
+              onFailed={(_request, message) => note(`I couldn't write that quiz: ${message}`, true)}
+              onFinished={(o) => void quizFinished(o)}
+            />
+          </div>
+        </aside>
       )}
     </div>
   );

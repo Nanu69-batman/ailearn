@@ -377,7 +377,7 @@ class ChatService:
                 "route", "end", title="General chat (no materials)",
                 data={"path": "general"},
             )
-            return await self._general_answer(session_id, message)
+            return await self._general_answer(session_id, message, mode)
 
         t_ms = clamp_current_time_ms(current_time_ms)
         allowed = effective_resource_scope(session.resource_scope, focus_resource_id)
@@ -860,7 +860,9 @@ class ChatService:
             grounded=outcome.kind == "grounded",
         )
 
-    async def _general_answer(self, session_id: str, message: str) -> ChatResponse:
+    async def _general_answer(
+        self, session_id: str, message: str, mode: str = "qa"
+    ) -> ChatResponse:
         """Answer from general knowledge in a subject-less chat: no retrieval.
 
         Zero citations by construction: none are built and any marker the model
@@ -870,7 +872,7 @@ class ChatService:
         history = [
             (m.role, m.content) for m in self._messages.list_for_session(session_id)
         ][-6:]
-        system, user_prompt = build_general_prompt(message, history)
+        system, user_prompt = build_general_prompt(message, history, mode)
         result = await self._llm.complete(
             system=system, user_prompt=user_prompt, passages=[], mode="qa"
         )

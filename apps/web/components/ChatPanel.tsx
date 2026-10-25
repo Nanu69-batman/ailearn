@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import type { ChatMessage, ChatMode, LiveFrameCapture, QuizQuestionType } from "../lib/api";
+import type { ChatMessage, ChatMode, LiveFrameCapture } from "../lib/api";
 import {
   ApiError,
   formatApiError,
@@ -10,6 +10,7 @@ import {
   isSessionExpiredError,
   postChat,
   postChatWithFrame,
+  postQuizNote,
   streamChat,
   listThreads,
   createThread,
@@ -27,10 +28,11 @@ import {
   SlashMenuList,
   commandQuestion,
   parseCommand,
-  slashFill,
-  slashMenu,
+  quizFromCommand,
+  useSlashMenu,
 } from "./SlashCommands";
-import QuizPanel from "./QuizPanel";
+import QuizPanel, { type QuizOutcome, type QuizPreset } from "./QuizPanel";
+import { detectQuizIntent } from "../lib/quizIntent";
 
 interface ChatPanelProps {
   sessionId: string;
@@ -171,11 +173,8 @@ export default function ChatPanel({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [historyState, setHistoryState] = useState<"loading" | "ready" | "error">("loading");
   const [historyError, setHistoryError] = useState<string | null>(null);
-  /** Set by /quiz: QuizPanel writes a quiz with these settings. */
-  const [quizPreset, setQuizPreset] = useState<{ count: number; types: QuizQuestionType[]; nonce: number } | null>(null);
-  // The slash-command menu: which row is highlighted, and whether Esc hid it.
-  const [menuIndex, setMenuIndex] = useState(0);
-  const [menuDismissed, setMenuDismissed] = useState(false);
+  /** Set by /quiz or a message asking for one: QuizPanel writes it now. */
+  const [quizPreset, setQuizPreset] = useState<QuizPreset | null>(null);
   const [tab, setTab] = useState<"chat" | "quiz">("chat");
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -350,37 +349,17 @@ export default function ChatPanel({
     void send(input);
   }
 
-  const menu = menuDismissed ? null : slashMenu(input);
-  useEffect(() => {
-    setMenuIndex(0);
-    setMenuDismissed(false);
-  }, [input]);
+  const slashContext = isVideo ? "video" : "document";
+  const slash = useSlashMenu(input, setInput, slashContext);
+  const menu = slash.menu;
 
   function pickFromMenu(index: number): void {
-    if (!menu) return;
-    setInput(slashFill(menu, index));
+    slash.pick(index);
     inputRef.current?.focus();
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>): void {
-    if (menu) {
-      const n = menu.items.length;
-      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-        e.preventDefault();
-        setMenuIndex((i) => (i + (e.key === "ArrowDown" ? 1 : n - 1)) % n);
-        return;
-      }
-      if ((e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) || e.key === "Tab") {
-        e.preventDefault();
-        pickFromMenu(Math.min(menuIndex, n - 1));
-        return;
-      }
-      if (e.key === "Escape") {
-        e.preventDefault();
-        setMenuDismissed(true);
-        return;
-      }
-    }
+    if (slash.onKeyDown(e)) return;
     // Enter sends; Shift+Enter inserts a newline. Ignore Enter mid-IME
     // composition so CJK input is not sent half-typed.
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -392,15 +371,22 @@ export default function ChatPanel({
   async function send(raw: string): Promise<void> {
     const typed = raw.trim();
     if (!typed || sending) return;
-    // A slash command sets the answer style, or opens a quiz.
-    const cmd = parseCommand(typed);
-    if (cmd?.command.quiz) {
-      const option = cmd.command.options.find((o) => o.text.toLowerCase() === cmd.rest.toLowerCase());
-      setQuizPreset({
-        count: option?.count ?? 5,
-        types: option?.types ?? ["mcq", "numerical", "subjective"],
-        nonce: Date.now(),
-      });
+    // A slash command sets the answer style, or opens a quiz; so does a
+    // message that asks for a quiz in so many words ("quiz me on this").
+    const cmd = parseCommand(typed, slashContext);
+    const intent = cmd ? null : detectQuizIntent(typed);
+    const quizAsk = cmd?.command.quiz
+      ? { ...quizFromCommand(cmd.command, cmd.rest), request: cmd.rest ? `Quiz me: ${cmd.rest}` : "Quiz me" }
+      : intent
+        ? { ...intent, request: typed }
+        : null;
+    if (quizAsk) {
+      setMessages((prev) => [
+        ...prev,
+        { id: newId(), role: "user", content: quizAsk.request, citations: [], created_at: new Date().toISOString() },
+      ]);
+      if (!offline) onAsk?.(threadId, quizAsk.request);
+      setQuizPreset({ ...quizAsk, nonce: Date.now() });
       setInput("");
       setTab("quiz");
       return;
@@ -552,6 +538,67 @@ export default function ChatPanel({
     }
   }
 
+  /** Malai's line in the chat, when the server could not record one. */
+  function localNote(content: string, refused = false): void {
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: newId(),
+        role: "assistant",
+        content,
+        citations: [],
+        created_at: new Date().toISOString(),
+        ...(refused ? { kind: "refused" as const } : {}),
+      },
+    ]);
+  }
+
+  // A quiz asked for in the chat is recorded there: that it was written, and
+  // its score once every answer is in. Not answering is fine; the chat
+  // carries on either way.
+  async function quizStarted(request: string, count: number): Promise<void> {
+    const fallback = `I've made you a ${count}-question quiz. It's open in the Quiz tab — answer it whenever you like.`;
+    if (offline) return localNote(fallback);
+    try {
+      const lines = await postQuizNote(
+        { session_id: sessionId, thread_id: threadId, event: "started", request, count },
+        sessionToken,
+      );
+      // The learner's line is already on screen.
+      setMessages((prev) => [...prev, ...lines.filter((m) => m.role === "assistant")]);
+      void refreshThreads();
+    } catch {
+      localNote(fallback);
+    }
+  }
+
+  function quizFailed(_request: string, message: string): void {
+    localNote(`I couldn't write that quiz: ${message}`, true);
+  }
+
+  async function quizFinished(outcome: QuizOutcome): Promise<void> {
+    const fallback = `**Quiz completed** — you scored **${outcome.score} / ${outcome.count}**.`;
+    if (offline) return localNote(fallback);
+    try {
+      const lines = await postQuizNote(
+        {
+          session_id: sessionId,
+          thread_id: threadId,
+          event: "completed",
+          count: outcome.count,
+          score: outcome.score,
+          to_review: outcome.toReview,
+        },
+        sessionToken,
+      );
+      setMessages((prev) => [...prev, ...lines]);
+      void refreshThreads();
+    } catch {
+      localNote(fallback);
+    }
+  }
+
+  const extraDone = completedResourceIds.length;
   const starters = isVideo ? VIDEO_STARTERS : DOCUMENT_STARTERS;
   const showGreeting =
     tab === "chat" && historyState === "ready" && messages.length === 0 && !sending && !sessionExpired;
@@ -621,13 +668,18 @@ export default function ChatPanel({
         <QuizPanel
           sessionId={sessionId}
           sessionToken={sessionToken}
-          videoId={videoId}
           getCurrentTimeMs={getCurrentTimeMs}
-          completedResourceIds={completedResourceIds}
+          scope={{ video_id: videoId, completed_resource_ids: completedResourceIds, thread_id: threadId }}
+          sourceNote={`From this ${isVideo ? "video up to where you are" : "material"}${
+            extraDone > 0 ? ` + ${extraDone} completed material${extraDone === 1 ? "" : "s"}` : ""
+          }.`}
           onSeek={onSeek}
           openDoc={openDoc}
           offline={offline || backendUnreachable}
           preset={quizPreset}
+          onStarted={(request, count) => void quizStarted(request, count)}
+          onFailed={quizFailed}
+          onFinished={(o) => void quizFinished(o)}
         />
       </div>
 
@@ -700,7 +752,7 @@ export default function ChatPanel({
                   preview={preview}
                   onSeek={onSeek}
                   openDoc={openDoc}
-                  onSuggest={(text) => (/^quiz me/i.test(text) ? setTab("quiz") : void send(text))}
+                  onSuggest={(text) => void send(text)}
                   suggestDisabled={sending || sessionExpired}
                   fill
                 />
@@ -730,7 +782,7 @@ export default function ChatPanel({
         <form className={`shrink-0 px-4 pb-4 transition-[padding] ${composerClassName}`} onSubmit={handleSubmit}>
           <div className="relative">
           {menu && (
-            <SlashMenuList menu={menu} active={Math.min(menuIndex, menu.items.length - 1)} onPick={pickFromMenu} onHover={setMenuIndex} />
+            <SlashMenuList menu={menu} active={slash.active} onPick={pickFromMenu} onHover={slash.setActive} />
           )}
           <div className="flex items-end gap-2 rounded-[1.5rem] border border-gray-200 bg-white py-1.5 pl-2 pr-1.5 shadow-lg shadow-violet-900/5 transition focus-within:border-violet-300 focus-within:ring-4 focus-within:ring-violet-100">
             {/* Trigger #1 of the live frame: the explicit button. It LATCHES (it
@@ -784,7 +836,7 @@ export default function ChatPanel({
               role="combobox"
               aria-expanded={menu !== null}
               aria-controls={menu ? "slash-menu" : undefined}
-              aria-activedescendant={menu ? `slash-opt-${Math.min(menuIndex, menu.items.length - 1)}` : undefined}
+              aria-activedescendant={menu ? `slash-opt-${slash.active}` : undefined}
             />
             <button
               type="submit"

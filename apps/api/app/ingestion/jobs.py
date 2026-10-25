@@ -1291,6 +1291,12 @@ def run_ingest(job: IngestJob, work) -> None:
     # the only evidence of where the time went.
     merged = {**(job.detail or {}), **(report or {})}
     update_job(job.job_id, status="done", detail=merged)
+    # Chapters build in the background (and only if missing or stale), so a
+    # chapter failure or a slow LLM never touches the ingest outcome. Stream
+    # windows finish through here too, which is what refreshes a partial video.
+    from app.ingestion.chapters import on_ingest_done
+
+    on_ingest_done(job.resource_id)
 
 
 def schedule(job: IngestJob, work) -> None:

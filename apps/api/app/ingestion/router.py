@@ -7,6 +7,7 @@
     GET  /ingestion/jobs/{job_id}
     GET  /courses/{course_id}/resources
     GET  /resources/{resource_id}/media       (streams a downloaded asset)
+    GET  /resources/{resource_id}/chapters    (auto-generated chapters)
 
 ``apps/web`` is never modified by the API; these shapes exist to match it.
 """
@@ -404,6 +405,27 @@ async def list_resources(course_id: str) -> dict:
     return {"resources": resources}
 
 
+@router.get("/resources/{resource_id}/chapters")
+async def read_chapters(resource_id: str) -> dict:
+    """Chapters for one resource: ``ready``, ``pending`` (poll) or ``unavailable``.
+
+    Unknown or empty resources answer 200 ``unavailable`` rather than 404 so
+    the client can render "no chapters" without an error path. Missing or
+    stale chapters are generated in the background; this never blocks on an
+    LLM call. Catalogue only: nothing here reaches the tutor's retrieval.
+    """
+    import asyncio
+
+    from app.ingestion import chapters as chapters_mod
+    from app.retrieval import registry
+
+    def build() -> dict:
+        return chapters_mod.chapters_payload(resource_id, store=registry.get_shared_store())
+
+    # The store read is blocking; keep it off the event loop.
+    return await asyncio.to_thread(build)
+
+
 class PositionRequest(BaseModel):
     t_ms: int = Field(ge=0)
 
@@ -599,6 +621,7 @@ async def delete_resource(course_id: str, resource_id: str) -> dict:
             status_code=500,
             detail=f"chunks removed but staged asset for {resource_id} could not be deleted",
         ) from exc
+    _purge_chapters(resource_id)
 
     return {
         "resource_id": resource_id,
@@ -606,6 +629,16 @@ async def delete_resource(course_id: str, resource_id: str) -> dict:
         "detached_from": detached_from,
         "asset_removed": bool(report["asset_removed"]),
     }
+
+
+def _purge_chapters(resource_id: str) -> None:
+    """Drop a deleted resource's chapters file; never fails the delete."""
+    from app.ingestion.chapters import delete_chapters
+
+    try:
+        delete_chapters(resource_id)
+    except OSError:
+        log.warning("could not remove chapters for %s", resource_id, exc_info=True)
 
 
 @router.get("/resources/{resource_id}/media")

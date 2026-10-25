@@ -67,7 +67,8 @@ export interface Immersive {
   active: boolean;
   toggle: () => void;
   chatOpen: boolean;
-  toggleChat: () => void;
+  /** Absent when the page has no tutor chat to show beside the player. */
+  toggleChat?: () => void;
 }
 
 export const ImmersiveContext = createContext<Immersive | null>(null);
@@ -398,7 +399,7 @@ export default function PlayerFrame({
       commands.setMuted(!state.muted);
     } else if (key === "f") {
       toggleFullscreen();
-    } else if (key === "c" && immersive?.active) {
+    } else if (key === "c" && immersive?.active && immersive.toggleChat) {
       immersive.toggleChat();
     } else if (key === "Escape" && menuOpen) {
       setMenuOpen(false);
@@ -576,7 +577,7 @@ export default function PlayerFrame({
                     </div>
                   )}
                 </div>
-                {immersive?.active && (
+                {immersive?.active && immersive.toggleChat && (
                   <IconButton
                     label={immersive.chatOpen ? "Hide chat (c)" : "Ask Malai (c)"}
                     pressed={immersive.chatOpen}

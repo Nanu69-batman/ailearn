@@ -22,6 +22,7 @@ import type { PdfTarget } from "@/components/PdfView";
 import { useLearnSession } from "@/components/LearnSessionProvider";
 import { useCourseResources } from "@/components/useCourseResources";
 import { useStudyTracker } from "@/components/useStudyTracker";
+import { useChapters } from "@/components/useChapters";
 import {
   isApiConfigured,
   getSubjectResources,
@@ -54,14 +55,16 @@ import {
 /**
  * The lesson page: video/PDF + chat + sources, one real URL per resource.
  * Served at /ai-tutor/subjects/<s>/content/<r> and, inside Malai (`malai`),
- * at /malai/lesson/<s>/<r>; the two differ only in where their links lead.
- * Either way, every chat asked here is filed under its subject in Malai.
+ * at /malai/lesson/<s>/<r>. Malai is where the tutor lives: from My subjects
+ * the resource opens on its own (`withChat` false), with an "Open with Malai"
+ * button that takes it to Malai's page, where every chat asked is filed
+ * under its subject.
  *
  * `resourceId` in the path is the authoritative selection — there is no local
  * "selected" state to drift out of sync with the address bar, which is what
  * makes the back button, a reload, and a shared link all behave the same.
  */
-export default function LessonView({ malai = false }: { malai?: boolean }) {
+export default function LessonView({ malai = false, withChat = true }: { malai?: boolean; withChat?: boolean }) {
   const params = useParams<{ subjectId?: string | string[]; resourceId?: string | string[] }>();
   const router = useRouter();
   const search = useSearchParams();
@@ -142,10 +145,10 @@ export default function LessonView({ malai = false }: { malai?: boolean }) {
           void root.requestFullscreen().catch(() => undefined);
         }
       },
-      chatOpen: immersiveChat,
-      toggleChat: () => setImmersiveChat((o) => !o),
+      chatOpen: withChat && immersiveChat,
+      toggleChat: withChat ? () => setImmersiveChat((o) => !o) : undefined,
     }),
-    [immersive, immersiveChat],
+    [immersive, immersiveChat, withChat],
   );
   const handlePauseAt = useCallback(
     (ms: number): void => {
@@ -390,8 +393,21 @@ export default function LessonView({ malai = false }: { malai?: boolean }) {
     };
   }, [hbResourceId, hbCourseId, apiLive, hbEligible]);
 
+  // Chapters, written on the server after ingestion. A partly processed video
+  // asks again after each further ~2 minutes processed (the server rewrites
+  // them for the longer range).
+  const { chapters, state: chaptersState } = useChapters(
+    apiLive && selected && selected.resourceId !== SAMPLE_CLIP_ID ? selected.resourceId : null,
+    procState === "ready" ? "ready" : Math.floor((procThrough ?? 0) / 120_000),
+  );
+  const openPage = useCallback((page: number): void => {
+    setPdfJump((prev) => ({ page, text: null, nonce: (prev?.nonce ?? 0) + 1 }));
+  }, []);
+
   // Window layout: Malai's side, the split, the panel, and "hide video".
   const layout = useLessonLayout();
+  // Without the chat, the lesson fills the page and its panel sits beside it.
+  const stacked = !withChat || layout.stacked;
   // One window may be hidden at a time (both kept mounted); hiding one
   // brings the other back.
   const [lessonHidden, setLessonHidden] = useState(false);
@@ -521,14 +537,16 @@ export default function LessonView({ malai = false }: { malai?: boolean }) {
   const doneCount = resources.filter((r) => completedIds.includes(r.id)).length;
   // The developer-view button floats over the workspace's top-right corner;
   // whichever window is there keeps its header clear of it.
-  const cornerWindow = lessonHidden
+  const cornerWindow = !withChat
+    ? "lesson"
+    : lessonHidden
     ? "malai"
     : malaiHidden
       ? "lesson"
       : layout.side === "right" || layout.side === "top"
         ? "malai"
         : "lesson";
-  const panelPlacement = wide && layout.stacked ? "side" : "below";
+  const panelPlacement = wide && stacked ? "side" : "below";
   const malaiBottomLeft = !malaiHidden && (lessonHidden || layout.side === "left" || layout.side === "bottom");
 
   const iconButton =
@@ -683,7 +701,20 @@ export default function LessonView({ malai = false }: { malai?: boolean }) {
             {selected.title}
           </span>
         </nav>
-        {isMedia && (
+        {!withChat && (
+          <Link
+            href={malaiLessonPath(subjectId, selected.resourceId)}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-violet-600 py-1.5 pl-3 pr-3.5 text-xs font-semibold text-white shadow-sm shadow-violet-600/30 transition hover:bg-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-2"
+            title="Study this with Malai, the AI tutor, beside it"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
+              <path d="M12 3l1.8 4.6L18 9.4l-4.2 1.8L12 16l-1.8-4.8L6 9.4l4.2-1.8z" />
+              <path d="M19 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z" />
+            </svg>
+            Open with Malai
+          </Link>
+        )}
+        {withChat && isMedia && (
           <div
             className="hidden shrink-0 items-center gap-2 rounded-full border border-violet-200 bg-violet-50 py-1 pl-2.5 pr-3 text-xs font-medium text-violet-800 sm:flex"
             role="status"
@@ -702,7 +733,7 @@ export default function LessonView({ malai = false }: { malai?: boolean }) {
 
       <div
         className={`flex flex-col gap-4 lg:min-h-0 lg:flex-1 ${
-          layout.stacked ? "lg:flex-row lg:overflow-hidden" : "lg:overflow-y-auto lg:pr-1"
+          stacked ? "lg:flex-row lg:overflow-hidden" : "lg:overflow-y-auto lg:pr-1"
         }`}
       >
         {/* Player + what Malai reads + processing status */}
@@ -710,13 +741,13 @@ export default function LessonView({ malai = false }: { malai?: boolean }) {
           className={
             immersive
               ? `fixed inset-y-0 left-0 z-[60] flex animate-[immersive-in_280ms_cubic-bezier(0.2,0.8,0.2,1)] items-center justify-center bg-black transition-[right] duration-300 ease-out ${
-                  immersiveChat ? "right-0 sm:right-[400px]" : "right-0"
+                  immersiveChat && withChat ? "right-0 sm:right-[400px]" : "right-0"
                 }`
-              : `flex min-w-0 flex-col gap-3 ${layout.stacked ? "lg:min-h-0 lg:flex-1 lg:overflow-y-auto" : ""}`
+              : `flex min-w-0 flex-col gap-3 ${stacked ? "lg:min-h-0 lg:flex-1 lg:overflow-y-auto" : ""}`
           }
           aria-label="Lesson"
         >
-          {immersive && isMedia && (
+          {immersive && isMedia && withChat && (
             <div className="pointer-events-none absolute left-4 top-4 z-[70] flex items-center gap-2 rounded-full bg-black/55 py-1.5 pl-2.5 pr-3.5 text-xs font-medium text-white/90 backdrop-blur">
               <span className="h-2 w-2 rounded-full bg-violet-400" aria-hidden="true" />
               Malai can see up to{" "}
@@ -731,12 +762,12 @@ export default function LessonView({ malai = false }: { malai?: boolean }) {
             className={
               immersive
                 ? "contents"
-                : layout.stacked && isMedia
+                : stacked && isMedia
                   ? "lg:min-h-[180px] lg:flex-1 lg:[container-type:size]"
                   : ""
             }
           >
-            <div className={immersive ? "contents" : layout.stacked && isMedia ? "lg:mx-auto lg:w-[min(100cqw,calc(100cqh*16/9))]" : ""}>
+            <div className={immersive ? "contents" : stacked && isMedia ? "lg:mx-auto lg:w-[min(100cqw,calc(100cqh*16/9))]" : ""}>
               <ImmersiveContext.Provider value={immersiveCtx}>
               <CitedRangeContext.Provider value={citedRange}>
               {selected.kind === "youtube" ? (
@@ -824,13 +855,14 @@ export default function LessonView({ malai = false }: { malai?: boolean }) {
           )}
         </section>
 
-        {/* TODO(chapters): no chapter data yet; see to-do.md. */}
         <LessonPanel
           placement={panelPlacement}
           isMedia={isMedia}
-          chapters={null}
+          chapters={chapters}
+          chaptersState={chaptersState}
           playheadMs={playheadMs}
           onSeek={handleSeek}
+          onOpenPage={selected.kind === "pdf" && selected.src ? openPage : undefined}
           resources={materials}
           collapsed={layout.panelCollapsed}
           onCollapsedChange={layout.setPanelCollapsed}
@@ -894,6 +926,17 @@ export default function LessonView({ malai = false }: { malai?: boolean }) {
     </aside>
   );
 
+  if (!withChat) {
+    // The resource on its own: no tutor window, no window toolbar.
+    return (
+      <div className="relative mx-auto flex w-full max-w-[1600px] flex-col pb-6 lg:h-[calc(100dvh-5rem)] lg:pb-0">
+        <div className="flex min-h-0 flex-1 flex-col rounded-2xl border border-gray-200 bg-white p-3 shadow-sm sm:p-4">
+          {lessonWindow(null)}
+        </div>
+      </div>
+    );
+  }
+
   return (
     // The windows run to the bottom; the toolbar floats above them.
     <div className="relative mx-auto flex w-full max-w-[1600px] flex-col pb-20 lg:h-[calc(100dvh-5rem)] lg:pb-0">
@@ -916,7 +959,7 @@ export default function LessonView({ malai = false }: { malai?: boolean }) {
           resourceLabel={isMedia ? "video" : "resource"}
           lessonShown={!lessonHidden}
           malaiShown={!malaiHidden}
-          stacked={layout.stacked}
+          stacked={stacked}
           onToggleLesson={toggleLesson}
           onToggleMalai={toggleMalai}
           onToggleOrientation={layout.toggleOrientation}

@@ -1,13 +1,8 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-
-/** One chapter of a video. Filled by chapter processing (see to-do.md). */
-export interface Chapter {
-  startMs: number;
-  endMs: number;
-  title: string;
-}
+import type { ResourceChapter } from "@/lib/api";
+import type { ChaptersState } from "./useChapters";
 
 export type LessonTab = "chapters" | "transcript" | "resources";
 
@@ -82,35 +77,111 @@ function EmptyNote({ tab, title, children }: { tab: LessonTab; title: string; ch
   );
 }
 
-function ChapterList({
-  chapters,
-  playheadMs,
-  onSeek,
-}: {
-  chapters: Chapter[] | null;
-  playheadMs: number;
-  onSeek: (ms: number) => void;
-}) {
-  if (!chapters || chapters.length === 0) {
+function ChapterNote({ state, isMedia }: { state: ChaptersState; isMedia: boolean }) {
+  const what = isMedia ? "video" : "document";
+  if (state === "loading" || state === "idle") {
     return (
-      <EmptyNote tab="chapters" title="No chapters yet">
-        This video hasn&apos;t been split into chapters. Once it is, they&apos;ll
-        show up here and you can jump between them.
+      <div role="status" className="flex items-center justify-center gap-2 px-6 py-10 text-sm text-gray-500">
+        <span className="h-4 w-4 animate-spin rounded-full border-2 border-violet-400 border-t-transparent" aria-hidden="true" />
+        Loading chapters…
+      </div>
+    );
+  }
+  if (state === "pending") {
+    return (
+      <EmptyNote tab="chapters" title="Writing chapters…">
+        Malai is splitting this {what} into chapters. They&apos;ll appear here in a minute.
+      </EmptyNote>
+    );
+  }
+  if (state === "error") {
+    return (
+      <EmptyNote tab="chapters" title="Couldn't load chapters">
+        The server didn&apos;t answer. Reopen this {what} to try again.
       </EmptyNote>
     );
   }
   return (
+    <EmptyNote tab="chapters" title="No chapters yet">
+      This {what} hasn&apos;t been processed yet. Once it is, its chapters appear here
+      {isMedia ? " and you can jump between them" : ""}.
+    </EmptyNote>
+  );
+}
+
+function ChapterList({
+  chapters,
+  state,
+  isMedia,
+  playheadMs,
+  onSeek,
+  onOpenPage,
+}: {
+  chapters: ResourceChapter[];
+  state: ChaptersState;
+  isMedia: boolean;
+  playheadMs: number;
+  onSeek: (ms: number) => void;
+  onOpenPage?: (page: number) => void;
+}) {
+  const timed = chapters.filter((c) => c.start_ms != null && c.end_ms != null);
+  const paged = chapters.filter((c) => c.page_start != null || c.slide_start != null);
+  if (isMedia ? timed.length === 0 : paged.length === 0) return <ChapterNote state={state} isMedia={isMedia} />;
+
+  const row = "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition";
+  if (!isMedia) {
+    return (
+      <ol className="flex flex-col gap-0.5 p-2">
+        {paged.map((c, i) => {
+          const slides = c.page_start == null;
+          const from = (slides ? c.slide_start : c.page_start) as number;
+          const to = (slides ? c.slide_end : c.page_end) ?? from;
+          const span = to > from ? `${from}–${to}` : `${from}`;
+          const where = slides ? `Slide${to > from ? "s" : ""} ${span}` : `${to > from ? "pp." : "p."} ${span}`;
+          const body = (
+            <>
+              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-gray-100 text-[11px] font-semibold text-gray-500">
+                {i + 1}
+              </span>
+              <span className="min-w-0 flex-1 truncate font-medium">{c.title}</span>
+              <span className="shrink-0 tabular-nums text-xs text-gray-400">{where}</span>
+            </>
+          );
+          return (
+            <li key={`${from}-${c.title}`}>
+              {onOpenPage && !slides ? (
+                <button
+                  type="button"
+                  onClick={() => onOpenPage(from)}
+                  title={`Go to page ${from}`}
+                  className={`${row} text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300`}
+                >
+                  {body}
+                </button>
+              ) : (
+                <div className={`${row} text-gray-700`}>{body}</div>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+    );
+  }
+
+  return (
     <ol className="flex flex-col gap-0.5 p-2">
-      {chapters.map((c) => {
-        const current = playheadMs >= c.startMs && playheadMs < c.endMs;
-        const watched = playheadMs >= c.endMs;
+      {timed.map((c) => {
+        const startMs = c.start_ms as number;
+        const endMs = c.end_ms as number;
+        const current = playheadMs >= startMs && playheadMs < endMs;
+        const watched = playheadMs >= endMs;
         return (
-          <li key={`${c.startMs}-${c.title}`}>
+          <li key={`${startMs}-${c.title}`}>
             <button
               type="button"
-              onClick={() => onSeek(c.startMs)}
+              onClick={() => onSeek(startMs)}
               aria-current={current ? "true" : undefined}
-              className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300 ${
+              className={`${row} focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300 ${
                 current ? "bg-violet-50 text-violet-900" : "text-gray-700 hover:bg-gray-50"
               }`}
             >
@@ -134,13 +205,16 @@ function ChapterList({
                   </svg>
                 ) : null}
               </span>
-              <span className="w-12 shrink-0 tabular-nums text-xs text-gray-500">{clock(c.startMs)}</span>
-              <span className="min-w-0 flex-1 truncate font-medium">{c.title}</span>
-              <span className="shrink-0 tabular-nums text-xs text-gray-400">{clock(c.endMs - c.startMs)}</span>
+              <span className="w-12 shrink-0 tabular-nums text-xs text-gray-500">{clock(startMs)}</span>
+              <span className="min-w-0 flex-1 truncate font-medium" title={c.title}>{c.title}</span>
+              <span className="shrink-0 tabular-nums text-xs text-gray-400">{clock(endMs - startMs)}</span>
             </button>
           </li>
         );
       })}
+      {state === "pending" && (
+        <li className="px-3 py-2 text-xs text-gray-400" role="status">Updating chapters as more of the video is processed…</li>
+      )}
     </ol>
   );
 }
@@ -148,11 +222,14 @@ function ChapterList({
 interface LessonPanelProps {
   /** Under the player (side-by-side layout) or beside it (stacked layout). */
   placement: "below" | "side";
-  /** A video gets Chapters and Transcript; a document only Resources. */
+  /** A video gets Chapters and Transcript; a document Chapters and Resources. */
   isMedia: boolean;
-  chapters: Chapter[] | null;
+  chapters: ResourceChapter[];
+  chaptersState: ChaptersState;
   playheadMs: number;
   onSeek: (ms: number) => void;
+  /** A PDF: open this page in the viewer. Slides cannot be jumped to. */
+  onOpenPage?: (page: number) => void;
   /** The subject's materials list. */
   resources: ReactNode;
   collapsed: boolean;
@@ -168,15 +245,17 @@ export default function LessonPanel({
   placement,
   isMedia,
   chapters,
+  chaptersState,
   playheadMs,
   onSeek,
+  onOpenPage,
   resources,
   collapsed,
   onCollapsedChange,
 }: LessonPanelProps) {
-  const tabs: LessonTab[] = isMedia ? ["chapters", "transcript", "resources"] : ["resources"];
+  const tabs: LessonTab[] = isMedia ? ["chapters", "transcript", "resources"] : ["chapters", "resources"];
   const [tab, setTab] = useState<LessonTab>(tabs[0]);
-  // A document has no chapters tab to stay on.
+  // A document has no transcript tab to stay on.
   useEffect(() => {
     if (!tabs.includes(tab)) setTab(tabs[0]);
   }, [isMedia]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -263,7 +342,16 @@ export default function LessonPanel({
 
       {!collapsed && (
         <div className={`min-h-0 ${side ? "flex-1 overflow-y-auto" : ""}`} role="tabpanel" aria-label={TAB_LABEL[tab]}>
-          {tab === "chapters" && <ChapterList chapters={chapters} playheadMs={playheadMs} onSeek={onSeek} />}
+          {tab === "chapters" && (
+            <ChapterList
+              chapters={chapters}
+              state={chaptersState}
+              isMedia={isMedia}
+              playheadMs={playheadMs}
+              onSeek={onSeek}
+              onOpenPage={onOpenPage}
+            />
+          )}
           {tab === "transcript" && (
             <EmptyNote tab="transcript" title="Transcript view is on the way">
               Malai already reads the transcript to answer your questions. A

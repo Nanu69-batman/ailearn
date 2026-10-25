@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
+  MAX_QUIZ_QUESTIONS,
   formatApiError,
   gradeQuizAnswer,
   postQuiz,
@@ -9,21 +10,49 @@ import {
   type QuizQuestion,
   type QuizQuestionType,
   type QuizResponse,
+  type QuizScope,
 } from "../lib/api";
 import CitationBadge, { type CitationBadgeProps } from "./CitationBadge";
 import MarkdownBody from "./MarkdownBody";
 
+/** Settings for a quiz written right away: from /quiz, or a chat message. */
+export interface QuizPreset {
+  count: number;
+  types: QuizQuestionType[];
+  /** Instructions for the quiz ("on entropy, harder"); may be empty. */
+  prompt: string;
+  /** The chat message that asked for it, when it came from the chat. */
+  request?: string;
+  nonce: number;
+}
+
+/** A finished quiz, as reported to the chat it belongs to. */
+export interface QuizOutcome {
+  count: number;
+  score: number;
+  /** The questions not fully right, for Malai to follow up on. */
+  toReview: string[];
+}
+
 interface QuizPanelProps {
   sessionId: string;
   sessionToken: string;
-  videoId: string;
   getCurrentTimeMs: () => number;
-  completedResourceIds: string[];
+  /** What the quiz may draw from: the asking chat's own reach. */
+  scope: QuizScope;
+  /** One line under the form saying what the quiz is drawn from. */
+  sourceNote: string;
   onSeek: (startMs: number) => void;
   openDoc?: CitationBadgeProps["openDoc"];
   offline: boolean;
-  /** A /quiz command: set the size and types and write the quiz now. */
-  preset?: { count: number; types: QuizQuestionType[]; nonce: number } | null;
+  /** Write a quiz with these settings now. A new nonce starts a new one. */
+  preset?: QuizPreset | null;
+  /** A quiz asked for in the chat was written. */
+  onStarted?: (request: string, count: number) => void;
+  /** A quiz asked for in the chat could not be written. */
+  onFailed?: (request: string, message: string) => void;
+  /** Every answer of the current quiz was submitted. */
+  onFinished?: (outcome: QuizOutcome) => void;
 }
 
 type Verdict = QuizGrade["verdict"];
@@ -41,7 +70,7 @@ const TYPE_LABEL: Record<QuizQuestionType, string> = {
   subjective: "Written",
 };
 
-const COUNTS = [3, 5, 10];
+const ALL_TYPES = Object.keys(TYPE_LABEL) as QuizQuestionType[];
 
 function fmtMs(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -59,6 +88,16 @@ export function parseNumber(raw: string): number | null {
 
 function fmtNumber(x: number): string {
   return Number.isInteger(x) ? String(x) : String(Number(x.toPrecision(6)));
+}
+
+/** The question count typed in the form, or null when it is not 1..MAX. */
+function parseCount(raw: string): number | null {
+  const n = Number(raw.trim());
+  return Number.isInteger(n) && n >= 1 && n <= MAX_QUIZ_QUESTIONS ? n : null;
+}
+
+function typesLabel(types: QuizQuestionType[]): string {
+  return types.length === ALL_TYPES.length ? "Mixed" : types.map((t) => TYPE_LABEL[t]).join(", ");
 }
 
 /** MCQ and numerical are checked here: no request, no LLM call. */
@@ -84,24 +123,38 @@ const VERDICT_STYLE: Record<Verdict, { box: string; label: string }> = {
 export default function QuizPanel({
   sessionId,
   sessionToken,
-  videoId,
   getCurrentTimeMs,
-  completedResourceIds,
+  scope,
+  sourceNote,
   onSeek,
   openDoc,
   offline,
   preset,
+  onStarted,
+  onFailed,
+  onFinished,
 }: QuizPanelProps) {
-  const [count, setCount] = useState(5);
-  const [types, setTypes] = useState<QuizQuestionType[]>(["mcq", "numerical", "subjective"]);
+  // The form. The count is kept as typed so the box can be cleared and retyped.
+  const [countText, setCountText] = useState("5");
+  const [types, setTypes] = useState<QuizQuestionType[]>(ALL_TYPES);
+  const [prompt, setPrompt] = useState("");
+  const [formOpen, setFormOpen] = useState(true);
   const [attempt, setAttempt] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [quiz, setQuiz] = useState<QuizResponse | null>(null);
+  /** Settings the shown quiz was written with, for its summary line. */
+  const [written, setWritten] = useState<{ count: number; types: QuizQuestionType[]; prompt: string } | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [results, setResults] = useState<Record<string, Result>>({});
   const [grading, setGrading] = useState<Record<string, boolean>>({});
   const [gradeErrors, setGradeErrors] = useState<Record<string, string>>({});
+  /** The quiz (by attempt) whose finish was already reported. */
+  const reported = useRef<number | null>(null);
+  /** The preset already acted on: a remount or a re-run must not write it twice. */
+  const usedPreset = useRef<number | null>(null);
+
+  const count = parseCount(countText);
 
   function toggleType(t: QuizQuestionType) {
     setTypes((cur) =>
@@ -109,28 +162,37 @@ export default function QuizPanel({
     );
   }
 
-  // A new /quiz (new nonce) starts a quiz with its settings.
+  // A new preset (new nonce) fills the form and writes the quiz.
   useEffect(() => {
-    if (!preset || offline) return;
-    setCount(preset.count);
+    if (!preset || usedPreset.current === preset.nonce) return;
+    usedPreset.current = preset.nonce;
+    setCountText(String(preset.count));
     setTypes(preset.types);
-    void generate({ count: preset.count, types: preset.types });
+    setPrompt(preset.prompt);
+    if (offline) {
+      if (preset.request) onFailed?.(preset.request, "Quizzes need the live backend, which isn't reachable right now.");
+      return;
+    }
+    void generate({ count: preset.count, types: preset.types, prompt: preset.prompt }, preset.request);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preset?.nonce]);
 
-  async function generate(settings?: { count: number; types: QuizQuestionType[] }) {
+  async function generate(
+    settings: { count: number; types: QuizQuestionType[]; prompt: string },
+    request?: string,
+  ) {
     setLoading(true);
     setError(null);
     try {
       const res = await postQuiz(
         {
           session_id: sessionId,
-          video_id: videoId,
           current_time_ms: Math.round(getCurrentTimeMs()),
-          completed_resource_ids: completedResourceIds,
-          count: settings?.count ?? count,
-          types: settings?.types ?? types,
+          ...scope,
+          count: settings.count,
+          types: settings.types,
           attempt,
+          ...(settings.prompt.trim() ? { prompt: settings.prompt.trim() } : {}),
         },
         sessionToken,
       );
@@ -139,13 +201,20 @@ export default function QuizPanel({
       setResults({});
       setGradeErrors({});
       if (res.refused) {
+        const message = res.message ?? "Couldn't write a quiz from this material yet.";
         setQuiz(null);
-        setError(res.message ?? "Couldn't write a quiz from this material yet.");
+        setError(message);
+        if (request) onFailed?.(request, message);
       } else {
         setQuiz(res);
+        setWritten(settings);
+        setFormOpen(false);
+        if (request) onStarted?.(request, res.questions.length);
       }
     } catch (err) {
-      setError(formatApiError(err));
+      const message = formatApiError(err);
+      setError(message);
+      if (request) onFailed?.(request, message);
     } finally {
       setLoading(false);
     }
@@ -171,6 +240,26 @@ export default function QuizPanel({
     }
   }
 
+  const questions = quiz?.questions ?? [];
+  const checked = questions.filter((q) => results[q.id]);
+  const score = checked.reduce((s, q) => s + results[q.id].score, 0);
+  const pending = questions.filter(
+    (q) => !results[q.id] && !grading[q.id] && (answers[q.id] ?? "").trim(),
+  );
+  const done = questions.length > 0 && checked.length === questions.length;
+
+  // Report a finished quiz once, so its chat can say so.
+  useEffect(() => {
+    if (!done || reported.current === attempt) return;
+    reported.current = attempt;
+    onFinished?.({
+      count: questions.length,
+      score: Math.round(score * 10) / 10,
+      toReview: questions.filter((q) => results[q.id].score < 1).map((q) => q.prompt.slice(0, 280)),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [done, attempt]);
+
   if (offline) {
     return (
       <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700">
@@ -179,75 +268,133 @@ export default function QuizPanel({
     );
   }
 
-  const questions = quiz?.questions ?? [];
-  const checked = questions.filter((q) => results[q.id]);
-  const score = checked.reduce((s, q) => s + results[q.id].score, 0);
-  const pending = questions.filter(
-    (q) => !results[q.id] && !grading[q.id] && (answers[q.id] ?? "").trim(),
-  );
-  const done = questions.length > 0 && checked.length === questions.length;
-  const extra = completedResourceIds.length;
+  const field =
+    "w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-violet-400 focus:ring-4 focus:ring-violet-100 disabled:opacity-60";
 
   return (
     <div className="flex flex-col gap-3">
-      {/* Setup: always visible, so "New quiz" is one click away. */}
-      <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          <div className="flex items-center gap-1.5" role="group" aria-label="Number of questions">
-            <span className="text-xs text-gray-500">Questions</span>
-            {COUNTS.map((n) => (
-              <button
-                key={n}
-                type="button"
-                aria-pressed={count === n}
-                onClick={() => setCount(n)}
+      {formOpen || !quiz ? (
+        <form
+          className="rounded-2xl border border-gray-200 bg-gray-50/70 p-4"
+          aria-label="New quiz"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (count !== null && !loading) void generate({ count, types, prompt });
+          }}
+        >
+          <h3 className="text-sm font-semibold text-gray-900">New quiz</h3>
+          <p className="mt-0.5 text-xs text-gray-500">{sourceNote}</p>
+
+          <div className="mt-4 grid gap-4 sm:grid-cols-[8rem_1fr]">
+            <label className="block">
+              <span className="mb-1.5 block text-xs font-medium text-gray-700">Questions</span>
+              <input
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={MAX_QUIZ_QUESTIONS}
+                step={1}
+                value={countText}
+                onChange={(e) => setCountText(e.target.value)}
+                onBlur={() => {
+                  const n = Math.round(Number(countText));
+                  if (Number.isFinite(n) && countText.trim() !== "") {
+                    setCountText(String(Math.min(MAX_QUIZ_QUESTIONS, Math.max(1, n))));
+                  }
+                }}
                 disabled={loading}
-                className={`rounded-full border px-2.5 py-0.5 text-xs font-medium transition ${
-                  count === n
-                    ? "border-violet-600 bg-violet-600 text-white"
-                    : "border-gray-200 bg-white text-gray-600 hover:border-violet-200 hover:text-violet-700"
-                }`}
-              >
-                {n}
-              </button>
-            ))}
+                aria-invalid={count === null}
+                aria-describedby="quiz-count-help"
+                className={`${field} tabular-nums ${count === null ? "border-red-300" : ""}`}
+              />
+              <span id="quiz-count-help" className={`mt-1 block text-[11px] ${count === null ? "text-red-600" : "text-gray-400"}`}>
+                1 to {MAX_QUIZ_QUESTIONS}
+              </span>
+            </label>
+
+            <fieldset>
+              <legend className="mb-1.5 block text-xs font-medium text-gray-700">Question types</legend>
+              <div className="flex flex-wrap gap-2">
+                {ALL_TYPES.map((t) => {
+                  const on = types.includes(t);
+                  return (
+                    <label
+                      key={t}
+                      className={`inline-flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-sm transition ${
+                        on
+                          ? "border-violet-300 bg-violet-50 text-violet-800"
+                          : "border-gray-200 bg-white text-gray-500 hover:border-violet-200"
+                      } ${loading ? "pointer-events-none opacity-60" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={on}
+                        onChange={() => toggleType(t)}
+                        disabled={loading}
+                        className="h-4 w-4 rounded accent-violet-600"
+                      />
+                      {TYPE_LABEL[t]}
+                    </label>
+                  );
+                })}
+              </div>
+            </fieldset>
           </div>
-          <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Question types">
-            <span className="text-xs text-gray-500">Types</span>
-            {(Object.keys(TYPE_LABEL) as QuizQuestionType[]).map((t) => (
+
+          <label className="mt-4 block">
+            <span className="mb-1.5 flex items-baseline justify-between text-xs font-medium text-gray-700">
+              Instructions
+              <span className="font-normal text-gray-400">Optional</span>
+            </span>
+            <textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              disabled={loading}
+              rows={2}
+              maxLength={500}
+              placeholder="e.g. focus on the chain rule, make them exam-level…"
+              className={`${field} resize-y`}
+            />
+          </label>
+
+          <div className="mt-4 flex items-center justify-end gap-2">
+            {quiz && (
               <button
-                key={t}
                 type="button"
-                aria-pressed={types.includes(t)}
-                onClick={() => toggleType(t)}
+                onClick={() => setFormOpen(false)}
                 disabled={loading}
-                className={`rounded-full border px-2.5 py-0.5 text-xs font-medium transition ${
-                  types.includes(t)
-                    ? "border-violet-300 bg-violet-100 text-violet-700"
-                    : "border-gray-200 bg-white text-gray-400 hover:text-gray-600"
-                }`}
+                className="rounded-xl px-3 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-100"
               >
-                {types.includes(t) ? "✓ " : ""}
-                {TYPE_LABEL[t]}
+                Cancel
               </button>
-            ))}
+            )}
+            <button
+              type="submit"
+              disabled={loading || count === null}
+              className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-4 py-2 text-sm font-medium text-white shadow-sm shadow-violet-600/20 transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {loading && <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-t-transparent" aria-hidden="true" />}
+              {loading ? "Writing quiz…" : "Generate quiz"}
+            </button>
           </div>
-        </div>
-        <div className="mt-3 flex items-center justify-between gap-2">
-          <p className="text-[11px] leading-snug text-gray-500">
-            From this material up to where you are
-            {extra > 0 ? ` + ${extra} completed material${extra === 1 ? "" : "s"}` : ""}.
+        </form>
+      ) : (
+        <div className="flex items-center gap-3 rounded-2xl border border-gray-200 bg-gray-50/70 px-4 py-2.5">
+          <p className="min-w-0 flex-1 truncate text-xs text-gray-600">
+            <span className="font-medium text-gray-800">{questions.length} questions</span>
+            {written ? ` · ${typesLabel(written.types)}` : ""}
+            {written?.prompt.trim() ? ` · “${written.prompt.trim()}”` : ""}
           </p>
           <button
             type="button"
-            onClick={() => void generate()}
+            onClick={() => setFormOpen(true)}
             disabled={loading}
-            className="shrink-0 rounded-xl bg-violet-600 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-violet-700 disabled:opacity-50"
+            className="shrink-0 rounded-lg border border-violet-200 bg-white px-3 py-1 text-xs font-medium text-violet-700 transition hover:bg-violet-50"
           >
-            {loading ? "Writing quiz…" : quiz ? "New quiz" : "Start quiz"}
+            New quiz
           </button>
         </div>
-      </div>
+      )}
 
       {error && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700" role="alert">
@@ -255,7 +402,7 @@ export default function QuizPanel({
         </div>
       )}
 
-      {loading && !quiz && (
+      {loading && (
         <div className="space-y-2" role="status" aria-label="Writing quiz">
           {[0, 1, 2].map((i) => (
             <div key={i} className="h-24 animate-pulse rounded-xl bg-gray-100" />
@@ -263,7 +410,7 @@ export default function QuizPanel({
         </div>
       )}
 
-      {quiz && questions.length > 0 && (
+      {!loading && quiz && questions.length > 0 && (
         <>
           <div className="flex items-center justify-between gap-2 rounded-xl border border-violet-100 bg-violet-50 px-3 py-2">
             <p className="text-sm text-violet-900">
@@ -271,7 +418,8 @@ export default function QuizPanel({
                 {fmtNumber(Math.round(score * 10) / 10)} / {questions.length}
               </span>{" "}
               <span className="text-violet-700">
-                · {checked.length} of {questions.length} checked · up to {fmtMs(quiz.current_time_ms)}
+                · {checked.length} of {questions.length} checked
+                {scope.video_id ? ` · up to ${fmtMs(quiz.current_time_ms)}` : ""}
               </span>
             </p>
             {!done && pending.length > 0 && (
@@ -313,9 +461,8 @@ export default function QuizPanel({
       )}
 
       {!quiz && !loading && !error && (
-        <p className="px-1 text-sm text-gray-500">
-          Test yourself on what you&apos;ve covered. Multiple-choice and numerical answers are checked
-          instantly; written answers get feedback from Malai.
+        <p className="px-1 text-xs leading-relaxed text-gray-500">
+          Multiple-choice and numerical answers are checked instantly; written answers get feedback from Malai.
         </p>
       )}
     </div>
@@ -496,10 +643,14 @@ function Reveal({
         </div>
       )}
       {q.explanation && <MarkdownBody text={q.explanation} className="mt-1 text-gray-700" />}
-      <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        <span className="text-[11px] text-gray-500">Source</span>
-        <CitationBadge citation={q.citation} onSeek={onSeek} openDoc={openDoc} />
-      </div>
+      {q.citation ? (
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          <span className="text-[11px] text-gray-500">Source</span>
+          <CitationBadge citation={q.citation} onSeek={onSeek} openDoc={openDoc} />
+        </div>
+      ) : (
+        <p className="mt-2 text-[11px] text-gray-500">General knowledge</p>
+      )}
     </div>
   );
 }

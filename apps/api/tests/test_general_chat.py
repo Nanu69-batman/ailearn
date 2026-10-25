@@ -152,3 +152,18 @@ def test_every_answer_prompt_follows_the_learners_language():
 
 def test_format_rule_marks_key_equations_large():
     assert "\\large" in FORMAT_RULE
+
+
+def test_general_turn_follows_the_slash_command_style(monkeypatch):
+    llm = RecordingLLM("An analogy.")
+    service, session = _service(llm, monkeypatch)
+    asyncio.run(
+        service.chat(
+            session_id=session.id,
+            current_time_ms=0,
+            message="Give me an analogy for entropy",
+            mode="analogy",
+            general=True,
+        )
+    )
+    assert "Answer style for this turn: Explain through one concrete" in llm.calls[0]["user_prompt"]

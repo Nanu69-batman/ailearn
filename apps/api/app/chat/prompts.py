@@ -690,8 +690,29 @@ GENERAL_SYSTEM = (
 )
 
 
+#: Answer styles (the slash commands) in a subject-less chat. They shape the
+#: reply only; there are still no materials to read.
+GENERAL_MODE_HINTS: dict[str, str] = {
+    "explain_simple": (
+        "Explain simply for a beginner: short sentences, define every term, "
+        "one small example."
+    ),
+    "analogy": (
+        "Explain through one concrete real-world analogy, then map each part of "
+        "it back to the idea."
+    ),
+    "summarize": (
+        "Summarize: if the learner names a topic, give its key ideas as bullets; "
+        "otherwise recap this conversation so far as bullets."
+    ),
+    "compare": "Compare the ideas side by side: similarities, differences, when to use each.",
+}
+
+
 def build_general_prompt(
-    message: str, history: Sequence[tuple[str, str]] | None = None
+    message: str,
+    history: Sequence[tuple[str, str]] | None = None,
+    mode: str = "qa",
 ) -> tuple[str, str]:
     """Prompt for a subject-less chat: earlier turns plus the question, no context."""
     lines: list[str] = []
@@ -702,6 +723,10 @@ def build_general_prompt(
             lines.append(f"{who}: {text[:1500]}")
         lines.append("")
     lines.append(f"Learner: {message}")
+    hint = GENERAL_MODE_HINTS.get(mode)
+    if hint:
+        lines.append("")
+        lines.append(f"Answer style for this turn: {hint}")
     return GENERAL_SYSTEM, "\n".join(lines)
 
 

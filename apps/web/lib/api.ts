@@ -1084,8 +1084,12 @@ export interface QuizQuestion {
   model_answer?: string | null;
   key_points?: string[] | null;
   explanation: string;
-  citation: Citation;
+  /** Null only in a general quiz (a Malai chat in no subject). */
+  citation: Citation | null;
 }
+
+/** Most questions a quiz may have. */
+export const MAX_QUIZ_QUESTIONS = 20;
 
 export interface QuizRequest {
   session_id: string;
@@ -1095,6 +1099,43 @@ export interface QuizRequest {
   count?: number;
   types?: QuizQuestionType[];
   attempt?: number;
+  /** Optional learner instructions: a topic, a focus, a difficulty. */
+  prompt?: string;
+  /** A Malai chat in a subject: only that subject's materials. */
+  scope_resource_ids?: string[];
+  /** A Malai chat in no subject: general knowledge, no materials. */
+  general?: boolean;
+  /** The chat the quiz was asked from (a general quiz reads it for a topic). */
+  thread_id?: string;
+}
+
+/** Where a quiz may draw from: the chat that asked for it decides. */
+export type QuizScope = Pick<
+  QuizRequest,
+  "video_id" | "completed_resource_ids" | "scope_resource_ids" | "general" | "thread_id"
+>;
+
+export interface QuizNote {
+  session_id: string;
+  thread_id?: string;
+  event: "started" | "completed";
+  /** started: the learner's message that asked for the quiz. */
+  request?: string;
+  count: number;
+  /** completed: total score, and the questions not fully right. */
+  score?: number;
+  to_review?: string[];
+}
+
+/** Record a quiz in its chat; the server writes the lines and returns them. */
+export async function postQuizNote(note: QuizNote, sessionToken?: string): Promise<ChatMessage[]> {
+  const res = await apiFetch<MessagesEnvelope>("/quiz/note", {
+    method: "POST",
+    body: JSON.stringify(note),
+    headers: tokenHeader(sessionToken),
+  });
+  const stamp = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  return res.messages.map((m, i) => ({ ...m, id: `note-${stamp}-${i}` }));
 }
 
 export interface QuizResponse {
@@ -1141,4 +1182,32 @@ export function gradeQuizAnswer(
     }),
     headers: tokenHeader(sessionToken),
   });
+}
+
+// Chapters — apps/api/app/ingestion/chapters.py
+//   GET /resources/{id}/chapters -> ChaptersResponse
+// Written automatically after ingestion: a video's from its transcript, a
+// PDF's by page, slides by slide. "pending" while they are being written.
+
+export interface ResourceChapter {
+  title: string;
+  /** Videos. */
+  start_ms?: number | null;
+  end_ms?: number | null;
+  /** PDFs (1-based pages). */
+  page_start?: number | null;
+  page_end?: number | null;
+  /** Slides (1-based). */
+  slide_start?: number | null;
+  slide_end?: number | null;
+}
+
+export interface ChaptersResponse {
+  resource_id: string;
+  status: "ready" | "pending" | "unavailable";
+  chapters: ResourceChapter[];
+}
+
+export function getChapters(resourceId: string): Promise<ChaptersResponse> {
+  return apiFetch<ChaptersResponse>(`/resources/${encodeURIComponent(resourceId)}/chapters`);
 }

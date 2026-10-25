@@ -20,7 +20,14 @@ from app.chat.launch import (
     verify_lms_launch,
     verify_session_token,
 )
-from app.chat.quiz import GradeRequest, GradeResponse, QuizRequest, QuizResponse
+from app.chat.quiz import (
+    GradeRequest,
+    GradeResponse,
+    QuizNoteRequest,
+    QuizRequest,
+    QuizResponse,
+    quiz_note_lines,
+)
 from app.chat.schemas import (
     ChatMode,
     ChatRequest,
@@ -668,7 +675,7 @@ def get_quiz_service():
         svc = _service_override
         return QuizService(
             store=svc._store, embedder=svc._embedder, llm=svc._llm,
-            sessions=svc._sessions, agent=svc._agent,
+            sessions=svc._sessions, agent=svc._agent, messages=svc._messages,
         )
     return QuizService(
         store=get_vector_store(),
@@ -676,6 +683,7 @@ def get_quiz_service():
         llm=get_llm_provider(),
         sessions=session_store,
         agent=get_agent(),
+        messages=message_store,
     )
 
 
@@ -689,7 +697,9 @@ async def post_quiz(body: QuizRequest, request: Request) -> QuizResponse:
     """A practice quiz on the open material up to T, plus materials marked done."""
     if not _check_rate_limit(_client_ip(request)):
         raise HTTPException(status_code=429, detail="rate limit exceeded")
-    _authed_session(body.session_id, request, body.session_token)
+    session = _authed_session(body.session_id, request, body.session_token)
+    if body.thread_id is not None:
+        body = body.model_copy(update={"thread_id": _resolve_thread(session.id, body.thread_id)})
     try:
         return await get_quiz_service().make_quiz(body)
     except SessionNotFoundError as exc:
@@ -698,6 +708,30 @@ async def post_quiz(body: QuizRequest, request: Request) -> QuizResponse:
         raise
     except (httpx.HTTPError, ConnectionError, TimeoutError, RuntimeError) as exc:
         raise _quiz_upstream_error(exc) from exc
+
+
+@router.post("/quiz/note", response_model=MessagesResponse)
+def post_quiz_note(body: QuizNoteRequest, request: Request) -> MessagesResponse:
+    """Record a quiz in the chat it was asked from: started, or completed.
+
+    The lines are written by the server from the structured fields
+    (:func:`app.chat.quiz.quiz_note_lines`), never taken as text from the
+    client. Returns the lines added, in the messages shape.
+    """
+    session = _authed_session(body.session_id, request, body.session_token)
+    _use_thread(session.id, body.thread_id)
+    added = [
+        message_store.append(session.id, role, text, [])
+        for role, text in quiz_note_lines(body)
+    ]
+    return MessagesResponse(
+        session_id=session.id,
+        messages=[
+            MessageOut(role=m.role, content=m.content, citations=[], created_at=m.created_at)
+            for m in added
+        ],
+        thread_id=current_thread.get(),
+    )
 
 
 @router.post("/quiz/grade", response_model=GradeResponse)
