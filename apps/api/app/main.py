@@ -32,9 +32,13 @@ async def lifespan(_: FastAPI):
         # Supabase is the durable store: load from it instead of the JSON
         # files, and leave JSON mirroring off so the two cannot diverge.
         from app.chat.sessions import load_sessions_from_supabase
-        from app.subjects.store import load_subjects_from_supabase
+        from app.subjects.store import (
+            load_subjects_from_supabase,
+            seed_demo_subjects_to_supabase,
+        )
 
         load_subjects_from_supabase()
+        seed_demo_subjects_to_supabase()
         load_sessions_from_supabase()
     if settings.use_in_memory:
         # Sessions/messages are process-local; mirror them to data/ so an API

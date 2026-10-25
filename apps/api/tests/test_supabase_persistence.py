@@ -22,6 +22,7 @@ from app.main import app
 from app.subjects.store import (
     load_subjects_from_supabase,
     reset_store,
+    seed_demo_subjects_to_supabase,
     subject_store,
 )
 from app.supa.client import SupabaseClient, set_client
@@ -218,6 +219,33 @@ def test_subjects_load_from_supabase(client, fake):
     assert got and got.owner_id == USER_A and got.resource_ids == ["r1"]
     ids = [s["id"] for s in client.get("/subjects", headers=_bearer(USER_B)).json()["subjects"]]
     assert ids == ["sub_2"]
+
+
+def test_demo_subjects_seeded_public_and_others_skipped(client, fake, tmp_path, monkeypatch):
+    seed = tmp_path / "subjects.json"
+    seed.write_text(json.dumps({"subjects": {
+        "sub_demo": {"id": "sub_demo", "name": "Demo", "course_id": "demo",
+                     "owner_id": USER_A, "resource_ids": ["r1"],
+                     "created_at": "2020-01-01T00:00:00+00:00"},
+        "sub_dev": {"id": "sub_dev", "name": "Dev's own", "course_id": "c1",
+                    "resource_ids": []},
+        "sub_have": {"id": "sub_have", "name": "Seed copy", "course_id": "demo",
+                     "resource_ids": []},
+    }}), encoding="utf-8")
+    monkeypatch.setattr("app.subjects.store.SUBJECT_STATE_PATH", seed)
+    fake.rows["subjects"] = [{"id": "sub_have", "owner_id": None, "name": "Already there",
+                              "course_id": "demo", "resource_ids": []}]
+    reset_store()
+    load_subjects_from_supabase()
+    assert seed_demo_subjects_to_supabase() == 1
+    demo = subject_store.get("sub_demo")
+    assert demo and demo.owner_id is None  # forced public, old date kept (no TTL)
+    assert subject_store.get("sub_dev") is None  # non-demo rows never seeded
+    assert subject_store.get("sub_have").name == "Already there"  # existing row untouched
+    upserts = fake.writes("POST", "subjects")
+    assert [b[0]["id"] for *_, b in upserts] == ["sub_demo"]
+    ids = [s["id"] for s in client.get("/subjects").json()["subjects"]]
+    assert "sub_demo" in ids
 
 
 def test_subject_load_failure_returns_zero(client, fake):

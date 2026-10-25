@@ -667,6 +667,46 @@ def load_subjects_from_supabase() -> int:
     return restored
 
 
+#: The bundled demo course. Its subjects are public (owner_id null).
+SEED_COURSE_ID = "demo"
+
+
+def seed_demo_subjects_to_supabase() -> int:
+    """Copy the bundled demo subjects into Supabase when it lacks them.
+
+    With Supabase enabled the JSON file is no longer loaded, so the demo
+    subject the deploy image ships in ``data/subjects.json`` would vanish.
+    Only ``course_id == "demo"`` rows are seeded, always with no owner, so a
+    developer's own local subjects can never become public this way. Run after
+    ``load_subjects_from_supabase()``: a row already there is left alone.
+    No TTL, the demo must not expire. Returns the number seeded.
+    """
+    if get_client() is None or not SUBJECT_STATE_PATH.is_file():
+        return 0
+    try:
+        data = json.loads(SUBJECT_STATE_PATH.read_text(encoding="utf-8"))
+        rows = data.get("subjects") if isinstance(data, dict) else None
+    except (OSError, ValueError) as exc:
+        log.warning("ignoring unreadable seed subjects: %s", exc)
+        return 0
+    if not isinstance(rows, dict):
+        return 0
+    missing = {
+        sid: {**row, "owner_id": None}
+        for sid, row in rows.items()
+        if isinstance(row, dict)
+        and row.get("course_id") == SEED_COURSE_ID
+        and subject_store.get(str(sid)) is None
+    }
+    seeded = subject_store.restore(missing, apply_ttl=False)
+    for sid in missing:
+        if (subject := subject_store.get(str(sid))) is not None:
+            _mirror_subject(subject)
+    if seeded:
+        log.info("seeded %d demo subjects into supabase", seeded)
+    return seeded
+
+
 def reset_store() -> None:
     """Test helper: drop all subjects from memory."""
     subject_store.clear()
