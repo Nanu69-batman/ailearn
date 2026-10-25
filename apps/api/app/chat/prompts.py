@@ -268,6 +268,20 @@ LATEX_RULE = (
     "$\\frac{\\partial f}{\\partial x}$."
 )
 
+#: How an answer is laid out on screen. The chat renders Markdown (GFM) and
+#: KaTeX, so structure the model writes shows up as real headings, lists and
+#: centred equations. Layout only: nothing here changes what may be said.
+FORMAT_RULE = (
+    "Format the reply in Markdown so it reads well: short paragraphs, **bold** "
+    "for the key term or the final result, a numbered list for steps and a "
+    "bulleted list for parallel points, and a small table only when comparing "
+    "several things on the same attributes. Put each important equation on its "
+    "own line as display math, with the $$ fences on their own lines. Use a "
+    "### heading only for a long answer with distinct parts; a short answer "
+    "needs no headings. Keep each [chunk_id=...] citation at the end of its "
+    "sentence or list item."
+)
+
 #: Anti-spoiler, PROMPT level. The strict-T gate already removes future
 #: passages, so the remaining leak is a spoiler the model produces from EARLIER
 #: material plus its own priors ("...and this is why it comes out to 2xy"). This
@@ -334,6 +348,8 @@ SYSTEM_BASE = (
     + UNCERTAINTY_RULE
     + " "
     + LATEX_RULE
+    + " "
+    + FORMAT_RULE
     + " "
     + ANTI_SPOILER_RULE
 )
@@ -569,6 +585,9 @@ SUPPLEMENTAL_SYSTEM = (
     "- Be accurate. Use standard notation and standard mathematical definitions; "
     "do not invent specifics, citations to papers, or worked numbers.\n"
     "- Write mathematics as LaTeX: $...$ inline and $$...$$ for display.\n"
+    "- Format in Markdown: short paragraphs, **bold** key terms, numbered "
+    "steps, and each important equation on its own line between $$ fences "
+    "that stand on their own lines. Headings (###) only for a long answer.\n"
     + SOURCE_NARRATION_RULE
     + "\n"
     "- Give the direct answer in your first sentence, define each term before "

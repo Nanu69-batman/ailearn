@@ -106,67 +106,61 @@ export default function MessageList({ messages, loading, preview, onSeek, openDo
       </div>
     );
   }
+  // ChatGPT-style reading: the learner's turns sit in a bubble on the right,
+  // answers run full width as plain text so lists, tables and display
+  // equations have room. Refusals keep a tinted box so they stand out.
   return (
-    <div className={fill ? "flex flex-col gap-4" : "mt-3 flex max-h-[60vh] flex-col gap-3 overflow-y-auto pr-1"} aria-live="polite">
+    <div className={fill ? "flex flex-col gap-6" : "mt-3 flex max-h-[60vh] flex-col gap-5 overflow-y-auto pr-1"} aria-live="polite">
       {messages.map((m) =>
         m.role === "user" ? (
           <div
             key={m.id}
-            className="max-w-[85%] self-end rounded-2xl rounded-br-sm bg-violet-600 px-4 py-2.5 text-sm text-white"
+            className="max-w-[85%] self-end rounded-3xl rounded-br-md bg-violet-600 px-4 py-2.5 text-white"
           >
             <span className="sr-only">You: </span>
             {/* Both roles render as markdown: assistant answers carry the LaTeX,
                 and a user can type it too. */}
-            <MarkdownBody text={m.content} />
+            <MarkdownBody text={m.content} className="md-on-accent" />
           </div>
         ) : (
-          <div key={m.id} className="flex max-w-[90%] items-start gap-2 self-start">
-            <Avatar />
-            <div
-              className={
-                m.kind === "refused"
-                  ? "min-w-0 rounded-2xl rounded-tl-sm border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-gray-800"
-                  : "min-w-0 rounded-2xl rounded-tl-sm border border-gray-200 bg-gray-50 px-4 py-2.5 text-sm text-gray-800"
-              }
-            >
-              <span className="sr-only">Assistant: </span>
-              <KindPill kind={m.kind} />
-              <MarkdownBody text={m.content} />
-              {/* Citations stay a SIBLING of the markdown tree, never inside it, so
-                  the seek-on-click handlers survive markdown rendering. */}
-              <Citations cites={m.citations} onSeek={onSeek} openDoc={openDoc} />
-            </div>
+          <div
+            key={m.id}
+            className={
+              m.kind === "refused"
+                ? "min-w-0 self-start rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-gray-800"
+                : "min-w-0 w-full self-start text-gray-800"
+            }
+          >
+            <span className="sr-only">Assistant: </span>
+            <KindPill kind={m.kind} />
+            <MarkdownBody text={m.content} />
+            {/* Citations stay a SIBLING of the markdown tree, never inside it, so
+                the seek-on-click handlers survive markdown rendering. */}
+            <Citations cites={m.citations} onSeek={onSeek} openDoc={openDoc} />
           </div>
         ),
       )}
       {loading && preview?.text && (
-        <div className="flex max-w-[90%] items-start gap-2 self-start">
-          <Avatar />
-          <div className="min-w-0 rounded-2xl rounded-tl-sm border border-gray-200 bg-gray-50 px-4 py-2.5 text-sm text-gray-800">
-            <span className="sr-only">Assistant (writing): </span>
-            <MarkdownBody text={preview.text} />
-            <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse rounded-sm bg-violet-400 align-middle" aria-hidden="true" />
-          </div>
+        <div className="min-w-0 w-full self-start text-gray-800">
+          <span className="sr-only">Assistant (writing): </span>
+          <MarkdownBody text={preview.text} />
+          <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse rounded-sm bg-violet-400 align-middle" aria-hidden="true" />
         </div>
       )}
       {loading && !preview?.text && (
-        <div className="flex items-start gap-2 self-start" role="status">
+        <div className="flex items-center gap-2 self-start" role="status">
           <Avatar />
-          <div className="rounded-2xl rounded-tl-sm border border-gray-200 bg-gray-50 px-4 py-3">
-            <span className="sr-only">Assistant: Thinking</span>
-            <div className="flex items-center gap-1" aria-hidden="true">
-              {[0, 150, 300].map((delay) => (
-                <span
-                  key={delay}
-                  className="h-2 w-2 animate-bounce rounded-full bg-violet-400"
-                  style={{ animationDelay: `${delay}ms` }}
-                />
-              ))}
-              {preview?.status && (
-                <span className="ml-2 text-xs text-gray-500">{preview.status}…</span>
-              )}
-            </div>
+          <span className="sr-only">Assistant: Thinking</span>
+          <div className="flex items-center gap-1" aria-hidden="true">
+            {[0, 150, 300].map((delay) => (
+              <span
+                key={delay}
+                className="h-2 w-2 animate-bounce rounded-full bg-violet-400"
+                style={{ animationDelay: `${delay}ms` }}
+              />
+            ))}
           </div>
+          {preview?.status && <span className="text-xs text-gray-500">{preview.status}…</span>}
         </div>
       )}
     </div>

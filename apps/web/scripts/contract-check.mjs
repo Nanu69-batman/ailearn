@@ -949,12 +949,13 @@ if (landingLinks !== 1) {
     pass("MarkdownBody does no hand-rolled $ splitting or LaTeX regex");
   }
 
-  // (c) The plugins are actually wired.
+  // (c) The plugins are actually wired. remark-math may be followed by other
+  //     remark plugins (remark-gfm), but must be in the list.
   for (const [needle, label] of [
-    ["remarkPlugins={[remarkMath]}", "remark-math is enabled"],
-    ["rehypePlugins={[[rehypeKatex,", "rehype-katex is enabled"],
+    [/remarkPlugins=\{\[remarkMath[\],]/, "remark-math is enabled"],
+    [/rehypePlugins=\{\[\[rehypeKatex,/, "rehype-katex is enabled"],
   ]) {
-    if (!md.includes(needle)) {
+    if (!needle.test(md)) {
       fail(`MarkdownBody.tsx does not enable ${label}`);
     } else {
       pass(label);
