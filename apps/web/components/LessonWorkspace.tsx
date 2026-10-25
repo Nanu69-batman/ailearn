@@ -38,6 +38,8 @@ interface LessonWorkspaceProps {
   onResetSplit: () => void;
   /** Malai alone: the lesson window is hidden (kept mounted). */
   lessonHidden: boolean;
+  /** The lesson alone: the Malai window is hidden (kept mounted). */
+  malaiHidden: boolean;
   /** The page is in immersive fullscreen: the windows lay themselves out. */
   immersive: boolean;
   /** Each window renders its own grip, so it sits in that window's header. */
@@ -110,6 +112,7 @@ export default function LessonWorkspace({
   onSplit,
   onResetSplit,
   lessonHidden,
+  malaiHidden,
   immersive,
   lesson,
   malai,
@@ -251,7 +254,11 @@ export default function LessonWorkspace({
     >
       <div
         className={`flex min-w-0 flex-col ${lessonHidden ? "hidden" : ""} ${
-          immersive ? "" : "lg:min-h-0 lg:shrink-0 lg:grow-0 lg:basis-[var(--lesson-share)]"
+          immersive
+            ? ""
+            : malaiHidden
+              ? "lg:min-h-0 lg:flex-1"
+              : "lg:min-h-0 lg:shrink-0 lg:grow-0 lg:basis-[var(--lesson-share)]"
         } ${malaiFirst ? "lg:order-3" : "lg:order-1"} ${
           draggingWho === "lesson" ? "opacity-0" : ""
         } ${resizing ? "pointer-events-none" : ""}`}
@@ -259,7 +266,7 @@ export default function LessonWorkspace({
         {lesson(grip("lesson"))}
       </div>
 
-      {!lessonHidden && !immersive && (
+      {!lessonHidden && !malaiHidden && !immersive && (
         <div
           role="separator"
           tabIndex={0}
@@ -289,7 +296,9 @@ export default function LessonWorkspace({
       )}
 
       <div
-        className={`flex min-w-0 flex-col ${immersive ? "" : "h-[85dvh] min-h-[480px] lg:h-auto lg:min-h-0 lg:flex-1"} ${
+        className={`flex min-w-0 flex-col ${
+          immersive ? "" : malaiHidden ? "hidden" : "h-[85dvh] min-h-[480px] lg:h-auto lg:min-h-0 lg:flex-1"
+        } ${
           malaiFirst ? "lg:order-1" : "lg:order-3"
         } ${draggingWho === "malai" ? "opacity-0" : ""} ${resizing ? "pointer-events-none" : ""}`}
       >

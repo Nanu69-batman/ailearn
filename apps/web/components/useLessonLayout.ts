@@ -28,9 +28,11 @@ interface Stored {
   row: number;
   col: number;
   panelCollapsed: boolean;
+  /** The floating window toolbar is expanded. */
+  toolsOpen: boolean;
 }
 
-const DEFAULTS: Stored = { side: "right", ...DEFAULT_SPLIT, panelCollapsed: false };
+const DEFAULTS: Stored = { side: "right", ...DEFAULT_SPLIT, panelCollapsed: false, toolsOpen: true };
 
 function clampSplit(n: number): number {
   return Math.min(MAX_SPLIT, Math.max(MIN_SPLIT, n));
@@ -45,6 +47,7 @@ function read(): Stored {
       row: typeof v.row === "number" ? clampSplit(v.row) : DEFAULTS.row,
       col: typeof v.col === "number" ? clampSplit(v.col) : DEFAULTS.col,
       panelCollapsed: v.panelCollapsed === true,
+      toolsOpen: v.toolsOpen !== false,
     };
   } catch {
     // Storage unavailable or corrupt -> defaults.
@@ -98,5 +101,7 @@ export function useLessonLayout() {
       update({ side: turn[state.side] });
     }, [update, state.side]),
     setPanelCollapsed: useCallback((panelCollapsed: boolean) => update({ panelCollapsed }), [update]),
+    toolsOpen: state.toolsOpen,
+    setToolsOpen: useCallback((toolsOpen: boolean) => update({ toolsOpen }), [update]),
   };
 }

@@ -11,6 +11,7 @@ import YouTubePlayer, {
 import ChatPanel from "@/components/ChatPanel";
 import LessonPanel from "@/components/LessonPanel";
 import LessonWorkspace from "@/components/LessonWorkspace";
+import WindowToolbar from "@/components/WindowToolbar";
 import { useLessonLayout } from "@/components/useLessonLayout";
 import {
   CitedRangeContext,
@@ -391,15 +392,23 @@ export default function LessonView({ malai = false }: { malai?: boolean }) {
 
   // Window layout: Malai's side, the split, the panel, and "hide video".
   const layout = useLessonLayout();
+  // One window may be hidden at a time (both kept mounted); hiding one
+  // brings the other back.
   const [lessonHidden, setLessonHidden] = useState(false);
-  const hideLesson = useCallback((hidden: boolean): void => {
-    // Out of sight is not out of earshot: stop playback when hiding.
-    if (hidden) {
+  const [malaiHidden, setMalaiHidden] = useState(false);
+  const toggleLesson = useCallback((): void => {
+    if (!lessonHidden) {
+      // Out of sight is not out of earshot: stop playback when hiding.
       videoRef.current?.pause();
       ytHandleRef.current?.pause();
+      setMalaiHidden(false);
     }
-    setLessonHidden(hidden);
-  }, []);
+    setLessonHidden(!lessonHidden);
+  }, [lessonHidden]);
+  const toggleMalai = useCallback((): void => {
+    if (!malaiHidden) setLessonHidden(false);
+    setMalaiHidden(!malaiHidden);
+  }, [malaiHidden]);
   /** At `lg` the windows dock; below it they simply stack. */
   const [wide, setWide] = useState(false);
   useEffect(() => {
@@ -513,7 +522,13 @@ export default function LessonView({ malai = false }: { malai?: boolean }) {
   const selectedRes = resources.find((r) => r.id === selected.resourceId);
   // The developer-view button floats over the workspace's top-right corner;
   // whichever window is there keeps its header clear of it.
-  const cornerWindow = lessonHidden || layout.side === "right" || layout.side === "top" ? "malai" : "lesson";
+  const cornerWindow = lessonHidden
+    ? "malai"
+    : malaiHidden
+      ? "lesson"
+      : layout.side === "right" || layout.side === "top"
+        ? "malai"
+        : "lesson";
   const panelPlacement = wide && layout.stacked ? "side" : "below";
 
   const iconButton =
@@ -641,7 +656,7 @@ export default function LessonView({ malai = false }: { malai?: boolean }) {
 
   const lessonWindow = (grip: ReactNode) => (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
-      {/* Window header: move handle, back, breadcrumb, layout buttons */}
+      {/* Window header: move handle, back, breadcrumb */}
       <div className={`flex min-w-0 shrink-0 items-center gap-1.5 ${cornerWindow === "lesson" ? "md:pr-14" : ""}`}>
         {grip}
         <button
@@ -683,31 +698,6 @@ export default function LessonView({ malai = false }: { malai?: boolean }) {
             <span className="font-semibold tabular-nums text-violet-900">{fmtClock(playheadMs)}</span>
           </div>
         )}
-        <div className="hidden shrink-0 items-center gap-0.5 lg:flex" role="group" aria-label="Window layout">
-          <button
-            type="button"
-            onClick={layout.toggleOrientation}
-            aria-label={layout.stacked ? "Put Malai beside the video" : "Put Malai below the video"}
-            title={layout.stacked ? "Side by side" : "Stacked"}
-            className={iconButton}
-          >
-            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
-              <rect x="2.75" y="3.75" width="14.5" height="12.5" rx="2" />
-              {layout.stacked ? <path d="M11 3.75v12.5" /> : <path d="M2.75 11h14.5" />}
-            </svg>
-          </button>
-          <button
-            type="button"
-            onClick={layout.swap}
-            aria-label="Swap the lesson and Malai"
-            title="Swap places"
-            className={iconButton}
-          >
-            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={`h-4 w-4 ${layout.stacked ? "rotate-90" : ""}`} aria-hidden="true">
-              <path d="M4 7h12l-3-3M16 13H4l3 3" />
-            </svg>
-          </button>
-        </div>
       </div>
 
       <div
@@ -916,31 +906,17 @@ export default function LessonView({ malai = false }: { malai?: boolean }) {
         openThreadId={openThreadId}
         onAsk={onAsk}
         headerLead={grip}
+        isVideo={isMedia}
         headerActions={
-          immersive ? null : (
-            <button
-              type="button"
-              onClick={() => hideLesson(!lessonHidden)}
-              aria-pressed={lessonHidden}
-              className={`flex items-center gap-1.5 rounded-xl bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-violet-50 hover:text-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 ${
-                cornerWindow === "malai" ? "md:mr-12" : ""
-              }`}
-            >
-              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
-                <rect x="2.5" y="5" width="11" height="10" rx="2" />
-                <path d="m13.5 9 4-2.5v7l-4-2.5" />
-                {lessonHidden ? null : <path d="M2 3l16 14" />}
-              </svg>
-              {lessonHidden ? `Show ${isMedia ? "video" : "lesson"}` : `Hide ${isMedia ? "video" : "lesson"}`}
-            </button>
-          )
+          !immersive && cornerWindow === "malai" ? <span className="hidden w-11 shrink-0 md:block" aria-hidden="true" /> : null
         }
       />
     </aside>
   );
 
   return (
-    <div className="mx-auto flex w-full max-w-[1600px] flex-col lg:h-[calc(100dvh-5rem)]">
+    // The bottom gutter is the floating toolbar's place, so it covers nothing.
+    <div className="relative mx-auto flex w-full max-w-[1600px] flex-col pb-20 lg:h-[calc(100dvh-8rem)] lg:pb-0">
       <LessonWorkspace
         side={layout.side}
         split={layout.split}
@@ -948,10 +924,25 @@ export default function LessonView({ malai = false }: { malai?: boolean }) {
         onSplit={layout.setSplit}
         onResetSplit={layout.resetSplit}
         lessonHidden={lessonHidden}
+        malaiHidden={malaiHidden}
         immersive={immersive}
         lesson={lessonWindow}
         malai={malaiWindow}
       />
+      {!immersive && (
+        <WindowToolbar
+          open={layout.toolsOpen}
+          onOpenChange={layout.setToolsOpen}
+          resourceLabel={isMedia ? "video" : "resource"}
+          lessonShown={!lessonHidden}
+          malaiShown={!malaiHidden}
+          stacked={layout.stacked}
+          onToggleLesson={toggleLesson}
+          onToggleMalai={toggleMalai}
+          onToggleOrientation={layout.toggleOrientation}
+          onSwap={layout.swap}
+        />
+      )}
     </div>
   );
 }

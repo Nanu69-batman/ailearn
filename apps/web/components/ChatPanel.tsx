@@ -19,6 +19,7 @@ import {
   type ChatThread,
 } from "../lib/api";
 import { mockChatAnswer, mockHistory } from "../lib/fixtures";
+import { LEARNER_NAME } from "../lib/learn";
 import MessageList from "./MessageList";
 import ChatThreads from "./ChatThreads";
 import type { CitationBadgeProps } from "./CitationBadge";
@@ -60,7 +61,34 @@ interface ChatPanelProps {
   openThreadId?: string | null;
   /** A question was sent in `threadId` (before its answer arrives). */
   onAsk?: (threadId: string, question: string) => void;
+  /** A video (playhead, frames) rather than a document. Changes the wording. */
+  isVideo?: boolean;
 }
+
+interface Starter {
+  label: string;
+  prompt: string;
+  icon: string;
+  /** Opens the Quiz tab instead of asking. */
+  quiz?: boolean;
+}
+
+const BOOK_ICON = "M2 5a2 2 0 012-2h5a3 3 0 013 3v15a2 2 0 00-2-2H2zM22 5a2 2 0 00-2-2h-5a3 3 0 00-3 3v15a2 2 0 012-2h8z";
+const LIST_ICON = "M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01";
+const TARGET_ICON = "M12 22a10 10 0 110-20 10 10 0 010 20zM12 16a4 4 0 110-8 4 4 0 010 8zM12 12h.01";
+
+/** The empty chat's starters, as on the Malai page. */
+const VIDEO_STARTERS: Starter[] = [
+  { label: "Explain this concept", prompt: "Explain the last idea simply", icon: BOOK_ICON },
+  { label: "What's on screen?", prompt: "What's on screen right now?", icon: "M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12zM12 15a3 3 0 100-6 3 3 0 000 6z" },
+  { label: "Summarize this section", prompt: "Summarize what I've watched so far", icon: LIST_ICON },
+  { label: "Create practice questions", prompt: "", icon: TARGET_ICON, quiz: true },
+];
+const DOCUMENT_STARTERS: Starter[] = [
+  { label: "Explain the key idea", prompt: "Explain the key idea of this material simply", icon: BOOK_ICON },
+  { label: "Summarize this", prompt: "Summarize this material", icon: LIST_ICON },
+  { label: "Create practice questions", prompt: "", icon: TARGET_ICON, quiz: true },
+];
 
 function newId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -129,6 +157,7 @@ export default function ChatPanel({
   headerActions,
   openThreadId,
   onAsk,
+  isVideo = true,
 }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [historyState, setHistoryState] = useState<"loading" | "ready" | "error">("loading");
@@ -465,54 +494,62 @@ export default function ChatPanel({
     }
   }
 
+  const starters = isVideo ? VIDEO_STARTERS : DOCUMENT_STARTERS;
+  const showGreeting =
+    tab === "chat" && historyState === "ready" && messages.length === 0 && !sending && !sessionExpired;
+  const canSend = !sending && input.trim().length > 0;
+  const notice = "rounded-xl border px-3 py-2.5 text-sm";
+
   return (
     <section
-      className={`flex flex-col rounded-xl border border-gray-200 bg-white p-4 shadow-sm ${fill ? "h-full min-h-0" : ""}`}
-      aria-label="Chat with video"
+      className={`flex flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm ${fill ? "h-full min-h-0" : ""}`}
+      aria-label="Chat with Malai"
     >
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-2.5">
-          {headerLead}
-          <div
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 text-sm font-semibold text-white shadow-sm"
-            aria-hidden="true"
-          >
-            M
-          </div>
-          <div className="min-w-0">
-            <h2 className="text-base font-semibold leading-tight text-gray-900">Malai · AI tutor</h2>
-            <p className="truncate text-xs text-gray-500" title="Malai reads this material up to where you are, plus the materials you've marked done.">
-              {completedResourceIds.length > 0
-                ? `This lesson so far + ${completedResourceIds.length} completed material${completedResourceIds.length === 1 ? "" : "s"}`
-                : "Answers come from what you've watched so far"}
-            </p>
-          </div>
+      {/* Header: who, what Malai reads, and the Chat/Quiz switch on the right */}
+      <div className="flex shrink-0 items-center gap-2.5 border-b border-gray-100 px-4 py-3">
+        {headerLead}
+        <div
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 text-sm font-semibold text-white shadow-sm"
+          aria-hidden="true"
+        >
+          M
         </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {offline && <span className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-xs text-amber-600">offline mock</span>}
-          {headerActions}
+        <div className="min-w-0 flex-1">
+          <h2 className="text-base font-semibold leading-tight text-gray-900">Malai</h2>
+          <p className="truncate text-xs text-gray-500" title="Malai reads this material up to where you are, plus the materials you've marked done.">
+            {completedResourceIds.length > 0
+              ? `This lesson so far + ${completedResourceIds.length} completed material${completedResourceIds.length === 1 ? "" : "s"}`
+              : isVideo
+                ? "Answers from what you've watched so far"
+                : "Answers from this material"}
+          </p>
         </div>
-      </div>
-
-      <div className="mb-3 flex rounded-xl bg-gray-100 p-1" role="tablist" aria-label="Tutor view">
-        {(["chat", "quiz"] as const).map((t) => (
-          <button
-            key={t}
-            type="button"
-            role="tab"
-            aria-selected={tab === t}
-            onClick={() => setTab(t)}
-            className={`flex-1 rounded-lg px-3 py-1.5 text-sm font-medium transition ${
-              tab === t ? "bg-white text-violet-700 shadow-sm" : "text-gray-500 hover:text-gray-700"
-            }`}
-          >
-            {t === "chat" ? "Chat" : "Quiz"}
-          </button>
-        ))}
+        {offline && <span className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-xs text-amber-600">offline mock</span>}
+        <div className="flex shrink-0 rounded-full bg-gray-100 p-0.5" role="tablist" aria-label="Tutor view">
+          {(["chat", "quiz"] as const).map((t) => (
+            <button
+              key={t}
+              type="button"
+              role="tab"
+              aria-selected={tab === t}
+              onClick={() => setTab(t)}
+              className={`rounded-full px-3 py-1 text-xs font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 ${
+                tab === t ? "bg-white text-violet-700 shadow-sm" : "text-gray-500 hover:text-gray-800"
+              }`}
+            >
+              {t === "chat" ? "Chat" : "Quiz"}
+            </button>
+          ))}
+        </div>
+        {headerActions}
       </div>
 
       {/* Both stay mounted so switching tabs keeps the chat and an unfinished quiz. */}
-      <div className={tab === "quiz" ? (fill ? "min-h-0 flex-1 overflow-y-auto pr-1" : "") : "hidden"} role="tabpanel" aria-label="Quiz">
+      <div
+        className={tab === "quiz" ? `min-h-0 flex-1 overflow-y-auto px-4 py-3 ${fill ? "" : "max-h-[60vh]"}` : "hidden"}
+        role="tabpanel"
+        aria-label="Quiz"
+      >
         <QuizPanel
           sessionId={sessionId}
           sessionToken={sessionToken}
@@ -525,141 +562,197 @@ export default function ChatPanel({
         />
       </div>
 
-      <div className={tab === "chat" ? "contents" : "hidden"} role="tabpanel" aria-label="Chat">
-      {!offline && !sessionExpired && (
-        <ChatThreads
-          threads={threads}
-          currentId={threadId}
-          disabled={sending}
-          busy={threadBusy}
-          onSelect={selectThread}
-          onCreate={() => void handleCreateThread()}
-          onRename={(id, title) => void handleRenameThread(id, title)}
-          onDelete={(id) => void handleDeleteThread(id)}
-        />
-      )}
-      {threadError && (
-        <p className="mb-2 rounded-lg bg-red-50 px-3 py-1.5 text-xs text-red-600" role="alert">
-          {threadError}
-        </p>
-      )}
-
-      <ModeSelector value={mode} onChange={setMode} disabled={sending} />
-
-      {sessionExpired && (
-        <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-600" role="alert">
-          {SESSION_EXPIRED_COPY}
-          {onRejoin && (
-            <div className="mt-2">
-              <button type="button" onClick={onRejoin} className="rounded-lg bg-red-100 px-3 py-1 text-xs text-red-700 hover:bg-red-200">
-                Rejoin session
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-
-      {backendUnreachable && !sessionExpired && (
-        <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700" role="alert">
-          Backend unreachable — showing mock data.
-        </div>
-      )}
-
-      <div ref={fill ? scrollRef : undefined} className={fill ? "mt-3 min-h-0 flex-1 overflow-y-auto pr-1" : "contents"}>
-      {historyState === "loading" && (
-        <div className="mt-3 text-sm text-gray-400" role="status">
-          Loading conversation…
-        </div>
-      )}
-      {historyState === "error" && (
-        <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-600" role="alert">
-          Could not load history: {historyError}
-        </div>
-      )}
-      {(historyState === "ready" || messages.length > 0) && (
-        <MessageList
-          messages={messages}
-          loading={sending}
-          preview={preview}
-          onSeek={onSeek}
-          openDoc={openDoc}
-          onSuggest={(text) => (/^quiz me/i.test(text) ? setTab("quiz") : void send(text))}
-          suggestDisabled={sending || sessionExpired}
-          fill={fill}
-        />
-      )}
-      </div>
-
-      {sendError && !sessionExpired && (
-        <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700" role="alert">
-          Live API error (answered from mock): {sendError}
-        </div>
-      )}
-      {frameError && (
-        <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700" role="alert">
-          {frameError}
-        </div>
-      )}
-      {sendError && sessionExpired && (
-        <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-600" role="alert">
-          {sendError}
-        </div>
-      )}
-
-      <form className="mt-3 flex flex-col gap-2" onSubmit={handleSubmit}>
-        <div className="flex items-end gap-2">
-          <label className="sr-only" htmlFor="chat-input">
-            Ask a question about the video
-          </label>
-          <textarea
-            id="chat-input"
-            ref={inputRef}
-            rows={1}
-            className="flex-1 resize-none overflow-hidden rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm leading-5 text-gray-800 placeholder-gray-400 outline-none transition focus:border-violet-400 focus:bg-white focus:ring-2 focus:ring-violet-200"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Pause, then ask… e.g. what did that term mean?"
-            disabled={sending}
-            autoComplete="off"
-          />
-          <button type="submit" className="rounded-xl bg-violet-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-violet-700 disabled:opacity-40" disabled={sending || input.trim().length === 0}>
-            {sending ? "…" : "Send"}
-          </button>
-        </div>
-
-        {/* Trigger #1 of the live frame: the explicit button. It LATCHES (it
-            does not send by itself) so the learner can still type the question,
-            and it forces a capture regardless of the wording. Trigger #2 is
-            `isFrameQuestion` inside send(). Rendered only when a capture is
-            actually possible: a document has no video element, and offering a
-            frame button there would promise something that does not exist. */}
-        {captureFrame && (
-          <div className="flex items-center justify-between gap-2">
-            <button
-              type="button"
-              aria-pressed={frameLatched}
-              onClick={() => setFrameLatched((v) => !v)}
-              disabled={sending || capturing}
-              title="Send the exact frame on screen with your next question, whatever you type"
-              className={
-                frameLatched
-                  ? "rounded-xl border border-violet-400 bg-violet-100 px-3 py-1.5 text-xs font-medium text-violet-700 transition hover:bg-violet-200 disabled:opacity-40"
-                  : "rounded-xl border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-600 transition hover:border-violet-300 hover:bg-violet-50 disabled:opacity-40"
-              }
-            >
-              {capturing ? "Reading frame…" : frameLatched ? "✓ This frame" : "Ask about this frame"}
-            </button>
-            <p className="text-[11px] leading-snug text-gray-400">
-              {frameLatched
-                ? "Your next question will be answered from the frame on screen."
-                : "Or just ask “what am I looking at?”."}
-            </p>
+      <div className={tab === "chat" ? "flex min-h-0 flex-1 flex-col" : "hidden"} role="tabpanel" aria-label="Chat">
+        {!offline && !sessionExpired && (
+          <div className="shrink-0 px-4 pt-3">
+            <ChatThreads
+              threads={threads}
+              currentId={threadId}
+              disabled={sending}
+              busy={threadBusy}
+              onSelect={selectThread}
+              onCreate={() => void handleCreateThread()}
+              onRename={(id, title) => void handleRenameThread(id, title)}
+              onDelete={(id) => void handleDeleteThread(id)}
+            />
+            {threadError && (
+              <p className="mb-2 rounded-lg bg-red-50 px-3 py-1.5 text-xs text-red-600" role="alert">
+                {threadError}
+              </p>
+            )}
           </div>
         )}
-      </form>
+
+        <div ref={scrollRef} className={`min-h-0 flex-1 overflow-y-auto px-4 pb-3 ${fill ? "" : "max-h-[60vh]"}`}>
+          {sessionExpired && (
+            <div className={`${notice} mt-3 border-red-200 bg-red-50 text-red-600`} role="alert">
+              {SESSION_EXPIRED_COPY}
+              {onRejoin && (
+                <div className="mt-2">
+                  <button type="button" onClick={onRejoin} className="rounded-lg bg-red-100 px-3 py-1 text-xs text-red-700 hover:bg-red-200">
+                    Rejoin session
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+          {backendUnreachable && !sessionExpired && (
+            <div className={`${notice} mt-3 border-amber-200 bg-amber-50 text-amber-700`} role="alert">
+              Backend unreachable — showing mock data.
+            </div>
+          )}
+          {historyState === "loading" && (
+            <div className="flex items-center justify-center gap-2 py-10 text-sm text-gray-500" role="status">
+              <span className="h-4 w-4 animate-spin rounded-full border-2 border-violet-500 border-t-transparent" aria-hidden="true" />
+              Loading the conversation…
+            </div>
+          )}
+          {historyState === "error" && !sessionExpired && (
+            <div className={`${notice} mt-3 border-red-200 bg-red-50 text-red-600`} role="alert">
+              Could not load history: {historyError}
+            </div>
+          )}
+
+          {showGreeting ? (
+            <div className="flex min-h-full flex-col items-center justify-center px-2 py-6 text-center">
+              <p className="text-sm font-medium text-violet-700">
+                Hello, {LEARNER_NAME} <span aria-hidden="true">👋</span>
+              </p>
+              <h3 className="mt-1.5 text-xl font-bold tracking-tight text-gray-900 sm:text-2xl">
+                How can I help you with this {isVideo ? "video" : "material"}?
+              </h3>
+              <p className="mt-1.5 text-sm text-gray-500">
+                Ask questions, get explanations, solve doubts, practice problems and more.
+              </p>
+              <div className="mt-5 flex flex-wrap justify-center gap-2">
+                {starters.map((s) => (
+                  <button
+                    key={s.label}
+                    type="button"
+                    disabled={sending || sessionExpired}
+                    onClick={() => (s.quiz ? setTab("quiz") : void send(s.prompt))}
+                    className="inline-flex items-center gap-2 rounded-full border border-violet-100 bg-violet-50/50 px-3.5 py-2 text-sm text-gray-700 transition hover:border-violet-300 hover:bg-white hover:text-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 disabled:opacity-50"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-violet-600" aria-hidden="true">
+                      <path d={s.icon} />
+                    </svg>
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            (historyState === "ready" || messages.length > 0) && (
+              <div className="pt-3">
+                <MessageList
+                  messages={messages}
+                  loading={sending}
+                  preview={preview}
+                  onSeek={onSeek}
+                  openDoc={openDoc}
+                  onSuggest={(text) => (/^quiz me/i.test(text) ? setTab("quiz") : void send(text))}
+                  suggestDisabled={sending || sessionExpired}
+                  fill
+                />
+              </div>
+            )
+          )}
+
+          {sendError && !sessionExpired && (
+            <div className={`${notice} mt-3 border-amber-200 bg-amber-50 text-amber-700`} role="alert">
+              Live API error (answered from mock): {sendError}
+            </div>
+          )}
+          {frameError && (
+            <div className={`${notice} mt-3 border-amber-200 bg-amber-50 text-amber-700`} role="alert">
+              {frameError}
+            </div>
+          )}
+          {sendError && sessionExpired && (
+            <div className={`${notice} mt-3 border-red-200 bg-red-50 text-red-600`} role="alert">
+              {sendError}
+            </div>
+          )}
+          <div ref={bottomRef} />
+        </div>
+
+        {/* Composer: the same pill as the Malai page */}
+        <form className="shrink-0 px-4 pb-4" onSubmit={handleSubmit}>
+          <ModeSelector value={mode} onChange={setMode} disabled={sending} />
+          <div className="flex items-end gap-2 rounded-[1.5rem] border border-gray-200 bg-white py-1.5 pl-2 pr-1.5 shadow-lg shadow-violet-900/5 transition focus-within:border-violet-300 focus-within:ring-4 focus-within:ring-violet-100">
+            {/* Trigger #1 of the live frame: the explicit button. It LATCHES (it
+                does not send by itself) so the learner can still type the
+                question, and it forces a capture regardless of the wording.
+                Trigger #2 is `isFrameQuestion` inside send(). Shown only for a
+                video: a document has no frame, and offering one there would
+                promise something that does not exist. */}
+            {captureFrame && isVideo ? (
+              <button
+                type="button"
+                aria-pressed={frameLatched}
+                onClick={() => setFrameLatched((v) => !v)}
+                disabled={sending || capturing}
+                aria-label={frameLatched ? "Stop sending the frame on screen" : "Ask about the frame on screen"}
+                title="Send the exact frame on screen with your next question, whatever you type"
+                className={`mb-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 disabled:opacity-40 ${
+                  frameLatched ? "bg-violet-100 text-violet-700" : "text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                }`}
+              >
+                {capturing ? (
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-violet-500 border-t-transparent" aria-hidden="true" />
+                ) : (
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5" aria-hidden="true">
+                    <path d="M3 8V6a2 2 0 012-2h2M17 4h2a2 2 0 012 2v2M21 16v2a2 2 0 01-2 2h-2M7 20H5a2 2 0 01-2-2v-2" />
+                    <circle cx="12" cy="12" r="3" />
+                  </svg>
+                )}
+              </button>
+            ) : (
+              <span className="w-2 shrink-0" aria-hidden="true" />
+            )}
+            <label className="sr-only" htmlFor="chat-input">
+              Ask Malai about this {isVideo ? "video" : "material"}
+            </label>
+            <textarea
+              id="chat-input"
+              ref={inputRef}
+              rows={1}
+              className="min-h-[2.5rem] flex-1 resize-none overflow-hidden bg-transparent py-2.5 text-sm leading-5 text-gray-900 placeholder-gray-400 outline-none"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={
+                frameLatched
+                  ? "Ask about the frame on screen…"
+                  : isVideo
+                    ? "Ask a question about this video…"
+                    : "Ask a question about this material…"
+              }
+              disabled={sending}
+              autoComplete="off"
+            />
+            <button
+              type="submit"
+              disabled={!canSend}
+              aria-label="Send"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-violet-600 text-white shadow-md shadow-violet-600/30 transition hover:bg-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:bg-violet-300 disabled:shadow-none"
+            >
+              {sending ? (
+                <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" aria-hidden="true" />
+              ) : (
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5" aria-hidden="true">
+                  <path d="M12 19V5M5 12l7-7 7 7" />
+                </svg>
+              )}
+            </button>
+          </div>
+          {frameLatched && (
+            <p className="mt-1.5 px-3 text-[11px] text-violet-700">
+              Your next question will be answered from the frame on screen.
+            </p>
+          )}
+        </form>
       </div>
-      <div ref={bottomRef} />
     </section>
   );
 }
