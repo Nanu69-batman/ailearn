@@ -56,6 +56,10 @@ interface ChatPanelProps {
   headerLead?: ReactNode;
   /** Right end of the header, e.g. window buttons. */
   headerActions?: ReactNode;
+  /** Open this chat (thread) instead of the one last used in this session. */
+  openThreadId?: string | null;
+  /** A question was sent in `threadId` (before its answer arrives). */
+  onAsk?: (threadId: string, question: string) => void;
 }
 
 function newId(): string {
@@ -123,6 +127,8 @@ export default function ChatPanel({
   fill = false,
   headerLead,
   headerActions,
+  openThreadId,
+  onAsk,
 }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [historyState, setHistoryState] = useState<"loading" | "ready" | "error">("loading");
@@ -166,8 +172,9 @@ export default function ChatPanel({
   const [threadError, setThreadError] = useState<string | null>(null);
 
   useEffect(() => {
-    setThreadId(readThread(sessionId));
-  }, [sessionId]);
+    if (openThreadId) writeThread(sessionId, openThreadId);
+    setThreadId(openThreadId || readThread(sessionId));
+  }, [sessionId, openThreadId]);
 
   const selectThread = useCallback(
     (id: string): void => {
@@ -323,6 +330,7 @@ export default function ChatPanel({
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
     setSending(true);
+    if (!offline) onAsk?.(threadId, text);
     setSendError(null);
     setFrameError(null);
 

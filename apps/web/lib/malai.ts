@@ -13,11 +13,14 @@
  * created in, so their history stays readable.
  */
 
-import { useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import {
   createLmsSession,
   createThread,
+  formatApiError,
+  getSubjectResources,
   sameResourceIdSet,
+  type CourseResource,
   type Subject,
 } from "@/lib/api";
 import { readCompletion } from "@/lib/learn";
@@ -26,6 +29,24 @@ export const MALAI_PATH = "/malai";
 
 export function malaiChatPath(chatId: string): string {
   return `${MALAI_PATH}?c=${encodeURIComponent(chatId)}`;
+}
+
+/** A subject's Malai page: its chats, its resources, and a new-chat box. */
+export function malaiSubjectPath(subjectId: string): string {
+  return `${MALAI_PATH}?s=${encodeURIComponent(subjectId)}`;
+}
+
+/** A resource opened inside Malai, optionally with one of its chats. */
+export function malaiLessonPath(subjectId: string, resourceId: string, chatId?: string): string {
+  const base = `${MALAI_PATH}/lesson/${encodeURIComponent(subjectId)}/${encodeURIComponent(resourceId)}`;
+  return chatId ? `${base}?c=${encodeURIComponent(chatId)}` : base;
+}
+
+/** Where a chat lives: a lesson chat reopens beside its resource. */
+export function chatPath(chat: MalaiChat): string {
+  return chat.resourceId && chat.subjectId
+    ? malaiLessonPath(chat.subjectId, chat.resourceId, chat.id)
+    : malaiChatPath(chat.id);
 }
 
 /** Course id of a session that spans every subject. Mirrors the API's ANY_COURSE. */
@@ -41,6 +62,11 @@ export interface MalaiChat {
   title: string;
   /** Null: not filed under a subject ("Recent chats"). */
   subjectId: string | null;
+  /**
+   * Set for a chat started beside a resource (the lesson page). It lives in
+   * that subject's session, so it is always filed under that subject.
+   */
+  resourceId?: string | null;
   /** The learner's latest question, shown under the title. */
   preview: string;
   createdAt: number;
@@ -128,6 +154,40 @@ export function updateChat(id: string, patch: Partial<Omit<MalaiChat, "id">>): v
 
 export function removeChat(id: string): void {
   save(load().filter((c) => c.id !== id));
+}
+
+/**
+ * A question was asked on a lesson page: file that chat under its subject,
+ * creating its entry on the first question. Returns the chat's id.
+ */
+export function recordLessonChat(args: {
+  sessionId: string;
+  sessionToken: string;
+  threadId: string;
+  subjectId: string;
+  resourceId: string;
+  question: string;
+}): string {
+  const now = Date.now();
+  const existing = load().find((c) => c.sessionId === args.sessionId && c.threadId === args.threadId);
+  if (existing) {
+    updateChat(existing.id, { preview: titleFrom(args.question), updatedAt: now, sessionToken: args.sessionToken });
+    return existing.id;
+  }
+  const chat: MalaiChat = {
+    id: newChatId(),
+    sessionId: args.sessionId,
+    sessionToken: args.sessionToken,
+    threadId: args.threadId,
+    title: titleFrom(args.question),
+    subjectId: args.subjectId,
+    resourceId: args.resourceId,
+    preview: titleFrom(args.question),
+    createdAt: now,
+    updatedAt: now,
+  };
+  addChat(chat);
+  return chat.id;
 }
 
 /** Short title from a first question. */
@@ -243,4 +303,48 @@ export function newChatId(): string {
   } catch {
     return `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   }
+}
+
+// ---------------------------------------------------------------------------
+// A subject's resources, for the sidebar flyout and the subject page.
+// ---------------------------------------------------------------------------
+
+const resourceCache = new Map<string, CourseResource[]>();
+
+export function useSubjectResources(subjectId: string | null): {
+  resources: CourseResource[];
+  state: "idle" | "loading" | "ready" | "error";
+  error: string | null;
+} {
+  const cached = subjectId ? resourceCache.get(subjectId) : undefined;
+  const [state, setState] = useState<"idle" | "loading" | "ready" | "error">(cached ? "ready" : "idle");
+  const [resources, setResources] = useState<CourseResource[]>(cached ?? []);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!subjectId) return;
+    let cancelled = false;
+    const hit = resourceCache.get(subjectId);
+    setResources(hit ?? []);
+    setState(hit ? "ready" : "loading");
+    setError(null);
+    // Refresh even on a cache hit: materials may have been added since.
+    getSubjectResources(subjectId)
+      .then((res) => {
+        if (cancelled) return;
+        resourceCache.set(subjectId, res.resources);
+        setResources(res.resources);
+        setState("ready");
+      })
+      .catch((err) => {
+        if (cancelled || hit) return;
+        setError(formatApiError(err));
+        setState("error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [subjectId]);
+
+  return { resources, state, error };
 }

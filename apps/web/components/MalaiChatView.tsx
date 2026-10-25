@@ -10,26 +10,35 @@ import {
   streamChat,
   type ChatMessage,
   type ChatRequest,
-  type Subject,
 } from "@/lib/api";
-import { LEARNER_NAME } from "@/lib/learn";
+import { LEARNER_NAME, resourceIcon, resourceKindLabel, toSelected } from "@/lib/learn";
 import {
   addChat,
   allResourceIds,
+  chatDate,
+  chatPath,
   doneResourceIds,
   malaiChatPath,
+  malaiLessonPath,
+  malaiSubjectPath,
   newChatId,
   openThread,
   titleFrom,
   updateChat,
   useMalaiChats,
+  useSubjectResources,
   type MalaiChat,
 } from "@/lib/malai";
+import Link from "next/link";
 import MessageList from "@/components/MessageList";
+import { initials, subjectAccent } from "@/components/SubjectCard";
 import { useSubjects } from "@/components/useSubjects";
 
 /**
  * /malai: chat with the tutor outside any one lesson.
+ *
+ * /malai?s=<subject> is that subject's page (like a project): its chats, its
+ * resources, and a box that starts a new chat filed under it.
  *
  * A new chat shows the composer in the middle of the page; once the first
  * question is sent it moves to the bottom. The chat is created on that first
@@ -37,7 +46,7 @@ import { useSubjects } from "@/components/useSubjects";
  * /malai?c=<id> without a navigation, so the answer streaming in is never
  * interrupted.
  *
- * What Malai may read: the chosen subject's materials, or every subject's.
+ * What Malai may read: the chat's subject's materials, or every subject's.
  * There is no playhead here, so videos follow the same strict gate as
  * everywhere else: only those marked done are readable; documents always are.
  */
@@ -64,9 +73,7 @@ function Composer({
   onSend,
   disabled,
   busy,
-  subjects,
-  subjectId,
-  onSubject,
+  placeholder,
   autoFocus,
   inputRef,
 }: {
@@ -75,9 +82,7 @@ function Composer({
   onSend: () => void;
   disabled: boolean;
   busy: boolean;
-  subjects: Subject[];
-  subjectId: string | null;
-  onSubject: (id: string | null) => void;
+  placeholder: string;
   autoFocus?: boolean;
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
 }) {
@@ -113,28 +118,9 @@ function Composer({
             if (canSend) onSend();
           }
         }}
-        placeholder="Ask anything about your subjects…"
+        placeholder={placeholder}
         className="max-h-[180px] min-h-[2.75rem] flex-1 resize-none bg-transparent py-2.5 text-[15px] text-gray-900 placeholder-gray-400 outline-none"
       />
-      <label className="relative mb-0.5 shrink-0">
-        <span className="sr-only">Subject Malai reads from</span>
-        <select
-          value={subjectId ?? ""}
-          onChange={(e) => onSubject(e.target.value || null)}
-          className="max-w-[10rem] appearance-none truncate rounded-full bg-gray-100 py-2.5 pl-4 pr-9 text-sm text-gray-700 outline-none transition hover:bg-gray-200 focus:ring-2 focus:ring-violet-300 sm:max-w-[13rem]"
-        >
-          <option value="">All subjects</option>
-          {subjects.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.name}
-              {(s.resource_count ?? 0) === 0 ? " (no materials)" : ""}
-            </option>
-          ))}
-        </select>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="pointer-events-none absolute right-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" aria-hidden="true">
-          <path d="M6 9l6 6 6-6" />
-        </svg>
-      </label>
       <button
         type="submit"
         disabled={!canSend}
@@ -156,6 +142,7 @@ function Composer({
 export default function MalaiChatView() {
   const params = useSearchParams();
   const chatId = params.get("c");
+  const pageSubjectId = chatId ? null : params.get("s");
   const chats = useMalaiChats();
   const { subjects, state: subjectsState, error: subjectsError } = useSubjects();
 
@@ -166,7 +153,6 @@ export default function MalaiChatView() {
   const [preview, setPreview] = useState<{ status: string | null; text: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
-  const [draftSubject, setDraftSubject] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   /** The chat this view just created: its messages are already on screen. */
   const createdHere = useRef<string | null>(null);
@@ -175,7 +161,7 @@ export default function MalaiChatView() {
 
   const chat: MalaiChat | null = chatId ? chats.find((c) => c.id === chatId) ?? null : null;
   const known = (id: string | null) => (id && subjects.some((s) => s.id === id) ? id : null);
-  const subjectId = chat ? known(chat.subjectId) : draftSubject;
+  const subjectId = chat ? known(chat.subjectId) : known(pageSubjectId);
   const subject = subjects.find((s) => s.id === subjectId) ?? null;
 
   // Load the open chat's history whenever the chat changes.
@@ -228,19 +214,11 @@ export default function MalaiChatView() {
     window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" });
   }, [messages.length, preview?.text]);
 
-  const chooseSubject = useCallback(
-    (id: string | null) => {
-      if (chat) updateChat(chat.id, { subjectId: id });
-      else setDraftSubject(id);
-    },
-    [chat],
-  );
-
   const send = useCallback(async () => {
     const text = draft.trim();
     if (!text || loading) return;
     if (subject && (subject.resource_count ?? 0) === 0) {
-      setError(`“${subject.name}” has no materials yet. Add some to it, or ask across all subjects.`);
+      setError(`“${subject.name}” has no materials yet. Add some to it, or start a chat outside the subject.`);
       return;
     }
     setError(null);
@@ -342,9 +320,7 @@ export default function MalaiChatView() {
       onSend={() => void send()}
       disabled={notReady}
       busy={loading}
-      subjects={subjects}
-      subjectId={subjectId}
-      onSubject={chooseSubject}
+      placeholder={subject ? `Ask about ${subject.name}…` : "Ask anything about your subjects…"}
       autoFocus={!chatId}
       inputRef={inputRef}
     />
@@ -365,12 +341,33 @@ export default function MalaiChatView() {
 
   return (
     <div className="relative flex min-h-[calc(100dvh-7rem)] flex-col md:min-h-[calc(100dvh-5rem)]">
-      <header className="relative z-10 md:pr-16">
-        <h1 className="text-2xl font-bold tracking-tight text-gray-900">Malai</h1>
-        <p className="truncate text-sm text-gray-500">{chat ? chat.title : "Your learning companion"}</p>
-      </header>
+      {!(empty && subject) && (
+        <header className="relative z-10 md:pr-16">
+          <h1 className="text-2xl font-bold tracking-tight text-gray-900">Malai</h1>
+          <p className="flex min-w-0 items-center gap-2 text-sm text-gray-500">
+            <span className="truncate">{chat ? chat.title : "Your learning companion"}</span>
+            {chat && subject && (
+              <Link
+                href={malaiSubjectPath(subject.id)}
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-violet-50 px-2.5 py-0.5 text-xs font-medium text-violet-700 transition hover:bg-violet-100"
+              >
+                <span className={`h-2 w-2 rounded-full ${subjectAccent(subject.name).avatar}`} aria-hidden="true" />
+                {subject.name}
+              </Link>
+            )}
+          </p>
+        </header>
+      )}
 
-      {empty ? (
+      {empty && subject ? (
+        <SubjectHome
+          subjectId={subject.id}
+          name={subject.name}
+          chats={chats.filter((c) => c.subjectId === subject.id)}
+          composer={composer}
+          notes={notes}
+        />
+      ) : empty ? (
         <div className="relative flex flex-1 items-center justify-center py-10">
           <div aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden">
             <div className="absolute left-1/2 top-1/3 h-72 w-72 -translate-x-[80%] rounded-full bg-violet-200/40 blur-3xl" />
@@ -441,6 +438,121 @@ export default function MalaiChatView() {
           )}
         </>
       )}
+    </div>
+  );
+}
+
+/**
+ * A subject's page in Malai, like a project: start a chat filed under it,
+ * reopen one of its chats, or open one of its resources beside Malai.
+ */
+function SubjectHome({
+  subjectId,
+  name,
+  chats,
+  composer,
+  notes,
+}: {
+  subjectId: string;
+  name: string;
+  chats: MalaiChat[];
+  composer: React.ReactNode;
+  notes: React.ReactNode;
+}) {
+  const { resources, state, error } = useSubjectResources(subjectId);
+  const card = "rounded-2xl border border-gray-200 bg-white shadow-sm";
+  const row =
+    "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition hover:bg-violet-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300";
+
+  return (
+    <div className="mx-auto w-full max-w-4xl pb-10 pt-2 md:pr-16">
+      <div className="flex items-center gap-4">
+        <span className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl text-lg font-bold text-white ${subjectAccent(name).avatar}`}>
+          {initials(name)}
+        </span>
+        <div className="min-w-0">
+          <h1 className="truncate text-2xl font-bold tracking-tight text-gray-900">{name}</h1>
+          <p className="text-sm text-gray-500">
+            {chats.length} chat{chats.length === 1 ? "" : "s"}
+            {state === "ready" ? ` · ${resources.length} resource${resources.length === 1 ? "" : "s"}` : ""}
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-6">{composer}</div>
+      {notes}
+      <p className="mt-2 px-2 text-xs text-gray-400">
+        New chats here are filed under {name} and read only its materials.
+      </p>
+
+      <div className="mt-8 grid gap-5 lg:grid-cols-2">
+        <section className={card} aria-labelledby="subject-chats">
+          <h2 id="subject-chats" className="border-b border-gray-100 px-5 py-3.5 text-sm font-semibold text-gray-900">
+            Chats
+          </h2>
+          {chats.length === 0 ? (
+            <p className="px-5 py-6 text-sm text-gray-500">
+              No chats yet. Ask something above, or open a resource and ask beside it.
+            </p>
+          ) : (
+            <ul className="flex flex-col gap-0.5 p-2">
+              {chats.map((c) => (
+                <li key={c.id}>
+                  <Link href={chatPath(c)} className={row}>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-medium text-gray-900">{c.title}</span>
+                      {c.preview && <span className="block truncate text-xs text-gray-500">{c.preview}</span>}
+                    </span>
+                    <span className="shrink-0 text-xs text-gray-400">{chatDate(c.updatedAt)}</span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <section className={card} aria-labelledby="subject-resources">
+          <h2 id="subject-resources" className="border-b border-gray-100 px-5 py-3.5 text-sm font-semibold text-gray-900">
+            Resources
+          </h2>
+          {state === "loading" || state === "idle" ? (
+            <p role="status" className="px-5 py-6 text-sm text-gray-500">Loading resources…</p>
+          ) : state === "error" ? (
+            <p role="alert" className="px-5 py-6 text-sm text-red-600">Could not load resources: {error}</p>
+          ) : resources.length === 0 ? (
+            <p className="px-5 py-6 text-sm text-gray-500">No resources in this subject yet.</p>
+          ) : (
+            <ul className="flex flex-col gap-0.5 p-2">
+              {resources.map((r) => {
+                const body = (
+                  <>
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-base" aria-hidden="true">
+                      {resourceIcon(r)}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-medium text-gray-900">{r.title ?? r.id}</span>
+                      <span className="block text-xs text-gray-500">{resourceKindLabel(r)}</span>
+                    </span>
+                  </>
+                );
+                return (
+                  <li key={r.id}>
+                    {toSelected(r) ? (
+                      <Link href={malaiLessonPath(subjectId, r.id)} className={row}>
+                        {body}
+                      </Link>
+                    ) : (
+                      <div className={`${row} cursor-not-allowed opacity-60 hover:bg-transparent`} title="The original file is unavailable">
+                        {body}
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
+      </div>
     </div>
   );
 }
