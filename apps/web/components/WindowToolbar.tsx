@@ -67,7 +67,8 @@ const svg = {
 };
 
 /**
- * The lesson page's window controls, floating at the bottom left: show or
+ * The lesson page's window controls, floating over the windows' bottom-left
+ * corner (its own layer, above both): show or
  * hide the resource and Malai, side by side vs stacked, and swap. It folds
  * into one round button. Layout controls only exist where the windows dock
  * (`lg`); below that the windows simply stack.
@@ -89,7 +90,7 @@ export default function WindowToolbar({
     <div
       role="toolbar"
       aria-label="Windows"
-      className="fixed bottom-4 left-4 z-30 flex items-center gap-1 rounded-full border border-gray-200 bg-white/95 p-1 shadow-xl shadow-gray-900/10 backdrop-blur lg:absolute lg:bottom-auto lg:left-0 lg:top-full lg:mt-3"
+      className="fixed bottom-4 left-4 z-30 flex items-center gap-1 rounded-full border border-gray-200 bg-white/95 p-1 shadow-xl shadow-gray-900/10 backdrop-blur lg:absolute lg:bottom-3 lg:left-3"
     >
       <button
         type="button"

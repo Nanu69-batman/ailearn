@@ -69,6 +69,8 @@ interface ChatPanelProps {
   onAsk?: (threadId: string, question: string) => void;
   /** A video (playhead, frames) rather than a document. Changes the wording. */
   isVideo?: boolean;
+  /** Extra classes for the input bar's row, e.g. room for something floating over it. */
+  composerClassName?: string;
 }
 
 interface Starter {
@@ -164,6 +166,7 @@ export default function ChatPanel({
   openThreadId,
   onAsk,
   isVideo = true,
+  composerClassName = "",
 }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [historyState, setHistoryState] = useState<"loading" | "ready" | "error">("loading");
@@ -724,7 +727,7 @@ export default function ChatPanel({
         </div>
 
         {/* Composer: the same pill as the Malai page */}
-        <form className="shrink-0 px-4 pb-4" onSubmit={handleSubmit}>
+        <form className={`shrink-0 px-4 pb-4 transition-[padding] ${composerClassName}`} onSubmit={handleSubmit}>
           <div className="relative">
           {menu && (
             <SlashMenuList menu={menu} active={Math.min(menuIndex, menu.items.length - 1)} onPick={pickFromMenu} onHover={setMenuIndex} />

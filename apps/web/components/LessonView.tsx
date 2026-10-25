@@ -519,7 +519,6 @@ export default function LessonView({ malai = false }: { malai?: boolean }) {
 
   const isMedia = selected.kind === "file" || selected.kind === "youtube";
   const doneCount = resources.filter((r) => completedIds.includes(r.id)).length;
-  const selectedRes = resources.find((r) => r.id === selected.resourceId);
   // The developer-view button floats over the workspace's top-right corner;
   // whichever window is there keeps its header clear of it.
   const cornerWindow = lessonHidden
@@ -530,6 +529,7 @@ export default function LessonView({ malai = false }: { malai?: boolean }) {
         ? "malai"
         : "lesson";
   const panelPlacement = wide && layout.stacked ? "side" : "below";
+  const malaiBottomLeft = !malaiHidden && (lessonHidden || layout.side === "left" || layout.side === "bottom");
 
   const iconButton =
     "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-gray-500 transition hover:bg-gray-100 hover:text-gray-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400";
@@ -769,17 +769,6 @@ export default function LessonView({ malai = false }: { malai?: boolean }) {
               </ImmersiveContext.Provider>
             </div>
           </div>
-          {!immersive && (
-            <div className="shrink-0 px-1">
-              <h1 className="truncate text-lg font-semibold tracking-tight text-gray-900 sm:text-xl">
-                {selected.title}
-              </h1>
-              <p className="truncate text-sm text-gray-500">
-                {subject?.name ?? "Subject"}
-                {selectedRes ? ` · ${resourceKindLabel(selectedRes)}` : ""}
-              </p>
-            </div>
-          )}
           {isMedia && !immersive && cited?.start_ms != null && (
             <div className="shrink-0 rounded-2xl border border-amber-200 bg-amber-50/70 px-4 py-3 shadow-sm" role="region" aria-label="Cited passage">
               <div className="mb-1.5 flex items-center gap-2">
@@ -813,20 +802,6 @@ export default function LessonView({ malai = false }: { malai?: boolean }) {
                 <p className="text-xs text-gray-500">The passage text was not saved with this older answer.</p>
               )}
             </div>
-          )}
-          {!isMedia && !immersive && (
-            <p className="shrink-0 px-1 text-xs text-gray-500">
-              Malai answers from this {selected.kind === "pptx" ? "deck" : selected.kind === "image" ? "image" : "document"} with{" "}
-              {selected.kind === "pptx" ? "slide" : selected.kind === "image" ? "image" : "page"} citations
-              {selected.kind === "pdf" ? " — click one to see the passage highlighted on its page" : ""}.
-            </p>
-          )}
-          {isMedia && !immersive && (
-            <p className="shrink-0 px-1 text-xs text-gray-500">
-              Malai answers only from what you&apos;ve watched so far. Click a
-              timestamp in an answer to jump there. Shortcuts: Space/K play ·
-              ←/→ 5s · J/L 10s · M mute · F fullscreen.
-            </p>
           )}
           {!immersive && selected.kind === "file" && procThrough !== null && procState !== "ready" && (
             <p className="shrink-0 rounded-2xl border border-violet-200 bg-violet-50 px-4 py-2.5 text-sm text-violet-800" role="status">
@@ -907,6 +882,11 @@ export default function LessonView({ malai = false }: { malai?: boolean }) {
         onAsk={onAsk}
         headerLead={grip}
         isVideo={isMedia}
+        // The floating window toolbar sits over the bottom-left corner; when
+        // Malai is there, its input bar starts after the toolbar.
+        composerClassName={
+          !immersive && malaiBottomLeft ? (layout.toolsOpen ? "lg:pl-[16rem]" : "lg:pl-16") : ""
+        }
         headerActions={
           !immersive && cornerWindow === "malai" ? <span className="hidden w-11 shrink-0 md:block" aria-hidden="true" /> : null
         }
@@ -915,8 +895,8 @@ export default function LessonView({ malai = false }: { malai?: boolean }) {
   );
 
   return (
-    // The bottom gutter is the floating toolbar's place, so it covers nothing.
-    <div className="relative mx-auto flex w-full max-w-[1600px] flex-col pb-20 lg:h-[calc(100dvh-8rem)] lg:pb-0">
+    // The windows run to the bottom; the toolbar floats above them.
+    <div className="relative mx-auto flex w-full max-w-[1600px] flex-col pb-20 lg:h-[calc(100dvh-5rem)] lg:pb-0">
       <LessonWorkspace
         side={layout.side}
         split={layout.split}
