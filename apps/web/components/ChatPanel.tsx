@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import type { ChatMessage, ChatMode, LiveFrameCapture } from "../lib/api";
+import type { ChatMessage, ChatMode, LiveFrameCapture, QuizQuestionType } from "../lib/api";
 import {
   ApiError,
   formatApiError,
@@ -23,7 +23,13 @@ import { LEARNER_NAME } from "../lib/learn";
 import MessageList from "./MessageList";
 import ChatThreads from "./ChatThreads";
 import type { CitationBadgeProps } from "./CitationBadge";
-import ModeSelector from "./ModeSelector";
+import {
+  SlashMenuList,
+  commandQuestion,
+  parseCommand,
+  slashFill,
+  slashMenu,
+} from "./SlashCommands";
 import QuizPanel from "./QuizPanel";
 
 interface ChatPanelProps {
@@ -162,7 +168,11 @@ export default function ChatPanel({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [historyState, setHistoryState] = useState<"loading" | "ready" | "error">("loading");
   const [historyError, setHistoryError] = useState<string | null>(null);
-  const [mode, setMode] = useState<ChatMode>("qa");
+  /** Set by /quiz: QuizPanel writes a quiz with these settings. */
+  const [quizPreset, setQuizPreset] = useState<{ count: number; types: QuizQuestionType[]; nonce: number } | null>(null);
+  // The slash-command menu: which row is highlighted, and whether Esc hid it.
+  const [menuIndex, setMenuIndex] = useState(0);
+  const [menuDismissed, setMenuDismissed] = useState(false);
   const [tab, setTab] = useState<"chat" | "quiz">("chat");
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -337,7 +347,37 @@ export default function ChatPanel({
     void send(input);
   }
 
+  const menu = menuDismissed ? null : slashMenu(input);
+  useEffect(() => {
+    setMenuIndex(0);
+    setMenuDismissed(false);
+  }, [input]);
+
+  function pickFromMenu(index: number): void {
+    if (!menu) return;
+    setInput(slashFill(menu, index));
+    inputRef.current?.focus();
+  }
+
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>): void {
+    if (menu) {
+      const n = menu.items.length;
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        setMenuIndex((i) => (i + (e.key === "ArrowDown" ? 1 : n - 1)) % n);
+        return;
+      }
+      if ((e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) || e.key === "Tab") {
+        e.preventDefault();
+        pickFromMenu(Math.min(menuIndex, n - 1));
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setMenuDismissed(true);
+        return;
+      }
+    }
     // Enter sends; Shift+Enter inserts a newline. Ignore Enter mid-IME
     // composition so CJK input is not sent half-typed.
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -347,8 +387,23 @@ export default function ChatPanel({
   }
 
   async function send(raw: string): Promise<void> {
-    const text = raw.trim();
-    if (!text || sending) return;
+    const typed = raw.trim();
+    if (!typed || sending) return;
+    // A slash command sets the answer style, or opens a quiz.
+    const cmd = parseCommand(typed);
+    if (cmd?.command.quiz) {
+      const option = cmd.command.options.find((o) => o.text.toLowerCase() === cmd.rest.toLowerCase());
+      setQuizPreset({
+        count: option?.count ?? 5,
+        types: option?.types ?? ["mcq", "numerical", "subjective"],
+        nonce: Date.now(),
+      });
+      setInput("");
+      setTab("quiz");
+      return;
+    }
+    const mode: ChatMode = cmd?.command.mode ?? "qa";
+    const text = cmd ? commandQuestion(cmd.command, cmd.rest) : typed;
     const userMsg: ChatMessage = {
       id: newId(),
       role: "user",
@@ -502,29 +557,12 @@ export default function ChatPanel({
 
   return (
     <section
-      className={`flex flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm ${fill ? "h-full min-h-0" : ""}`}
+      className={`flex flex-col overflow-hidden rounded-2xl bg-white ${fill ? "h-full min-h-0" : ""}`}
       aria-label="Chat with Malai"
     >
-      {/* Header: who, what Malai reads, and the Chat/Quiz switch on the right */}
-      <div className="flex shrink-0 items-center gap-2.5 border-b border-gray-100 px-4 py-3">
+      {/* Header: Chat/Quiz, then the chat picker and New chat */}
+      <div className="flex shrink-0 items-center gap-2 border-b border-gray-100 px-3 py-2.5">
         {headerLead}
-        <div
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 text-sm font-semibold text-white shadow-sm"
-          aria-hidden="true"
-        >
-          M
-        </div>
-        <div className="min-w-0 flex-1">
-          <h2 className="text-base font-semibold leading-tight text-gray-900">Malai</h2>
-          <p className="truncate text-xs text-gray-500" title="Malai reads this material up to where you are, plus the materials you've marked done.">
-            {completedResourceIds.length > 0
-              ? `This lesson so far + ${completedResourceIds.length} completed material${completedResourceIds.length === 1 ? "" : "s"}`
-              : isVideo
-                ? "Answers from what you've watched so far"
-                : "Answers from this material"}
-          </p>
-        </div>
-        {offline && <span className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-xs text-amber-600">offline mock</span>}
         <div className="flex shrink-0 rounded-full bg-gray-100 p-0.5" role="tablist" aria-label="Tutor view">
           {(["chat", "quiz"] as const).map((t) => (
             <button
@@ -533,7 +571,7 @@ export default function ChatPanel({
               role="tab"
               aria-selected={tab === t}
               onClick={() => setTab(t)}
-              className={`rounded-full px-3 py-1 text-xs font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 ${
+              className={`rounded-full px-3.5 py-1.5 text-sm font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 ${
                 tab === t ? "bg-white text-violet-700 shadow-sm" : "text-gray-500 hover:text-gray-800"
               }`}
             >
@@ -541,8 +579,35 @@ export default function ChatPanel({
             </button>
           ))}
         </div>
+        {!offline && !sessionExpired ? (
+          <ChatThreads
+            className="min-w-0 flex-1"
+            threads={threads}
+            currentId={threadId}
+            disabled={sending}
+            busy={threadBusy}
+            onSelect={(id) => {
+              selectThread(id);
+              setTab("chat");
+            }}
+            onCreate={() => {
+              void handleCreateThread();
+              setTab("chat");
+            }}
+            onRename={(id, title) => void handleRenameThread(id, title)}
+            onDelete={(id) => void handleDeleteThread(id)}
+          />
+        ) : (
+          <span className="flex-1" />
+        )}
+        {offline && <span className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-xs text-amber-600">offline mock</span>}
         {headerActions}
       </div>
+      {threadError && (
+        <p className="mx-4 mt-2 rounded-lg bg-red-50 px-3 py-1.5 text-xs text-red-600" role="alert">
+          {threadError}
+        </p>
+      )}
 
       {/* Both stay mounted so switching tabs keeps the chat and an unfinished quiz. */}
       <div
@@ -559,30 +624,11 @@ export default function ChatPanel({
           onSeek={onSeek}
           openDoc={openDoc}
           offline={offline || backendUnreachable}
+          preset={quizPreset}
         />
       </div>
 
       <div className={tab === "chat" ? "flex min-h-0 flex-1 flex-col" : "hidden"} role="tabpanel" aria-label="Chat">
-        {!offline && !sessionExpired && (
-          <div className="shrink-0 px-4 pt-3">
-            <ChatThreads
-              threads={threads}
-              currentId={threadId}
-              disabled={sending}
-              busy={threadBusy}
-              onSelect={selectThread}
-              onCreate={() => void handleCreateThread()}
-              onRename={(id, title) => void handleRenameThread(id, title)}
-              onDelete={(id) => void handleDeleteThread(id)}
-            />
-            {threadError && (
-              <p className="mb-2 rounded-lg bg-red-50 px-3 py-1.5 text-xs text-red-600" role="alert">
-                {threadError}
-              </p>
-            )}
-          </div>
-        )}
-
         <div ref={scrollRef} className={`min-h-0 flex-1 overflow-y-auto px-4 pb-3 ${fill ? "" : "max-h-[60vh]"}`}>
           {sessionExpired && (
             <div className={`${notice} mt-3 border-red-200 bg-red-50 text-red-600`} role="alert">
@@ -623,6 +669,7 @@ export default function ChatPanel({
               </h3>
               <p className="mt-1.5 text-sm text-gray-500">
                 Ask questions, get explanations, solve doubts, practice problems and more.
+                Type <kbd className="rounded border border-gray-200 bg-gray-50 px-1 font-sans text-xs text-gray-600">/</kbd> for commands.
               </p>
               <div className="mt-5 flex flex-wrap justify-center gap-2">
                 {starters.map((s) => (
@@ -678,7 +725,10 @@ export default function ChatPanel({
 
         {/* Composer: the same pill as the Malai page */}
         <form className="shrink-0 px-4 pb-4" onSubmit={handleSubmit}>
-          <ModeSelector value={mode} onChange={setMode} disabled={sending} />
+          <div className="relative">
+          {menu && (
+            <SlashMenuList menu={menu} active={Math.min(menuIndex, menu.items.length - 1)} onPick={pickFromMenu} onHover={setMenuIndex} />
+          )}
           <div className="flex items-end gap-2 rounded-[1.5rem] border border-gray-200 bg-white py-1.5 pl-2 pr-1.5 shadow-lg shadow-violet-900/5 transition focus-within:border-violet-300 focus-within:ring-4 focus-within:ring-violet-100">
             {/* Trigger #1 of the live frame: the explicit button. It LATCHES (it
                 does not send by itself) so the learner can still type the
@@ -724,12 +774,14 @@ export default function ChatPanel({
               placeholder={
                 frameLatched
                   ? "Ask about the frame on screen…"
-                  : isVideo
-                    ? "Ask a question about this video…"
-                    : "Ask a question about this material…"
+                  : `Ask about this ${isVideo ? "video" : "material"}, or type / for commands…`
               }
               disabled={sending}
               autoComplete="off"
+              role="combobox"
+              aria-expanded={menu !== null}
+              aria-controls={menu ? "slash-menu" : undefined}
+              aria-activedescendant={menu ? `slash-opt-${Math.min(menuIndex, menu.items.length - 1)}` : undefined}
             />
             <button
               type="submit"
@@ -745,6 +797,7 @@ export default function ChatPanel({
                 </svg>
               )}
             </button>
+          </div>
           </div>
           {frameLatched && (
             <p className="mt-1.5 px-3 text-[11px] text-violet-700">

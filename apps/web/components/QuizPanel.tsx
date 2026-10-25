@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   formatApiError,
   gradeQuizAnswer,
@@ -22,6 +22,8 @@ interface QuizPanelProps {
   onSeek: (startMs: number) => void;
   openDoc?: CitationBadgeProps["openDoc"];
   offline: boolean;
+  /** A /quiz command: set the size and types and write the quiz now. */
+  preset?: { count: number; types: QuizQuestionType[]; nonce: number } | null;
 }
 
 type Verdict = QuizGrade["verdict"];
@@ -88,6 +90,7 @@ export default function QuizPanel({
   onSeek,
   openDoc,
   offline,
+  preset,
 }: QuizPanelProps) {
   const [count, setCount] = useState(5);
   const [types, setTypes] = useState<QuizQuestionType[]>(["mcq", "numerical", "subjective"]);
@@ -106,7 +109,16 @@ export default function QuizPanel({
     );
   }
 
-  async function generate() {
+  // A new /quiz (new nonce) starts a quiz with its settings.
+  useEffect(() => {
+    if (!preset || offline) return;
+    setCount(preset.count);
+    setTypes(preset.types);
+    void generate({ count: preset.count, types: preset.types });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preset?.nonce]);
+
+  async function generate(settings?: { count: number; types: QuizQuestionType[] }) {
     setLoading(true);
     setError(null);
     try {
@@ -116,8 +128,8 @@ export default function QuizPanel({
           video_id: videoId,
           current_time_ms: Math.round(getCurrentTimeMs()),
           completed_resource_ids: completedResourceIds,
-          count,
-          types,
+          count: settings?.count ?? count,
+          types: settings?.types ?? types,
           attempt,
         },
         sessionToken,

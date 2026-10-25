@@ -21,6 +21,8 @@ interface ChatThreadsProps {
   onCreate: () => void;
   onRename: (id: string, title: string) => void;
   onDelete: (id: string) => void;
+  /** Classes for the root row (spacing/flex in the parent). */
+  className?: string;
 }
 
 export function threadLabel(t: ChatThread | undefined): string {
@@ -174,6 +176,7 @@ export default function ChatThreads({
   onCreate,
   onRename,
   onDelete,
+  className = "mb-3",
 }: ChatThreadsProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -196,7 +199,7 @@ export default function ChatThreads({
   }, [open]);
 
   return (
-    <div ref={rootRef} className="relative mb-3 flex items-center gap-2">
+    <div ref={rootRef} className={`relative flex items-center gap-2 ${className}`}>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}

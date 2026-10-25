@@ -21,7 +21,7 @@ export type ChatMode =
 
 /**
  * Backend source of truth: apps/api/app/chat/schemas.py `ChatMode`.
- * The UI label for "qa" stays "Ask" (see ModeSelector) — only the
+ * "qa" is a plain question (no slash command, see SlashCommands) — only the
  * wire value was renamed (was "ask", which the backend rejects with 422).
  */
 export const CHAT_MODES: readonly ChatMode[] = [
