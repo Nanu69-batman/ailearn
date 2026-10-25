@@ -78,3 +78,21 @@ demos:
   clears it, and with several API workers each would keep its own trace.
   **Fix:** publish the events to a shared store (for example Redis streams)
   and have the page subscribe to them, instead of polling a buffer in memory.
+
+## 5. Transcript tab
+
+The lesson panel has a Transcript tab, but it is UI only: no route serves a
+resource's transcript yet. **Fix:** a `GET /resources/{id}/transcript` that
+reads the transcript chunks by exact `resource_id`, in time order, and passes
+them through the same strict `end_ms <= T` gate as chat, so the tab never
+shows speech the learner has not reached.
+
+## 6. Chapters of uploaded files are lost on restart
+
+Chapters are stored as one JSON file per resource on the API's disk
+(`data/chapters/`). On Render's free tier that disk is wiped on every restart,
+so chapters of files uploaded on the hosted site are rebuilt, at the cost of
+one model call each, the first time the resource is opened afterwards. Only the
+demo video's and PDF's chapters are baked into the image. **Fix:** keep the
+chapter records in a persistent store (the database, or object storage next to
+the media files) instead of the container disk.

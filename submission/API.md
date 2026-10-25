@@ -18,8 +18,8 @@ FastAPI shape `{"detail": "…"}`; `current_time_ms` is the learner clock in ms,
 valid `0 .. 21600000` (6 h, clamped server-side); `issued_at` is **required**
 (omitting it is a `422`; epoch ms canonical, epoch seconds auto-detected);
 requests may carry `x-request-id` for log correlation. Rate limit: 60
-req/min/IP across `/lms/session`, `/chat`, `/chat/live-frame`, `/quiz` and
-`/quiz/grade` → `429`.
+req/min/IP across `/lms/session`, `/chat`, `/chat/stream`, `/chat/live-frame`,
+`/quiz` and `/quiz/grade` → `429`.
 **Quota exhaustion:** if a Gemini daily quota is spent during any request (chat,
 live frame or ingest), the API answers `503` with a readable reason and stops
 instead of retrying:
@@ -49,6 +49,7 @@ protect the model quota with `MAX_UPLOAD_MB`, `MAX_VIDEO_MINUTES` and
 | GET | `/health/db` | — | Readiness → `200 {"status": "up"\|"down", "database_url_set": bool}` (real `SELECT 1`, 2 s timeout) |
 | POST | `/lms/session` | HMAC launch | Open a session, mint a session token |
 | POST | `/chat` | session token | Grounded Q&A over the granted course scope |
+| POST | `/chat/stream` | session token | `POST /chat` as Server-Sent Events: the answer appears as it is written |
 | POST | `/chat/live-frame` | session token | Answer about the frame currently on screen |
 | GET | `/sessions/{session_id}/messages` | session token | Conversation history of one chat |
 | GET | `/sessions/{session_id}/threads` | session token | List the session's chats |
@@ -57,6 +58,7 @@ protect the model quota with `MAX_UPLOAD_MB`, `MAX_VIDEO_MINUTES` and
 | DELETE | `/sessions/{session_id}/threads/{thread_id}` | session token | Delete a chat (the main chat is emptied) |
 | POST | `/quiz` | session token | Practice quiz (MCQ, numerical, written) on what was covered |
 | POST | `/quiz/grade` | session token | Grade one written quiz answer |
+| POST | `/quiz/note` | session token | Record a quiz start or score in the chat it was asked from |
 | POST | `/courses/{course_id}/ingest` | — | Ingest an uploaded file (multipart) |
 | POST | `/courses/{course_id}/ingest-youtube` | — | Ingest a YouTube URL (JSON) |
 | GET | `/ingestion/jobs/{job_id}` | — | Ingest job status |
@@ -65,6 +67,7 @@ protect the model quota with `MAX_UPLOAD_MB`, `MAX_VIDEO_MINUTES` and
 | DELETE | `/courses/{course_id}/resources/{resource_id}` | — | Delete a resource: detach from subjects, purge chunks and file |
 | GET | `/resources/{resource_id}/media` | — | Stream a resource's asset (Range-capable) |
 | GET | `/resources/{resource_id}/media/{filename}` | — | Same asset under a URL ending in a file name (for Office Online slide embeds) |
+| GET | `/resources/{resource_id}/chapters` | — | Automatic chapters of a video, PDF or slide deck |
 | GET | `/subjects` | — | List subjects |
 | POST | `/subjects` | — | Create a subject (`201`) |
 | GET | `/subjects/{subject_id}` | — | Read one subject |
@@ -111,9 +114,17 @@ only ids inside the session grant; those are read in full (their own retrieval,
 same strict gate evaluated at the end of time, so a passage with no known end
 is still excluded) and add up to 4 passages after the open material's. A
 material not marked done is never read, even when granted.
+`scope_resource_ids` — string[] (≤256), optional: narrows the session grant to
+these materials, for a chat that is not tied to one open material (a Malai chat
+filed under a subject sends that subject's resources). It is intersected with
+the grant, so it can only remove materials, never add one. A session opened
+with `course_id: "*"` reads across courses, still only inside its
+`resource_scope`. With no playhead, such a chat reads documents and the videos
+marked done. `general` — bool, default `false`: a chat in no subject (see
+`mode: "general"` below).
 `200` response: `answer`, `citations[]`, `refused`, `scope_empty`,
 `live_frame` (`"live"` | `"document"` | null), `mode` (`"grounded"` |
-`"supplemental"` | `"conversational"`), `grounded` (bool), `processing_pending` +
+`"supplemental"` | `"conversational"` | `"general"`), `grounded` (bool), `processing_pending` +
 `processed_through_ms` (the playhead is past the processed part of a stream-mode
 video, so the answer is an honest "not processed yet"), and `visual_pending` +
 `visual_through_ms` (the transcript is indexed, but the on-screen descriptions
@@ -136,6 +147,12 @@ as not from the video, and it carries zero citations.
 
 `mode: "conversational"` is a reply to small talk, such as "hi" or "who are
 you". It has no retrieval, no citations and no lesson content.
+
+`mode: "general"` answers a request sent with `general: true`. It comes from
+general knowledge, with no retrieval and zero citations. A message that
+explicitly points at the learner's materials ("my notes", "the lecture", "the
+uploaded pdf") takes the ordinary grounded pipeline instead, under the same
+grant and gate.
 
 Citation fields: `chunk_id` (always present); `source_type` (`video` · `pdf` ·
 `pptx` · `image` · `note` · `code`); `modality` (`"transcript"` | `"visual"` |
@@ -163,6 +180,38 @@ Errors: `404 {"detail": "session not found"}` · `401 {"detail": "invalid launch
 · `422` validation (empty message, message > 4000 chars, unknown mode, negative
 `current_time_ms`, unknown field) · `429` rate limit · `502 {"detail": "upstream provider error"}`
 · `503` provider quota spent (see Conventions).
+
+## POST /chat/stream
+
+The same request body, checks and answer as `POST /chat`, sent as Server-Sent
+Events (`text/event-stream`). Rate limit, session and token checks run before
+the stream starts, so they fail as ordinary HTTP errors (`429` · `404` ·
+`401`); the token is read from the body field only, as on `/chat`. Then:
+
+| Event | `data` |
+|---|---|
+| `status` | `{"text": "Thinking"}` and later lines: what the tutor is doing |
+| `text` | `{"text": "…"}`: the answer so far, with citation markers stripped. An empty `text` means start over (a new model call began) |
+| `done` | The validated `ChatResponse`, exactly as `POST /chat` returns it. It replaces the preview, and a refusal replaces it entirely |
+| `error` | `{"status": 502, "detail": "upstream provider error"}`; `503` with the quota message; `500 "internal error"` |
+
+Exactly one `done` or `error` ends the stream. Gemini streams token by token;
+the agent path sends `status` lines until its answer is ready. The preview is
+written from the same time-gated passages as the final answer, so it never
+shows anything after the playhead, and citation validation still runs on the
+finished reply. If the client disconnects, the answer still finishes and is
+saved to the chat history.
+
+```text
+event: status
+data: {"text": "Thinking"}
+
+event: text
+data: {"text": "The spike comes from the warmup step."}
+
+event: done
+data: {"answer": "The spike comes from the warmup step [chunk_id=ch_7f2a].", "citations": [ … ], "mode": "grounded", …}
+```
 
 ### GET /sessions/{session_id}/messages
 
@@ -199,9 +248,15 @@ message), `message_count`. Unknown chat → `404 {"detail": "chat not found"}`.
 A practice quiz on what the learner has covered, written in **one** model call.
 Request (JSON, unknown fields rejected): `session_id`, `session_token` (or the
 `X-Session-Token` header), `current_time_ms` (required), `video_id` (the open
-material), `completed_resource_ids` (as on `/chat`), `count` (3–10, default 5),
-`types` (subset of `mcq` · `numerical` · `subjective`, default all three) and
-`attempt` (int; bump it for a different quiz at the same playhead).
+material), `completed_resource_ids` (as on `/chat`), `count` (1–20, default 5),
+`types` (subset of `mcq` · `numerical` · `subjective`, default all three),
+`attempt` (int; bump it for a different quiz at the same playhead), `prompt`
+(optional, ≤500 chars: the learner's instructions, such as a topic, a
+difficulty or a section), `scope_resource_ids` (as on `/chat`: a Malai chat in
+a subject gets a quiz on that subject's materials), `general` (bool: a Malai
+chat in no subject gets a quiz from general knowledge, reading no materials)
+and `thread_id` (the chat it was asked from; a general quiz with no `prompt`
+takes its topic from that chat's recent turns).
 
 What it reads: for a video, every passage watched so far, in lesson order,
 through the store's strict `end_ms <= T` filter (no embedding), thinned evenly
@@ -212,7 +267,8 @@ other question is dropped, never repaired.
 
 `200` → `{"questions": [QuizQuestion], "refused": false, "message": null,
 "current_time_ms": 600000}`. `QuizQuestion`: `id`, `type`, `prompt` (Markdown +
-LaTeX), `explanation`, `citation` (a Citation, as on `/chat`), plus per type:
+LaTeX), `explanation`, `citation` (a Citation, as on `/chat`; `null` only in a
+general quiz, which has nothing to cite), plus per type:
 
 | type | fields | checked |
 |---|---|---|
@@ -234,6 +290,20 @@ the header), `prompt` (≤1000), `model_answer` (≤2000), `key_points` (≤8 st
 "…", "missing": ["key point not covered", …]}`. The verdict is derived from the
 score (≥0.8 correct, ≥0.4 partial). If no model is available, the server
 grades by key-point word overlap instead. Errors: `401` · `404` · `422` · `429`.
+
+## POST /quiz/note
+
+Records a quiz in the chat it was asked from, so the chat shows that a quiz was
+started and how it went. The server writes the chat lines itself from these
+fields; the client cannot put its own words in the tutor's reply. Request
+(JSON, unknown fields rejected): `session_id`, `session_token` (or the header),
+`thread_id` (optional, default `main`), `event` (`"started"` | `"completed"`),
+`count` (1–20), `request` (≤1000, started: the learner's message that asked
+for the quiz), `score` (0–20, completed: the total, partial credit counts) and
+`to_review` (≤20 strings, completed: the questions answered wrong or partly
+right). `200` → the lines added, in the messages shape: `{"session_id": "…",
+"thread_id": "main", "messages": [{"role": "user"|"assistant", "content": "…",
+"citations": [], "created_at": "…"}]}`. Errors: `401` · `404` · `422`.
 
 ## POST /chat/live-frame
 
@@ -344,6 +414,21 @@ provider error.
 - `GET /resources/{resource_id}/media` — streams the stored asset. Locally it is
   served from disk with HTTP Range support (`206 Partial Content` when ranged).
   The hosted deployment serves it the same way. Errors: `404 {"detail": "no stored media for …"}`.
+- `GET /resources/{resource_id}/chapters` — automatic chapters, generated in the
+  background after ingestion. Never blocks on a model call, and never `404`:
+
+  ```json
+  {"resource_id": "res_…", "status": "ready",
+   "chapters": [{"title": "…", "start_ms": 0, "end_ms": 212000,
+     "page_start": null, "page_end": null, "slide_start": null, "slide_end": null}]}
+  ```
+
+  `status` is `ready`, `pending` (missing or stale: generation was started;
+  poll again, and a stale list is still returned meanwhile) or `unavailable`
+  (unknown resource or nothing indexed, with `chapters: []`). A video chapter
+  carries `start_ms`/`end_ms`, a PDF chapter `page_start`/`page_end`, a slide
+  deck `slide_start`/`slide_end`; the other fields are `null`. Chapters are
+  navigation only: they never feed retrieval or the timestamp gate.
 
 ## Subjects
 
@@ -431,10 +516,10 @@ Where it is read differs per route — the usual source of a confusing `401`:
 
 | Route | Where the token is read from |
 |---|---|
-| `POST /chat` | the body field `session_token` **only** — the `X-Session-Token` header is not read on this route, so a header-only request gets `401` |
+| `POST /chat`, `POST /chat/stream` | the body field `session_token` **only** — the `X-Session-Token` header is not read on these routes, so a header-only request gets `401` |
 | `GET /sessions/{session_id}/messages` | the `?session_token=…` query parameter **or** the `X-Session-Token` header |
 | `POST /chat/live-frame` | the `session_token` form field **or** the `X-Session-Token` header |
-| `POST /quiz`, `POST /quiz/grade` | the body field `session_token` **or** the `X-Session-Token` header |
+| `POST /quiz`, `POST /quiz/grade`, `POST /quiz/note` | the body field `session_token` **or** the `X-Session-Token` header |
 | `/sessions/{session_id}/threads…` | the `?session_token=…` query parameter **or** the `X-Session-Token` header |
 
 Sending both the body field and the header on `POST /chat` is harmless, and is
@@ -444,16 +529,16 @@ what the web client does.
 
 | Code | Meaning | Endpoints | Typical cause |
 |---|---|---|---|
-| 401 | Unauthorized | `/lms/session`, `/chat`, `/chat/live-frame`, `/sessions/{id}/messages`, `/sessions/{id}/threads…`, `/quiz`, `/quiz/grade` | Missing/invalid/stale/future launch signature; missing or wrong session token (generic `invalid launch` detail) |
+| 401 | Unauthorized | `/lms/session`, `/chat`, `/chat/stream`, `/chat/live-frame`, `/sessions/{id}/messages`, `/sessions/{id}/threads…`, `/quiz`, `/quiz/grade`, `/quiz/note` | Missing/invalid/stale/future launch signature; missing or wrong session token (generic `invalid launch` detail) |
 | 403 | Forbidden | `POST /chat/live-frame` | Focused resource outside the session's grant |
-| 404 | Not found | `/chat`, `/chat/live-frame`, `/sessions/{id}/…`, `/quiz`, `/quiz/grade` | Unknown `session_id`, or unknown `thread_id` (`chat not found`) |
+| 404 | Not found | `/chat`, `/chat/stream`, `/chat/live-frame`, `/sessions/{id}/…`, `/quiz`, `/quiz/grade`, `/quiz/note` | Unknown `session_id`, or unknown `thread_id` (`chat not found`) |
 | 409 | Conflict | `POST /sessions/{id}/threads` | The session already has 50 chats |
 | 404 | Not found | `GET /ingestion/jobs/{id}`, `GET /resources/{id}/media`, `/subjects…` | Unknown job, unknown resource asset, unknown subject |
 | 404 | Not found | `POST …/position`, `DELETE /courses/{id}/resources/{rid}` | Resource unknown or not owned by that course |
 | 409 | Conflict | `POST …/position` | More windows needed but the media file is gone |
 | 413 | Payload too large | `POST /courses/{id}/ingest`, `POST /chat/live-frame` | Upload over 512 MB or `MAX_UPLOAD_MB`; video longer than `MAX_VIDEO_MINUTES`; captured frame over 8 MB |
 | 422 | Validation error | most write routes | Empty/oversize fields, out-of-range `current_time_ms`, unknown mode or field, ingest `mode` not `full`/`stream`, unrecognisable YouTube URL, frame time outside the media duration, question not about the current frame |
-| 429 | Too many requests | `/lms/session`, `/chat`, `/chat/live-frame`, `/quiz`, `/quiz/grade`; `POST /courses/{id}/ingest` | Over 60 req/min/IP; over `MAX_UPLOADS_PER_HOUR` uploads (global) |
+| 429 | Too many requests | `/lms/session`, `/chat`, `/chat/stream`, `/chat/live-frame`, `/quiz`, `/quiz/grade`; `POST /courses/{id}/ingest` | Over 60 req/min/IP; over `MAX_UPLOADS_PER_HOUR` uploads (global) |
 | 500 | Server error | `DELETE /courses/{id}/resources/{rid}` | Chunks removed but the stored file could not be deleted |
 | 502 | Upstream error | `/chat`, `/chat/live-frame`, `/quiz`, `/quiz/grade` | LLM/vision provider failure (redacted detail) |
 | 503 | Service unavailable | any route that calls Gemini | A daily provider quota is spent: `{"detail": "… quota reached … Stopped instead of waiting."}` (`QuotaExhaustedError`) |

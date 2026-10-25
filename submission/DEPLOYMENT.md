@@ -13,8 +13,8 @@ The API can't run on Vercel. Its Python function bundle limit is 250 MB, which
 faster-whisper, PyAV and chromadb exceed, and ingest runs as background jobs for
 minutes. Render's free disk is wiped on every restart, which is why the vector
 index lives in Pinecone. Files stay on the container disk: the demo video and
-the UNIT-1 PDF notes are baked into the image, and files uploaded on the hosted
-site last until the next restart.
+the UNIT-1 PDF notes are baked into the image with their chapters, and files
+uploaded on the hosted site last until the next restart.
 
 Everything below has been done once for the live demo. Follow it in order to
 reproduce it.
@@ -57,8 +57,13 @@ The repo root holds a Blueprint, `render.yaml`. It builds
 `apps/api/deploy/render/Dockerfile` with the repo root as context. The image
 bakes in `test-data/Partial-derivatives.mp4` as resource `res_2e629d682a3d`,
 `test-data/UNIT-1-001.pdf` as resource `res_7c1f4a92d0e5`, and the seed subject
-`apps/api/deploy/seed/subjects.json`, which holds both. `.dockerignore` limits the
-build context to exactly those files plus `apps/api`.
+`apps/api/deploy/seed/subjects.json`, which holds both. It also copies
+`apps/api/deploy/seed/chapters/` (`res_2e629d682a3d.json`, the demo video's
+3 chapters, and `res_7c1f4a92d0e5.json`, the PDF's 8) to `data/chapters/`,
+the default chapters directory (`CHAPTERS_DIR` overrides it). They were
+generated against the same Pinecone chunks, so the Chapters panel is ready
+after every restart with no model calls. `.dockerignore` limits the build
+context to exactly those files plus `apps/api`.
 
 1. Render dashboard -> **New -> Blueprint** -> pick the repository.
 2. Render reads `render.yaml` and asks for the values marked `sync: false`:
@@ -101,6 +106,20 @@ build context to exactly those files plus `apps/api`.
 
 The free plan sleeps after about 15 idle minutes. The first request after that
 takes up to a minute while the service wakes, and the wake-up wipes the disk.
+
+### Dev environment and branch workflow
+
+Work happens on the `dev` branch; production deploys from `main`. A second
+Blueprint, `render.dev.yaml`, defines a separate free service,
+`malai-pioneer-api-dev`, built from `dev` with the same Dockerfile and
+`autoDeploy: true`, so testing never touches the live site. Create it with
+**New -> Blueprint**, Blueprint file path `render.dev.yaml`. It asks for the
+same `sync: false` secrets as production and sets the same values, except
+`PINECONE_INDEX=ailearn-llama-dev`, a separate 1024-d index. Merge `dev` into
+`main` to release.
+
+CI (`.github/workflows/ci.yml`) runs on pushes to `main` and `dev` and on pull
+requests: `ruff check .` for the API and `npm run build` for the web app.
 
 ## 3. Vercel: the web app
 
@@ -154,7 +173,7 @@ Then use the web app:
    opens the page with the cited text highlighted.
 6. Tick the PDF as done in the course checklist, go back to the video, and ask
    something the notes cover: the answer can now cite PDF pages too.
-7. Click **Developer view** in the header. In the new window, ask a question
+7. Click the floating **Developer view** button. In the new window, ask a question
    in the app: the AI Tutor diagram plays each step (scope check, search,
    timestamp gate, model, citation check), and clicking a step shows its data.
    Upload a short video and the Ingestion diagram shows transcription, frame
@@ -186,6 +205,10 @@ Then use the web app:
 - **Files on the container disk** disappear on restart or wake-up. Their chunks
   stay in Pinecone, but the media route then returns 404 for them. The demo video
   and PDF are unaffected.
+- **Chapters of uploaded files** live on the same ephemeral disk. After a
+  restart they are rebuilt from the Pinecone chunks the first time the resource
+  is opened (one model call; the chapters route answers `pending` meanwhile). The
+  demo chapters are baked into the image.
 - **YouTube ingest** is often blocked from datacenter IPs. Upload files instead.
 - **Subjects reset on restart.** The image seeds `data/subjects.json` from
   `apps/api/deploy/seed/subjects.json`, so a restart restores the

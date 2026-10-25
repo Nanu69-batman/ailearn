@@ -17,7 +17,10 @@ the cited text highlighted. When the lecture has not yet covered the question,
 the tutor says so instead of inventing an answer. It reads the speech, what is
 written on the screen, and any PDF, PowerPoint or image attached to the subject.
 A Quiz tab writes practice quizzes (multiple choice, numerical, written) on what
-has been watched.
+has been watched. Answers stream in as they are written, and every video, PDF
+and slide deck gets automatic chapters. Outside a lesson, the Malai page is a
+standalone tutor chat: chats filed under a subject read only that subject's
+materials, and chats in no subject answer from general knowledge.
 
 ## Live demo
 
@@ -37,7 +40,10 @@ the end of the video?" The tutor says the lesson hasn't got there yet, and every
 citation ends before 0:30. Pause at about 5:00 and ask "What equation is on
 screen right now?" It answers from the moments just before the playhead; click
 a citation to see its span on the scrub bar. Then open the **Quiz** tab, or
-open the PDF and click a page citation to see the cited text highlighted.
+open the PDF and click a page citation to see the cited text highlighted. The
+lesson panel's **Chapters** tab lists the video's chapters (3) and the PDF's (8).
+Type `/` in the chat box for slash commands, or open **Malai** in the sidebar for
+the standalone tutor chat.
 
 The API runs on Render's free tier, so the first request after about 15 idle
 minutes takes up to a minute while it wakes.
@@ -85,12 +91,32 @@ minutes takes up to a minute while it wakes.
   local faster-whisper as a fallback), frame descriptions (Gemini vision, one
   frame every 4 s, with near-duplicate frames skipped), PDF and PPTX text, and
   images. Optional OCR handles scanned PDFs.
-- **Real practice quizzes.** A Quiz tab writes multiple-choice, numerical and
-  written questions on what has been watched (plus materials marked done), in
-  one model call through the same playhead gate, and every question cites its
-  source. Multiple-choice and numerical answers are checked in the browser
-  with no model call; only written answers are graded by the model
+- **Real practice quizzes, in every chat.** A Quiz tab writes multiple-choice,
+  numerical and written questions on what has been watched (plus materials
+  marked done), in one model call through the same playhead gate, and every
+  question cites its source. The tab is a form: 1-20 questions, question types
+  and optional instructions. Asking in plain words ("quiz me on...") opens it
+  too. The server writes the quiz start and the score into the chat
+  (`POST /quiz/note`). Malai chats get subject-scoped quizzes, or
+  general-knowledge quizzes when the chat is in no subject. Multiple-choice and
+  numerical answers are checked in the browser with no model call; only written
+  answers are graded by the model
   ([diagram](submission/ARCHITECTURE.md#d-practice-quizzes)).
+- **Streaming answers.** `POST /chat/stream` (Server-Sent Events) sends status
+  lines, then the answer so far with citation markers stripped, then the
+  validated `ChatResponse`, which replaces the preview. Gemini streams token by
+  token; the agent path shows status lines until its answer is ready. Citation
+  validation is unchanged: the preview is never the final answer. `POST /chat`
+  is unchanged.
+- **Automatic chapters.** After ingest, videos get timestamped chapters and
+  PDFs and slide decks get page or slide ranges (`GET /resources/{id}/chapters`,
+  shown in the lesson panel's Chapters tab). They are stored as
+  `data/chapters/<resource_id>.json` (`CHAPTERS_DIR` overrides) and regenerated
+  when stale.
+- **Slash commands.** Every chat, in a lesson or in Malai, offers `/explain`,
+  `/analogy`, `/summarize`, `/compare` and `/quiz`. Typing `/` opens a menu with
+  each command's options, worded for what that chat can read (a video, a
+  document, a subject, or nothing).
 - **Shows exactly what it cites.** Clicking a citation from the open PDF opens
   that page with the cited text highlighted. A video citation seeks there and
   draws the cited span as a band on the scrub bar; a live-frame citation seeks
@@ -102,8 +128,35 @@ minutes takes up to a minute while it wakes.
   session grant, so it can never widen what a learner may read.
 - **Several chats per lesson.** Start, switch, rename and delete chats; each
   keeps its own history.
-- **Math renders properly.** Answers are Markdown with LaTeX (KaTeX). Raw HTML
-  from the model is never rendered.
+- **Malai, the standalone tutor chat (`/malai`).** Its own sidebar lists
+  subjects with their chats, then unfiled recent chats, with search, rename,
+  move into or out of a subject, and delete; it collapses to a rail. A subject
+  page (`/malai?s=<id>`) shows its chats, resources and a start-a-chat box, and
+  resources open beside Malai (`/malai/lesson/<subject>/<resource>`). A chat
+  filed under a subject reads only that subject's materials:
+  `scope_resource_ids` narrows the session grant by intersection, so it can
+  only remove. The strict `end_ms <= T` gate is unchanged; with no playhead,
+  Malai reads documents and videos marked done.
+- **General chats.** A Malai chat in no subject is answered from general
+  knowledge, with no retrieval and zero citations (mode `"general"`), unless
+  the message points at the learner's materials ("my notes", "the lecture",
+  "the uploaded pdf"), which sends it through the normal grounded pipeline.
+- **Dockable lesson page.** The lesson and Malai are two windows. Drag a grip to
+  dock either to any edge, side by side or stacked, swap them, resize the
+  divider, collapse the panel or hide the video. The layout is remembered per
+  browser. Resources opened from My subjects show without the chat, with an
+  "Open with Malai" button.
+- **Dashboard and My subjects.** The dashboard shows a year of study activity
+  (streak, study days, time spent), continue learning, the next practice quiz
+  and recent subjects. My subjects has search, Ongoing/Completed/Archived
+  filters, sorting and a grid or list view. Activity, progress and archiving
+  are stored in the browser.
+- **Math and Markdown render properly.** Answers are Markdown with LaTeX
+  (KaTeX): headings, lists, code blocks with Copy, and tables (remark-gfm).
+  `\(..\)` and `\[..\]` are rewritten to dollar forms, display math is centred
+  and key equations are larger. Raw HTML from the model is never rendered.
+- **Replies in the learner's language and tone.** The tutor answers in the
+  language the learner writes in and matches their register.
 - **Says when it did less than asked.** Every ingest reports `visual_status`,
   `visual_coverage_pct` and warnings. A spent daily model quota returns a
   readable `503` and does not keep retrying.
@@ -129,7 +182,7 @@ invariants are in [submission/ARCHITECTURE.md](submission/ARCHITECTURE.md).
 
 | Layer | Technology |
 |---|---|
-| Web | Next.js 15, React 19, Tailwind CSS v3, react-markdown + remark-math + rehype-katex, react-pdf (PDF viewer), Office Online embed (slides) |
+| Web | Next.js 15, React 19, Tailwind CSS v3, react-markdown + remark-gfm + remark-math + rehype-katex (KaTeX pinned to ^0.16.47), Inter and JetBrains Mono, react-pdf (PDF viewer), Office Online embed (slides) |
 | API | Python, FastAPI, Pydantic v2, uvicorn |
 | Retrieval | Pinecone serverless (hosted) or Chroma on disk (local), LangChain text splitters |
 | Tutor agent | `nvidia/nemotron-3.5-super-vl:free` via OpenRouter, OpenAI-format tool calling |
@@ -138,8 +191,8 @@ invariants are in [submission/ARCHITECTURE.md](submission/ARCHITECTURE.md).
 | Vision | Gemini (frame and image descriptions, live frames) |
 | Speech to text | Groq `whisper-large-v3-turbo`, with local faster-whisper as fallback |
 | Media | PyAV (decode, duration, frame sampling), pypdf, python-pptx |
-| File storage | Local disk (the demo video and PDF are baked into the hosted image) |
-| Hosting | Vercel (web), Render Docker free tier (API, `render.yaml`) |
+| File storage | Local disk (the demo video, PDF and their chapters are baked into the hosted image) |
+| Hosting | Vercel (web), Render Docker free tier (API: `render.yaml` for production, `render.dev.yaml` for the dev API) |
 | Tests | pytest (backend), `tsc --noEmit` and a contract check (frontend) |
 
 ## Quickstart (local)
@@ -178,6 +231,33 @@ disk, so no cloud account is needed beyond the Gemini key.
 
 To load the sample lecture, see [submission/DATASET.md](submission/DATASET.md).
 
+### Pages
+
+| Route | What it is |
+|---|---|
+| `/dashboard` | Study activity, Malai entry card, continue learning, next practice quiz, recent subjects |
+| `/ai-tutor/subjects` | My subjects: search, Ongoing/Completed/Archived filters, sort, grid or list |
+| `/ai-tutor/subjects/<subject>/content/<resource>` | A resource without the chat, with an "Open with Malai" button |
+| `/malai` | Malai chat with its own sidebar; `/malai?s=<subject>` is a subject page |
+| `/malai/lesson/<subject>/<resource>` | The lesson page: lesson window (player, Chapters / Transcript / Resources) and Malai window, dockable |
+| `/dev` | Developer view, the live pipeline trace (a floating button opens it on desktop) |
+
+The sidebar links Dashboard, My Subjects and Malai (Profile is a placeholder,
+not implemented yet). In any chat, type
+`/` for slash commands, or ask "quiz me on..." to open the quiz form.
+
+### API endpoints added in this release
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /chat/stream` | Same request as `POST /chat`; Server-Sent Events with status lines, the answer so far, then the validated `ChatResponse` |
+| `POST /quiz/note` | Writes a quiz start or score into the chat history |
+| `GET /resources/{resource_id}/chapters` | Automatic chapters for a video, PDF or slide deck |
+
+`ChatRequest` also takes `scope_resource_ids` (narrows the session grant,
+intersection only) and `general` (a chat in no subject). The full reference is
+[submission/API.md](submission/API.md) and the live `/docs`.
+
 ## Environment variables
 
 **API** (`apps/api/.env`, template `apps/api/.env.example`):
@@ -207,6 +287,7 @@ To load the sample lecture, see [submission/DATASET.md](submission/DATASET.md).
 | `PINECONE_API_KEY`, `PINECONE_INDEX` | none | Pinecone credentials and index name *(hosted only)* |
 | `LOCAL_WHISPER_FALLBACK` | `true` | `false` on the hosted 512 MB instance: if Groq fails, the window fails visibly instead of loading a local model |
 | `OCR_BACKEND` | off | `unlimited-ocr` enables OCR for scanned PDFs (needs an operator-installed GPU stack) |
+| `CHAPTERS_DIR` | `data/chapters` | Where automatic chapter files are stored, one JSON file per resource |
 
 **Web** (`apps/web/.env.local` locally, Vercel project settings when hosted):
 
@@ -221,7 +302,7 @@ Never commit `apps/api/.env`. It holds the API keys and the launch secret.
 
 ```bash
 cd apps/api
-python -m pytest -q -p no:warnings        # backend suite
+python -m pytest -q -p no:warnings        # backend suite (579 tests)
 python -m pytest --co -q | tail -1        # confirm it collects with no errors
 # RAG evaluation on the lecture + PDF (needs keys; see submission/EVALUATION.md):
 python -m app.eval.harness --golden ../../submission/eval/golden-partial-derivatives.jsonl --chunks ../../submission/eval/partial-derivatives-chunks.jsonl --embedder pinecone
@@ -233,6 +314,20 @@ npm run contract-check                    # client/server contract + rendering s
 
 Current results and what each test file protects are listed in
 [submission/EVALUATION.md](submission/EVALUATION.md).
+
+## Branches and deploys
+
+Work happens on `dev`; production deploys from `main`. CI runs on both
+branches. `render.yaml` is the production API blueprint and `render.dev.yaml` a
+separate blueprint for the dev API (`malai-pioneer-api-dev`, same Dockerfile,
+built from `dev`), so testing on `dev` never touches the live site.
+
+`apps/api/deploy/render/Dockerfile` bakes the demo video, the demo PDF,
+`deploy/seed/subjects.json` and the demo chapters
+(`deploy/seed/chapters/res_2e629d682a3d.json`, 3 chapters, and
+`res_7c1f4a92d0e5.json`, 8 chapters) into the image. The chapters were generated
+against the same Pinecone chunks, so they survive Render restarts with no model
+calls. Full steps are in [submission/DEPLOYMENT.md](submission/DEPLOYMENT.md).
 
 ## Submission deliverables
 
@@ -271,8 +366,14 @@ All deliverables are in [submission/](submission/), and its
   window guard are lost on restart. Render's free disk is wiped on every
   restart and wake-up, so files uploaded on the hosted site disappear then
   (their index entries stay in Pinecone). The demo video and PDF survive
-  because they are baked into the image. Moving this state out of the process (Redis or
+  because they are baked into the image. Chapters for other uploads also live
+  on that disk and are rebuilt the first time the resource is opened after a
+  restart. Moving this state out of the process (Redis or
   Postgres) is the first step toward concurrent users.
+- **Study activity, progress and archiving live in the browser.** The dashboard
+  and My subjects read them from local storage, so they do not follow a learner
+  to another browser or device.
+- **The Transcript tab is UI only.** It is not wired to the transcript yet.
 - **State-changing routes (upload, delete, subjects, position) have no auth.**
   Only chat, history, chats and quizzes are bound to a signed session. Adding auth there is a
   planned follow-up.

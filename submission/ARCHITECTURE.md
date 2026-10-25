@@ -183,7 +183,7 @@ flowchart LR
 | Web (Next.js 15) | Vercel, root dir `apps/web` | Static and edge-friendly. The only server-side code is the launch-signing route, which keeps `LMS_LAUNCH_SECRET` out of the browser |
 | API (FastAPI) | Render web service, Docker, free tier (`render.yaml`, `apps/api/deploy/render/Dockerfile`) | Vercel cannot host it: the function bundle limit is 250 MB, while faster-whisper, PyAV and chromadb are larger, and ingest jobs run in the background for minutes. One process, because jobs and sessions live in memory |
 | Vectors | Pinecone serverless (`VECTOR_STORE=pinecone`) | Render's free disk is wiped on restart, so the index lives outside the container. The same `build_where` scope + strict-T filter runs in Pinecone, and every match is re-checked against it in Python. Local dev uses Chroma on disk (`VECTOR_STORE=chroma`) |
-| Files | Container disk | A hackathon trade-off. The demo video and the UNIT-1 PDF notes are baked into the image, so they are always there. Files uploaded on the hosted site last until the next restart. The media route serves them with HTTP Range |
+| Files | Container disk | A hackathon trade-off. The demo video and the UNIT-1 PDF notes are baked into the image, so they are always there, together with their chapters (`apps/api/deploy/seed/chapters/` → `data/chapters/`) and the demo subject. Files uploaded on the hosted site, and their chapters, last until the next restart. The media route serves them with HTTP Range |
 | Tutor agent | OpenRouter, `nvidia/nemotron-3.5-super-vl:free` | Free, reliable tool calling with a 1M context. Optional: with no `OPENROUTER_API_KEY`, the classic pipeline answers every question |
 | LLM / vision | Gemini `gemini-3.5-flash-lite` | Quiz writing (about 15 s for a whole quiz), fallback answers and frame descriptions. Blocking SDK calls run on a worker thread, so a slow answer never stalls other requests |
 | Embeddings | Pinecone Inference `llama-text-embed-v2` (1024-d) hosted; Gemini `gemini-embedding-2` (3072-d) locally | Pinecone's free plan meters 5M tokens a month, not Gemini's ~1,000 texts a day. The store refuses to start if the index width and the embedder disagree |
@@ -249,6 +249,34 @@ How it works:
   (complete / partial / failed / skipped), `visual_coverage_pct` and warnings. A
   scanned PDF that could not be read reports `skipped` or `failed` with the reason.
   It never looks like an empty document that was read successfully.
+
+### Chapters, after ingestion
+
+When an ingest job succeeds, a background task writes chapters for the
+resource (`apps/api/app/ingestion/chapters.py`), served at
+`GET /resources/{id}/chapters` and shown in the lesson panel's Chapters tab.
+
+- **What a chapter is.** A short topic name over a contiguous span: a time range
+  for a video, a page range for a PDF, a slide range for a deck.
+- **How.** One model call over a compact, ordered digest of the indexed chunks
+  (read by exact `resource_id`). Its JSON is validated: boundaries are snapped
+  to real timestamps or pages, sorted, gaps and overlaps repaired, junk titles
+  dropped. Unusable output, a failed call or the offline stub falls back to a
+  deterministic split, which is still a ready result. A chapter failure never
+  fails the ingest.
+- **Storage and staleness.** One JSON file per resource in `data/chapters/`
+  (`CHAPTERS_DIR` overrides it). A stream-mode video records the frontier it
+  was built from and is rebuilt once processing has moved on by more than
+  2 minutes, or the video is complete. A missing or stale file is rebuilt in
+  the background the next time it is requested; the route never waits for the
+  model. Deleting a resource deletes its chapters.
+- **Catalogue only.** Chapters never feed retrieval, `build_where`, the strict
+  `end_ms <= T` gate or citation validation. A chapter list that names the end
+  of a lecture is navigation the learner chose to open, not evidence for an
+  answer.
+- **Demo seed.** The demo video (3 chapters) and PDF (8 chapters) have their
+  chapter files baked into the API image, generated against the same Pinecone
+  chunks, so they are ready after every restart with no model calls.
 
 ### Inside the visual lane
 
@@ -394,6 +422,39 @@ passage with `start_ms == end_ms == T`, so it passes the same gate. `T` is first
 checked against the duration the server read from the file. An out-of-range `T`
 gets `422`; it is never clamped.
 
+**Streaming.** `POST /chat/stream` runs exactly the same pipeline as `/chat`
+and sends Server-Sent Events while it works (`app/chat/streaming.py`). A sink
+bound for that one request receives short status lines ("Searching the
+lesson") and the provider's text as it is generated: Gemini streams token by
+token, while the agent path shows status lines until its answer is ready.
+Citation markers are stripped from the preview, and a marker that has not
+closed yet is held back. The preview is written from the already time-gated
+passages, so it cannot show anything past `T`. Citation validation still runs
+on the finished reply, and the final `done` event carries the validated
+answer, which replaces the preview (a refusal replaces it entirely). Outside
+this route the sink is unset and every streaming hook does nothing.
+
+**Malai chats: scoped or general.** The `/malai` page holds chats that are not
+tied to one open material.
+
+- A chat filed under a subject sends that subject's resources as
+  `scope_resource_ids`. They are intersected with the session grant, so they
+  can only remove materials. A session with course id `"*"` drops the course
+  filter and reads across subjects, still only inside its `resource_scope`.
+  With no playhead, such a chat reads documents and the videos marked done.
+  The strict `end_ms <= T` gate is unchanged.
+- A chat in no subject sends `general: true`. It is answered from general
+  knowledge with no retrieval and zero citations (`mode: "general"`), unless
+  the message explicitly points at the learner's materials ("my notes", "the
+  lecture", "the uploaded pdf"), which takes the ordinary grounded pipeline
+  (`tests/test_general_chat.py`).
+
+**Answer style.** Every prompt (grounded, agent and general) carries a format
+rule asking for Markdown structure (headings for long answers, bold key terms,
+numbered steps, display equations on their own lines), and the tutor answers
+in the learner's language and matches their tone. The web app renders it with
+remark-gfm and KaTeX.
+
 ## (d) Practice quizzes
 
 The **Quiz** tab beside the chat writes a real quiz: multiple choice,
@@ -437,11 +498,26 @@ flowchart TD
   matched mostly on-screen frame descriptions, so quizzes ignored what the
   lecturer said. Reading the watched range in order and balancing speech
   against screen keeps theory questions in the mix.
+- **Quizzes from any chat.** The Quiz tab is a form: 1 to 20 questions, the
+  question types and optional instructions (a topic, a difficulty). A
+  plain-language request in a chat ("quiz me on…") or the `/quiz` slash command
+  opens it too. A Malai chat in a subject gets a quiz on that subject's
+  materials (`scope_resource_ids`, intersected with the grant); a chat in no
+  subject gets a general-knowledge quiz with no citations. The quiz start and
+  the final score are written into the chat by the server (`POST /quiz/note`),
+  from structured fields rather than client text.
 
 ## (e) Lesson page: viewers, cited passages, chats
 
 The lesson page shows the open material beside the tutor. Clicking a citation
 shows exactly what it cites.
+
+It is two dockable windows (`components/LessonView.tsx`): the lesson (the
+player plus a Chapters / Transcript / Resources panel) and Malai. Malai docks to
+any edge by dragging its grip, or with the side-by-side/stacked and swap
+buttons on a floating toolbar in the bottom-left corner. The divider resizes,
+the panel collapses, and "Hide video" gives Malai the whole space. The layout is
+remembered per browser. The Transcript tab is UI only for now.
 
 ```mermaid
 %%{init: {"theme": "base", "fontFamily": "Arial, Helvetica, sans-serif", "themeVariables": {"fontSize": "16px", "fontFamily": "Arial, Helvetica, sans-serif", "lineColor": "#64748b", "primaryTextColor": "#0f172a"}, "flowchart": {"curve": "basis", "padding": 14, "wrappingWidth": 340}}}%%
@@ -477,10 +553,31 @@ flowchart TD
   finds it on the cited page by comparing letters and digits only, so line
   breaks, hyphenation and ligatures do not stop the match (93 of the UNIT-1
   PDF's 97 chunks match in full, the rest partly, none missed).
+- **Slash commands.** Every chat (lesson and Malai) has `/explain`,
+  `/analogy`, `/summarize`, `/compare` and `/quiz`. Typing `/` opens a menu, and
+  each command has its options. They are worded for, and scoped to, what that
+  chat can read: a video, a document, a subject, or nothing.
+
+### The rest of the web app
+
+- **Dashboard** (`/dashboard`): a year of study activity (streak, study days,
+  time spent), a Malai entry card, continue learning, the next practice quiz
+  and the most recent subjects.
+- **My subjects** (`/ai-tutor/subjects`): search, Ongoing / Completed /
+  Archived filters, sorting and a grid/list toggle. A resource opened from here
+  shows without the chat, with an "Open with Malai" button.
+- **Malai** (`/malai`): a standalone tutor chat with its own sidebar: each
+  subject with its chats, then recent chats in no subject. Chats can be
+  searched, renamed, moved into or out of a subject, and deleted; the sidebar
+  collapses to a rail. A subject's page (`/malai?s=<id>`) lists its chats and
+  resources and starts a chat filed under it. A resource opens beside Malai at
+  `/malai/lesson/<subject>/<resource>` in the same dockable layout.
+- Activity, progress and archiving are recorded in the browser
+  (`lib/activity.ts`), not on the server.
 
 ## (f) Developer view: the live pipeline trace
 
-A **Developer view** button in the app's header opens `/dev` in its own window.
+A floating **Developer view** button (in the top bar on small screens) opens `/dev` in its own window.
 It shows, live and animated, each step the server takes for an upload, a
 question or a quiz: where the step ran, how long it took, and the data it
 carried.
