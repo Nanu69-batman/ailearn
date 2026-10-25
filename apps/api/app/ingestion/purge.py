@@ -71,6 +71,10 @@ def purge_resource(
             raise
         removed = not asset.exists()
 
+    from app.ingestion import remote_assets
+
+    remote_assets.remove_remote(resource_id)
+
     log.info(
         "purged resource=%s asset=%s removed=%s", resource_id, asset_name, removed
     )

@@ -9,6 +9,8 @@
     "contract-check": "node scripts/contract-check.mjs"
   },
   "dependencies": {
+    "@supabase/ssr": "^0.12.7",
+    "@supabase/supabase-js": "^2.118.0",
     "katex": "^0.16.47",
     "next": "^15.0.0",
     "react": "^19.0.0",

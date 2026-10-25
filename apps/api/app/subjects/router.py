@@ -23,9 +23,12 @@ never relaxed here.
 from __future__ import annotations
 
 import logging
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from app.auth import AuthUser, get_current_user, require_user
+from app.config import settings
 from app.subjects.schemas import (
     AttachResourceRequest,
     SubjectCreateRequest,
@@ -43,6 +46,10 @@ from app.subjects.store import (
 
 log = logging.getLogger(__name__)
 
+#: Mutating routes need a signed-in user once AUTH_REQUIRED is on.
+CurrentUser = Annotated[AuthUser | None, Depends(get_current_user)]
+WriteUser = Annotated[AuthUser | None, Depends(require_user)]
+
 router = APIRouter(prefix="/subjects")
 
 
@@ -58,38 +65,59 @@ def _to_response(subject: Subject) -> SubjectResponse:
     )
 
 
-def _require(subject_id: str) -> Subject:
+def _visible(subject: Subject, user: AuthUser | None) -> bool:
+    """Public (no owner) subjects are visible to all; owned ones to the owner."""
+    if subject.owner_id is None:
+        return True
+    return user is not None and user.id == subject.owner_id
+
+
+def _require(subject_id: str, user: AuthUser | None) -> Subject:
+    """The subject, or 404 when unknown or owned by someone else."""
     subject = subject_store.get(subject_id)
-    if subject is None:
+    if subject is None or not _visible(subject, user):
         raise HTTPException(status_code=404, detail=f"unknown subject {subject_id}")
     return subject
 
 
+def _require_writable(subject_id: str, user: AuthUser | None) -> Subject:
+    subject = _require(subject_id, user)
+    if subject.owner_id is None and user is not None and settings.auth_required:
+        raise HTTPException(status_code=403, detail="public subjects are read-only")
+    return subject
+
+
 @router.post("", status_code=201)
-async def create_subject(body: SubjectCreateRequest) -> SubjectResponse:
+async def create_subject(
+    body: SubjectCreateRequest, user: WriteUser
+) -> SubjectResponse:
     return _to_response(
         subject_store.create(
-            name=body.name, description=body.description, course_id=body.course_id
+            name=body.name,
+            description=body.description,
+            course_id=body.course_id,
+            owner_id=user.id if user is not None else None,
         )
     )
 
 
 @router.get("")
-async def list_subjects() -> SubjectListResponse:
+async def list_subjects(user: CurrentUser) -> SubjectListResponse:
     return SubjectListResponse(
-        subjects=[_to_response(s) for s in subject_store.list_all()]
+        subjects=[_to_response(s) for s in subject_store.list_all() if _visible(s, user)]
     )
 
 
 @router.get("/{subject_id}")
-async def read_subject(subject_id: str) -> SubjectResponse:
-    return _to_response(_require(subject_id))
+async def read_subject(subject_id: str, user: CurrentUser) -> SubjectResponse:
+    return _to_response(_require(subject_id, user))
 
 
 @router.patch("/{subject_id}")
 async def update_subject(
-    subject_id: str, body: SubjectUpdateRequest
+    subject_id: str, body: SubjectUpdateRequest, user: WriteUser
 ) -> SubjectResponse:
+    _require_writable(subject_id, user)
     subject = subject_store.update(
         subject_id, name=body.name, description=body.description
     )
@@ -99,19 +127,20 @@ async def update_subject(
 
 
 @router.delete("/{subject_id}")
-async def delete_subject(subject_id: str) -> dict:
+async def delete_subject(subject_id: str, user: WriteUser) -> dict:
     """Delete the subject. Its resources remain in the registry.
 
     Only the grouping is removed; indexed material and ingest jobs are
     untouched, so the resources can be attached to another subject later.
     """
+    _require_writable(subject_id, user)
     if not subject_store.delete(subject_id):
         raise HTTPException(status_code=404, detail=f"unknown subject {subject_id}")
     return {"deleted": subject_id}
 
 
 @router.get("/{subject_id}/resources")
-async def list_attached_resources(subject_id: str) -> dict:
+async def list_attached_resources(subject_id: str, user: CurrentUser) -> dict:
     """The catalogue entries for the resources attached to this subject.
 
     Same shape as ``GET /courses/{id}/resources`` so the web client renders a
@@ -131,6 +160,7 @@ async def list_attached_resources(subject_id: str) -> dict:
     Read-only catalogue lookup: no time filtering of any kind. The strict-T gate
     (``end_ms <= T``) is enforced by the retrieval layer and is untouched here.
     """
+    _require(subject_id, user)
     resources = list_subject_resources(subject_id)
     if resources is None:
         raise HTTPException(status_code=404, detail=f"unknown subject {subject_id}")
@@ -139,7 +169,7 @@ async def list_attached_resources(subject_id: str) -> dict:
 
 @router.post("/{subject_id}/resources")
 async def attach_resource(
-    subject_id: str, body: AttachResourceRequest
+    subject_id: str, body: AttachResourceRequest, user: WriteUser
 ) -> SubjectResponse:
     """Attach an existing resource by id.
 
@@ -147,6 +177,7 @@ async def attach_resource(
     exist in the retrieval registry — a subject must never hold a scope entry
     that resolves to nothing.
     """
+    _require_writable(subject_id, user)
     try:
         subject = subject_store.attach_resource(subject_id, body.resource_id)
     except UnknownSubjectError as exc:
@@ -161,7 +192,10 @@ async def attach_resource(
 
 
 @router.delete("/{subject_id}/resources/{resource_id}")
-async def detach_resource(subject_id: str, resource_id: str) -> SubjectResponse:
+async def detach_resource(
+    subject_id: str, resource_id: str, user: WriteUser
+) -> SubjectResponse:
+    _require_writable(subject_id, user)
     subject = subject_store.detach_resource(subject_id, resource_id)
     if subject is None:
         raise HTTPException(status_code=404, detail=f"unknown subject {subject_id}")

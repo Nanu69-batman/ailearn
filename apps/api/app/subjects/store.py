@@ -35,6 +35,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from app.supa.client import get_client
+
 log = logging.getLogger(__name__)
 
 #: Guards the module-level subject map *and* the read-modify-write of the state
@@ -85,6 +87,8 @@ class Subject:
     #: matters, not order.
     resource_ids: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=_utcnow_iso)
+    #: Supabase user id of the owner; ``None`` = public (visible to everyone).
+    owner_id: str | None = None
 
 
 class UnknownResourceError(ValueError):
@@ -360,7 +364,7 @@ class InMemorySubjectStore:
         with _state_lock:
             return {sid: asdict(s) for sid, s in list(self._subjects.items())}
 
-    def restore(self, data: dict[str, dict]) -> int:
+    def restore(self, data: dict[str, dict], *, apply_ttl: bool = True) -> int:
         restored = 0
         cutoff = datetime.now(UTC) - SUBJECT_TTL
         for sid, row in list(data.items()):
@@ -374,12 +378,13 @@ class InMemorySubjectStore:
                         str(x) for x in (row.get("resource_ids") or [])
                     ],
                     created_at=str(row.get("created_at") or _utcnow_iso()),
+                    owner_id=(str(row["owner_id"]) if row.get("owner_id") else None),
                 )
             except (KeyError, TypeError, ValueError) as exc:
                 log.warning("skipping unreadable subject row %s: %s", sid, exc)
                 continue
             created = _parse_iso(subject.created_at)
-            if created is not None and created < cutoff:
+            if apply_ttl and created is not None and created < cutoff:
                 continue  # expired: drop rather than resurrect
             with _state_lock:
                 self._subjects[subject.id] = subject
@@ -387,17 +392,24 @@ class InMemorySubjectStore:
         return restored
 
     def create(
-        self, *, name: str, description: str = "", course_id: str | None = None
+        self,
+        *,
+        name: str,
+        description: str = "",
+        course_id: str | None = None,
+        owner_id: str | None = None,
     ) -> Subject:
         subject = Subject(
             id=f"sub_{uuid.uuid4().hex[:16]}",
             name=name,
             description=description,
             course_id=course_id,
+            owner_id=owner_id,
         )
         with _state_lock:
             self._subjects[subject.id] = subject
             save_subject_state()
+            _mirror_subject(subject)
         return subject
 
     def get(self, subject_id: str) -> Subject | None:
@@ -424,6 +436,7 @@ class InMemorySubjectStore:
             if description is not None:
                 subject.description = description
             save_subject_state()
+            _mirror_subject(subject)
             return subject
 
     def delete(self, subject_id: str) -> bool:
@@ -436,6 +449,7 @@ class InMemorySubjectStore:
             if self._subjects.pop(subject_id, None) is None:
                 return False
             save_subject_state()
+            _mirror_subject_delete(subject_id)
             return True
 
     def attach_resource(self, subject_id: str, resource_id: str) -> Subject:
@@ -454,6 +468,7 @@ class InMemorySubjectStore:
             if resource_id not in subject.resource_ids:
                 subject.resource_ids.append(resource_id)
                 save_subject_state()
+                _mirror_subject(subject)
             return subject
 
     def detach_resource(self, subject_id: str, resource_id: str) -> Subject | None:
@@ -465,6 +480,7 @@ class InMemorySubjectStore:
             if resource_id in subject.resource_ids:
                 subject.resource_ids.remove(resource_id)
                 save_subject_state()
+                _mirror_subject(subject)
             return subject
 
     def resource_ids(self, subject_id: str) -> list[str] | None:
@@ -576,6 +592,78 @@ def load_subject_state() -> int:
     restored = subject_store.restore(rows) if isinstance(rows, dict) else 0
     if restored:
         log.info("restored %d subjects from local subject state", restored)
+    return restored
+
+
+# ---------------------------------------------------------------------------
+# Supabase mirror (docs/SUPABASE_PLAN.md, "API persistence strategy")
+# ---------------------------------------------------------------------------
+
+_PAGE = 1000
+
+
+def _subject_row(subject: Subject) -> dict:
+    return {
+        "id": subject.id,
+        "owner_id": subject.owner_id,
+        "name": subject.name,
+        "description": subject.description,
+        "course_id": subject.course_id,
+        "resource_ids": list(subject.resource_ids),
+        "created_at": subject.created_at,
+        "updated_at": _utcnow_iso(),
+    }
+
+
+def _mirror_subject(subject: Subject) -> None:
+    """Upsert one subject row. Best-effort: warns, never raises."""
+    client = get_client()
+    if client is None:
+        return
+    try:
+        client.upsert("subjects", _subject_row(subject), on_conflict="id")
+    except Exception as exc:  # noqa: BLE001 - mirroring must not fail a request
+        log.warning("supabase subject upsert failed: %s", exc)
+
+
+def _mirror_subject_delete(subject_id: str) -> None:
+    client = get_client()
+    if client is None:
+        return
+    try:
+        client.delete("subjects", {"id": f"eq.{subject_id}"})
+    except Exception as exc:  # noqa: BLE001
+        log.warning("supabase subject delete failed: %s", exc)
+
+
+def load_subjects_from_supabase() -> int:
+    """Load every subject row from Supabase into the store.
+
+    Returns the number restored; 0 (and a warning) on any failure. No TTL: a
+    subject stored in the database is durable.
+    """
+    client = get_client()
+    if client is None:
+        return 0
+    rows: list[dict] = []
+    try:
+        offset = 0
+        while True:
+            page = client.select(
+                "subjects",
+                {"order": "created_at.asc", "limit": str(_PAGE), "offset": str(offset)},
+            )
+            rows.extend(page)
+            if len(page) < _PAGE:
+                break
+            offset += _PAGE
+    except Exception as exc:  # noqa: BLE001
+        log.warning("supabase subject load failed: %s", exc)
+        return 0
+    data = {str(r["id"]): r for r in rows if isinstance(r, dict) and r.get("id")}
+    restored = subject_store.restore(data, apply_ttl=False)
+    if restored:
+        log.info("restored %d subjects from supabase", restored)
     return restored
 
 

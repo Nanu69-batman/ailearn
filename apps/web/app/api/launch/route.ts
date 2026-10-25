@@ -5,8 +5,10 @@
  * browser ever sees it. This route plays that part so the hosted API can run
  * with ALLOW_UNSIGNED_LAUNCH=false: the secret lives only in this server's
  * env (LMS_LAUNCH_SECRET, never NEXT_PUBLIC_*) and never reaches the browser.
- * There is no learner login in the prototype, so it signs any launch it is
- * asked for; what it demonstrates is the signed flow, not identity.
+ * With Supabase Auth configured, a signed-in learner's launch is signed with
+ * learner_id forced to their user id (the body value is ignored), and an
+ * anonymous launch is signed only for the public demo course. Without
+ * Supabase it signs any launch it is asked for, as before.
  *
  * The canonical payload mirrors apps/api/app/chat/launch.py
  * `canonical_launch_payload` exactly; change one, change the other.
@@ -17,6 +19,7 @@
 import { createHmac } from "node:crypto";
 
 import type { LmsSessionRequest } from "@/lib/api";
+import { getSupabaseServerClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 
@@ -53,9 +56,22 @@ export async function POST(request: Request): Promise<Response> {
   ) {
     return Response.json({ detail: "invalid launch" }, { status: 422 });
   }
+  // Identity comes from the session, never from the body.
+  let learnerId = body.learner_id;
+  const supabase = await getSupabaseServerClient();
+  if (supabase) {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (user) {
+      learnerId = user.id;
+    } else if (body.course_id !== "demo") {
+      return Response.json({ detail: "sign in required" }, { status: 401 });
+    }
+  }
   // The signer, not the browser, decides when the launch was issued.
   const launch: LmsSessionRequest = {
-    learner_id: body.learner_id,
+    learner_id: learnerId,
     course_id: body.course_id,
     resource_id: body.resource_id,
     lesson_id: body.lesson_id,

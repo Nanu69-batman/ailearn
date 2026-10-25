@@ -13,6 +13,7 @@ import {
   type QuizScope,
 } from "../lib/api";
 import CitationBadge, { type CitationBadgeProps } from "./CitationBadge";
+import { pushQuizAttempt } from "@/lib/activitySync";
 import MarkdownBody from "./MarkdownBody";
 
 /** Settings for a quiz written right away: from /quiz, or a chat message. */
@@ -252,6 +253,12 @@ export default function QuizPanel({
   useEffect(() => {
     if (!done || reported.current === attempt) return;
     reported.current = attempt;
+    void pushQuizAttempt({
+      resourceId: scope.video_id ?? null,
+      subjectId: null,
+      score: Math.round(score * 10) / 10,
+      total: questions.length,
+    });
     onFinished?.({
       count: questions.length,
       score: Math.round(score * 10) / 10,

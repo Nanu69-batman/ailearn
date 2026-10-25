@@ -10,6 +10,7 @@
  * import this, and so does anything that only needs the URL helpers.
  */
 
+import { pushCompletion } from "@/lib/activitySync";
 import { resourceMediaUrl, type CourseResource } from "@/lib/api";
 
 /** What the player can render for a given resource. */
@@ -194,6 +195,18 @@ export function readCompletion(courseId: string): string[] {
 }
 
 export function writeCompletion(courseId: string, ids: string[]): void {
+  const before = new Set(readCompletion(courseId));
+  const after = new Set(ids);
+  writeCompletionLocal(courseId, ids);
+  // Only the ticks that changed go to the account.
+  void pushCompletion(courseId, [
+    ...ids.filter((id) => !before.has(id)).map((resourceId) => ({ resourceId, completed: true })),
+    ...[...before].filter((id) => !after.has(id)).map((resourceId) => ({ resourceId, completed: false })),
+  ]);
+}
+
+/** Write completion to this browser only (used when syncing from the account). */
+export function writeCompletionLocal(courseId: string, ids: string[]): void {
   try {
     window.localStorage.setItem(completionKey(courseId), JSON.stringify(ids));
   } catch {

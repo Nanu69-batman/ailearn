@@ -33,6 +33,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 
+from app.supa.client import get_client
+
 log = logging.getLogger(__name__)
 
 # Guards the module-level singletons below.
@@ -87,6 +89,8 @@ class Session:
     resource_scope: list[str]
     current_time_ms: int
     created_at: str = field(default_factory=_utcnow_iso)
+    #: Authenticated Supabase user id that opened the session; None = anonymous.
+    owner_id: str | None = None
 
 
 @dataclass
@@ -206,6 +210,7 @@ class InMemoryThreadStore:
             t = ChatThread(id=f"thr_{uuid.uuid4().hex[:12]}", session_id=session_id)
             ts[t.id] = t
         save_session_state()
+        _mirror_thread(t)
         return t
 
     def rename(self, session_id: str, thread_id: str, title: str) -> ChatThread | None:
@@ -216,6 +221,7 @@ class InMemoryThreadStore:
                 return None
             t.title = clean
         save_session_state()
+        _mirror_thread(t)
         return t
 
     def delete(self, session_id: str, thread_id: str) -> bool:
@@ -226,10 +232,13 @@ class InMemoryThreadStore:
                 return False
             if thread_id == MAIN_THREAD:
                 ts[thread_id].title = None
+                main = ts[thread_id]
             else:
+                main = None
                 del ts[thread_id]
         message_store.drop(history_key(session_id, thread_id))
         save_session_state()
+        _mirror_thread_delete(session_id, thread_id, main)
         return True
 
     def clear(self) -> None:
@@ -249,6 +258,7 @@ class SessionRepository(Protocol):
         lesson_id: str | None,
         resource_scope: list[str],
         current_time_ms: int,
+        owner_id: str | None = None,
     ) -> Session: ...
     def get(self, session_id: str) -> Session | None: ...
     def clear(self) -> None: ...
@@ -279,7 +289,7 @@ class InMemorySessionStore:
         with _state_lock:
             return {sid: asdict(s) for sid, s in list(self._sessions.items())}
 
-    def restore(self, data: dict[str, dict]) -> int:
+    def restore(self, data: dict[str, dict], *, apply_ttl: bool = True) -> int:
         restored = 0
         cutoff = datetime.now(UTC) - SESSION_TTL
         for sid, row in list(data.items()):
@@ -293,12 +303,13 @@ class InMemorySessionStore:
                     resource_scope=[str(x) for x in (row.get("resource_scope") or [])],
                     current_time_ms=int(row.get("current_time_ms") or 0),
                     created_at=str(row.get("created_at") or _utcnow_iso()),
+                    owner_id=(str(row["owner_id"]) if row.get("owner_id") else None),
                 )
             except (KeyError, TypeError, ValueError) as exc:
                 log.warning("skipping unreadable session row %s: %s", sid, exc)
                 continue
             created = _parse_iso(session.created_at)
-            if created is not None and created < cutoff:
+            if apply_ttl and created is not None and created < cutoff:
                 continue  # expired: drop rather than resurrect
             with _state_lock:
                 self._sessions[session.id] = session
@@ -314,6 +325,7 @@ class InMemorySessionStore:
         lesson_id: str | None,
         resource_scope: list[str],
         current_time_ms: int,
+        owner_id: str | None = None,
     ) -> Session:
         session_id = f"ses_{uuid.uuid4().hex[:16]}"
         session = Session(
@@ -324,10 +336,12 @@ class InMemorySessionStore:
             lesson_id=lesson_id,
             resource_scope=list(resource_scope),
             current_time_ms=int(current_time_ms),
+            owner_id=owner_id,
         )
         with _state_lock:
             self._sessions[session_id] = session
         save_session_state()
+        _mirror_session(session)
         return session
 
     def get(self, session_id: str) -> Session | None:
@@ -396,6 +410,7 @@ class InMemoryMessageStore:
         with _state_lock:
             self._messages.setdefault(history_key(session_id), []).append(msg)
         save_session_state()
+        _mirror_message(msg, current_thread.get())
         return msg
 
     def list_for_session(
@@ -434,6 +449,168 @@ def _parse_iso(value: str) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+# ---------------------------------------------------------------------------
+# Supabase mirror (docs/SUPABASE_PLAN.md, "API persistence strategy")
+#
+# Write-through and best-effort, like save_session_state: a failure warns and
+# is never raised into a request. Rows carry the full serialized object in
+# ``data`` so they round-trip.
+# ---------------------------------------------------------------------------
+
+_PAGE = 1000
+
+
+def _owner_of(session_id: str) -> str | None:
+    s = session_store.get(session_id)
+    return s.owner_id if s is not None else None
+
+
+def _supa_write(what: str, fn) -> None:
+    client = get_client()
+    if client is None:
+        return
+    try:
+        fn(client)
+    except Exception as exc:  # noqa: BLE001 - mirroring must not fail a request
+        log.warning("supabase %s failed: %s", what, exc)
+
+
+def _mirror_session(session: Session) -> None:
+    row = {
+        "id": session.id,
+        "owner_id": session.owner_id,
+        "course_id": session.course_id,
+        "resource_id": session.resource_id,
+        "subject_id": None,
+        "resource_scope": list(session.resource_scope),
+        "data": asdict(session),
+        "created_at": session.created_at,
+        "updated_at": _utcnow_iso(),
+    }
+    _supa_write(
+        "session upsert", lambda c: c.upsert("chat_sessions", row, on_conflict="id")
+    )
+
+
+def _mirror_thread(t: ChatThread) -> None:
+    row = {
+        "id": t.id,
+        "session_id": t.session_id,
+        "owner_id": _owner_of(t.session_id),
+        "title": t.title,
+        "created_at": t.created_at,
+    }
+    _supa_write(
+        "thread upsert",
+        lambda c: c.upsert("chat_threads", row, on_conflict="session_id,id"),
+    )
+
+
+def _mirror_thread_delete(
+    session_id: str, thread_id: str, main: ChatThread | None
+) -> None:
+    def go(c) -> None:
+        c.delete(
+            "chat_messages",
+            {"session_id": f"eq.{session_id}", "thread_id": f"eq.{thread_id}"},
+        )
+        if main is not None:
+            _mirror_thread(main)
+        else:
+            c.delete(
+                "chat_threads",
+                {"session_id": f"eq.{session_id}", "id": f"eq.{thread_id}"},
+            )
+
+    _supa_write("thread delete", go)
+
+
+def _mirror_message(msg: StoredMessage, thread_id: str) -> None:
+    row = {
+        "id": msg.id,
+        "session_id": msg.session_id,
+        "thread_id": thread_id,
+        "owner_id": _owner_of(msg.session_id),
+        "role": msg.role,
+        "content": msg.content,
+        "citations": list(msg.citations),
+        "data": {**asdict(msg), "thread_id": thread_id},
+        "created_at": msg.created_at,
+    }
+    _supa_write(
+        "message upsert", lambda c: c.upsert("chat_messages", row, on_conflict="id")
+    )
+
+
+def _select_all(client, table: str) -> list[dict]:
+    rows: list[dict] = []
+    offset = 0
+    while True:
+        page = client.select(
+            table,
+            {"order": "created_at.asc", "limit": str(_PAGE), "offset": str(offset)},
+        )
+        rows.extend(page)
+        if len(page) < _PAGE:
+            return rows
+        offset += _PAGE
+
+
+def load_sessions_from_supabase() -> int:
+    """Reload sessions, chats and messages from Supabase. Never raises.
+
+    Returns the number of sessions restored. No TTL: stored history is durable.
+    """
+    client = get_client()
+    if client is None:
+        return 0
+    try:
+        session_rows = _select_all(client, "chat_sessions")
+        thread_rows = _select_all(client, "chat_threads")
+        message_rows = _select_all(client, "chat_messages")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("supabase session load failed: %s", exc)
+        return 0
+
+    sessions: dict[str, dict] = {}
+    for r in session_rows:
+        if not isinstance(r, dict) or not r.get("id"):
+            continue
+        data = dict(r.get("data") or {})
+        data["id"] = r["id"]
+        data["owner_id"] = r.get("owner_id")
+        data.setdefault("created_at", r.get("created_at"))
+        sessions[str(r["id"])] = data
+
+    threads: dict[str, list[dict]] = {}
+    for r in thread_rows:
+        if not isinstance(r, dict) or r.get("session_id") not in sessions:
+            continue
+        threads.setdefault(r["session_id"], []).append(r)
+
+    messages: dict[str, list[dict]] = {}
+    for r in message_rows:
+        if not isinstance(r, dict) or r.get("session_id") not in sessions:
+            continue
+        d = dict(r.get("data") or {})
+        d.setdefault("id", r.get("id"))
+        d.setdefault("session_id", r.get("session_id"))
+        d.setdefault("role", r.get("role"))
+        d.setdefault("content", r.get("content") or "")
+        d.setdefault("citations", r.get("citations") or [])
+        d.setdefault("created_at", r.get("created_at"))
+        tid = r.get("thread_id") or MAIN_THREAD
+        key = history_key(str(r["session_id"]), str(tid))
+        messages.setdefault(key, []).append(d)
+
+    n = session_store.restore(sessions, apply_ttl=False)
+    thread_store.restore(threads)
+    message_store.restore(messages)
+    if n:
+        log.info("restored %d sessions from supabase", n)
+    return n
 
 
 def save_session_state() -> None:

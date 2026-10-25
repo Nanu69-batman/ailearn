@@ -9,9 +9,10 @@ import time
 from typing import Annotated
 
 import httpx
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
+from app.auth import AuthUser, get_current_user
 from app.chat.launch import (
     DEV_SECRET,
     LaunchAuthError,
@@ -56,6 +57,9 @@ from app.ingestion.backoff import QuotaExhaustedError
 log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+#: Course usable without a login even when AUTH_REQUIRED is true.
+DEMO_COURSE_ID = "demo"
 
 _service_override: ChatService | None = None
 
@@ -168,8 +172,17 @@ def reset_chat_state() -> None:
 
 
 @router.post("/lms/session", response_model=LmsSessionResponse)
-def create_lms_session(body: LmsSessionRequest, request: Request) -> LmsSessionResponse:
+def create_lms_session(
+    body: LmsSessionRequest,
+    request: Request,
+    user: Annotated[AuthUser | None, Depends(get_current_user)],
+) -> LmsSessionResponse:
     from app.config import settings
+
+    # The bundled demo course stays public; everything else needs a login
+    # once AUTH_REQUIRED is on.
+    if settings.auth_required and user is None and body.course_id != DEMO_COURSE_ID:
+        raise HTTPException(status_code=401, detail="authentication required")
 
     if not _check_rate_limit(_client_ip(request)):
         raise HTTPException(status_code=429, detail="rate limit exceeded")
@@ -193,13 +206,16 @@ def create_lms_session(body: LmsSessionRequest, request: Request) -> LmsSessionR
         raise HTTPException(status_code=401, detail="invalid launch") from exc
     if not body.signature and secret == DEV_SECRET:
         log.error("unsigned LMS launch accepted (dev-secret mode)")
+    # A signed-in learner is always themselves: the body value is ignored.
+    learner_id = user.id if user is not None else body.learner_id
     session = session_store.create(
-        learner_id=body.learner_id,
+        learner_id=learner_id,
         course_id=body.course_id,
         resource_id=body.resource_id,
         lesson_id=body.lesson_id,
         resource_scope=list(body.resource_scope),
         current_time_ms=clamp_current_time_ms(body.current_time_ms),
+        owner_id=user.id if user is not None else None,
     )
     # Never log session_id at info level; only return the binding token.
     token = create_session_token(secret, session.id, session.learner_id)
@@ -209,6 +225,19 @@ def create_lms_session(body: LmsSessionRequest, request: Request) -> LmsSessionR
         course_id=session.course_id,
         session_token=token,
     )
+
+
+def _check_owner(session, request: Request) -> None:
+    """404 when the session belongs to a different signed-in user.
+
+    Sessions without an owner (anonymous / demo) stay open to the token holder.
+    """
+    owner = getattr(session, "owner_id", None)
+    if owner is None:
+        return
+    user = get_current_user(request)
+    if user is None or user.id != owner:
+        raise HTTPException(status_code=404, detail="session not found")
 
 
 def _require_session_token(
@@ -228,6 +257,7 @@ def _authorize_chat(body: ChatRequest, request: Request) -> None:
     session = session_store.get(body.session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
+    _check_owner(session, request)
     _require_session_token(
         secret=settings.lms_launch_secret,
         session_id=session.id,
@@ -363,6 +393,7 @@ def _authed_session(session_id: str, request: Request, session_token: str | None
     session = session_store.get(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
+    _check_owner(session, request)
     token = session_token or request.headers.get("x-session-token")
     _require_session_token(
         secret=settings.lms_launch_secret,
@@ -538,6 +569,7 @@ async def post_chat_live_frame(
     session = session_store.get(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
+    _check_owner(session, request)
     token = session_token or request.headers.get("x-session-token")
     _require_session_token(
         secret=settings.lms_launch_secret,

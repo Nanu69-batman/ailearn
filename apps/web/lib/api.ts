@@ -11,6 +11,8 @@
  * fixtures (lib/fixtures.ts) when the API is unreachable.
  */
 
+import { getAccessToken } from "@/lib/supabase/client";
+
 export type ChatMode =
   | "qa"
   | "explain_simple"
@@ -391,6 +393,16 @@ async function apiErrorFromResponse(
   return new ApiError(res.status, detail, requestId);
 }
 
+/**
+ * `Authorization: Bearer <access_token>` when a Supabase session exists
+ * (docs/SUPABASE_PLAN.md, Auth contract). Empty when signed out or when
+ * Supabase is not configured, so requests are unchanged in that case.
+ */
+async function authHeaders(): Promise<Record<string, string>> {
+  const token = await getAccessToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const base = baseUrl();
   if (!base) {
@@ -404,6 +416,7 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
       headers: {
         "Content-Type": "application/json",
         "x-request-id": requestId,
+        ...(await authHeaders()),
         ...(init?.headers ?? {}),
       },
     });
@@ -495,6 +508,7 @@ export async function streamChat(
         "Content-Type": "application/json",
         Accept: "text/event-stream",
         "x-request-id": requestId,
+        ...(await authHeaders()),
         ...(token ? { "X-Session-Token": token } : {}),
       },
     });
@@ -714,6 +728,7 @@ export async function postChatWithFrame(
       headers: {
         "X-Session-Token": token ?? "",
         "x-request-id": requestId,
+        ...(await authHeaders()),
       },
     });
   } catch (err) {
@@ -899,7 +914,7 @@ export async function ingestFile(
     res = await fetch(`${base}/courses/${encodeURIComponent(courseId)}/ingest`, {
       method: "POST",
       body: form,
-      headers: { "x-request-id": requestId },
+      headers: { "x-request-id": requestId, ...(await authHeaders()) },
     });
   } catch (err) {
     throw new ApiError(

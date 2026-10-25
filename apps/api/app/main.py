@@ -28,13 +28,22 @@ async def lifespan(_: FastAPI):
         providers["sessions"],
         settings.use_in_memory,
     )
+    if settings.supabase_enabled():
+        # Supabase is the durable store: load from it instead of the JSON
+        # files, and leave JSON mirroring off so the two cannot diverge.
+        from app.chat.sessions import load_sessions_from_supabase
+        from app.subjects.store import load_subjects_from_supabase
+
+        load_subjects_from_supabase()
+        load_sessions_from_supabase()
     if settings.use_in_memory:
         # Sessions/messages are process-local; mirror them to data/ so an API
         # restart does not 404 every open browser tab (see chat/sessions.py).
         from app.chat.sessions import load_session_state, set_persistence_enabled
 
-        set_persistence_enabled(True)
-        load_session_state()
+        if not settings.supabase_enabled():
+            set_persistence_enabled(True)
+            load_session_state()
 
         # No snapshot restore: the Chroma PersistentClient under data/chroma is
         # the durable store, so there is no `store_snapshot.pkl` to load and
@@ -50,8 +59,9 @@ async def lifespan(_: FastAPI):
         # restart, same reasoning as sessions above.
         from app.subjects.store import load_subject_state, set_persistence_enabled
 
-        set_persistence_enabled(True)
-        load_subject_state()
+        if not settings.supabase_enabled():
+            set_persistence_enabled(True)
+            load_subject_state()
     yield
 
 

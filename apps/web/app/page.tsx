@@ -1,5 +1,8 @@
 import Link from "next/link";
-import { DASHBOARD_PATH } from "@/lib/learn";
+import { DASHBOARD_PATH, contentPath } from "@/lib/learn";
+
+/** The bundled demo lesson; public without signing in (middleware.ts). */
+const DEMO_LESSON = contentPath("sub_06dea46b30bf4ee7", "res_2e629d682a3d");
 
 export default function Home() {
   return (
@@ -13,6 +16,12 @@ export default function Home() {
             className="inline-block rounded-xl bg-gradient-to-r from-indigo-500 to-violet-500 px-5 py-2.5 text-sm font-medium text-white shadow-sm transition hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
           >
             Open dashboard →
+          </Link>
+          <Link
+            href={DEMO_LESSON}
+            className="inline-block rounded-xl border border-gray-200 bg-white px-5 py-2.5 text-sm font-medium text-gray-700 shadow-sm transition hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
+          >
+            Try the demo lesson
           </Link>
         </div>
       </div>

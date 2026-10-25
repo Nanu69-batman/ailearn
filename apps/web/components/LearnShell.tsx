@@ -12,6 +12,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { DASHBOARD_PATH, LEARNER_NAME, SUBJECTS_PATH } from "@/lib/learn";
 import { MALAI_PATH } from "@/lib/malai";
 import MalaiSidebar from "@/components/MalaiSidebar";
+import AccountMenu from "@/components/AccountMenu";
 
 /**
  * The chrome every route inside the `(learn)` group shares: sidebar, mobile
@@ -430,6 +431,7 @@ export default function LearnShell({ children }: { children: ReactNode }) {
             aria-label="Account"
           >
             {SIDEBAR_FOOTER.map((item) => renderNavItem(item, sidebarCollapsed))}
+            <AccountMenu collapsed={sidebarCollapsed} />
           </nav>
           </>
           )}
@@ -536,6 +538,7 @@ export default function LearnShell({ children }: { children: ReactNode }) {
               onClick={closeDrawer}
             >
               {SIDEBAR_FOOTER.map((item) => renderNavItem(item, false))}
+              <AccountMenu collapsed={false} />
             </nav>
             </>
             )}

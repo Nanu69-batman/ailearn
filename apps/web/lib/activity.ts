@@ -6,10 +6,15 @@
  * the learner actually spent time on a lesson, and progress is the share of a
  * subject's resources the learner marked as done. A fresh browser therefore
  * shows an empty heatmap and 0%, which is the truth for that browser.
+ *
+ * Signed in, every write is mirrored to the account (lib/activitySync.ts) and
+ * `syncActivityFromAccount()` replaces these records with the account's, so
+ * the numbers follow the learner across browsers.
  */
 
 import type { Subject } from "@/lib/api";
-import { readCompletion } from "@/lib/learn";
+import { pullActivity, pushStudySeconds, pushVisit } from "@/lib/activitySync";
+import { readCompletion, writeCompletionLocal } from "@/lib/learn";
 
 /** { "YYYY-MM-DD": seconds studied that local day } */
 const DAYS_KEY = "ailearn.activity.days";
@@ -19,6 +24,8 @@ const LAST_KEY = "ailearn.activity.last";
 const ACCESSED_KEY = "ailearn.activity.accessed";
 /** Subject ids the learner archived. */
 const ARCHIVED_KEY = "ailearn.subjects.archived";
+/** The account the records above were last synced from. */
+const OWNER_KEY = "ailearn.activity.owner";
 
 export interface LastVisit {
   subjectId: string;
@@ -67,6 +74,7 @@ export function addStudySeconds(seconds: number): void {
   const today = dayKey(new Date());
   days[today] = (days[today] ?? 0) + seconds;
   writeJson(DAYS_KEY, days);
+  void pushStudySeconds(today, seconds);
 }
 
 /** Consecutive study days ending today (or yesterday, if today is still empty). */
@@ -87,6 +95,75 @@ export function recordVisit(visit: Omit<LastVisit, "at">): void {
   const accessed = readAccessed();
   accessed[visit.subjectId] = at;
   writeJson(ACCESSED_KEY, accessed);
+  void pushVisit(visit);
+}
+
+/**
+ * Replace this browser's records with the signed-in account's. Returns false
+ * (and leaves everything untouched) when signed out or the pull fails.
+ * Replacing rather than merging means a second account on the same browser
+ * never inherits the first one's streak.
+ */
+export async function syncActivityFromAccount(): Promise<boolean> {
+  const remote = await pullActivity();
+  if (!remote) return false;
+  claimActivityOwner(remote.userId);
+  writeJson(DAYS_KEY, remote.days);
+
+  const accessed: Record<string, number> = {};
+  const completion: Record<string, string[]> = {};
+  let last: (typeof remote.progress)[number] | null = null;
+  for (const p of remote.progress) {
+    if (!p.subjectId) continue;
+    accessed[p.subjectId] = Math.max(accessed[p.subjectId] ?? 0, p.lastOpenedAt);
+    if (p.completed) (completion[p.subjectId] ??= []).push(p.resourceId);
+    if (!last || p.lastOpenedAt > last.lastOpenedAt) last = p;
+  }
+  writeJson(ACCESSED_KEY, accessed);
+  for (const subjectId of Object.keys({ ...accessed, ...completion })) {
+    writeCompletionLocal(subjectId, completion[subjectId] ?? []);
+  }
+  const previous = readLastVisit();
+  if (last?.subjectId) {
+    writeJson(LAST_KEY, {
+      subjectId: last.subjectId,
+      // The account has no subject name; keep the local one if it is the same subject.
+      subjectName: previous?.subjectId === last.subjectId ? previous.subjectName : null,
+      resourceId: last.resourceId,
+      title: last.title ?? last.resourceId,
+      at: last.lastOpenedAt,
+    });
+  } else {
+    try {
+      window.localStorage.removeItem(LAST_KEY);
+    } catch {
+      // Storage unavailable -> nothing to clear.
+    }
+  }
+  return true;
+}
+
+/** Forget the previous account's local records when a different one signs in. */
+function claimActivityOwner(userId: string): void {
+  const owner = readJson<string | null>(OWNER_KEY, null);
+  if (owner === userId) return;
+  try {
+    const ls = window.localStorage;
+    for (const key of Object.keys(ls)) {
+      if (
+        key === DAYS_KEY ||
+        key === LAST_KEY ||
+        key === ACCESSED_KEY ||
+        key === ARCHIVED_KEY ||
+        (key.startsWith("ailearn.course.") && key.endsWith(".completion"))
+      ) {
+        ls.removeItem(key);
+      }
+    }
+  } catch {
+    // Storage unavailable -> nothing stored to leak.
+  }
+  writeJson(OWNER_KEY, userId);
 }
 
 export function readLastVisit(): LastVisit | null {

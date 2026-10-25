@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import shutil
@@ -23,10 +24,11 @@ import uuid
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from app.auth import AuthUser, get_current_user, require_user
 from app.config import settings
 from app.ingestion.jobs import (
     INGEST_MODES,
@@ -48,6 +50,10 @@ from app.ingestion.jobs import (
 )
 
 log = logging.getLogger(__name__)
+
+#: Mutating routes need a signed-in user once AUTH_REQUIRED is on.
+#: Ownership filtering is a separate step (docs/SUPABASE_PLAN.md).
+_GATED = [Depends(require_user)]
 
 router = APIRouter()
 
@@ -211,7 +217,7 @@ def _attach_to_subject(subject, resource_id: str) -> None:
         log.warning("ingest done but subject attach failed: %s", exc)
 
 
-@router.post("/courses/{course_id}/ingest")
+@router.post("/courses/{course_id}/ingest", dependencies=_GATED)
 async def ingest_file(
     course_id: str,
     file: Annotated[UploadFile, File()],
@@ -224,6 +230,7 @@ async def ingest_file(
     # the first INITIAL_WINDOWS and leaves the rest to /position. Video files
     # only: documents and images ignore it. YouTube ingest is unchanged.
     mode: Annotated[str, Form()] = "full",
+    user: Annotated[AuthUser | None, Depends(get_current_user)] = None,
 ) -> dict:
     if mode not in INGEST_MODES:
         raise HTTPException(
@@ -283,6 +290,14 @@ async def ingest_file(
                 ),
             )
 
+    from app.ingestion import remote_assets
+
+    remote_assets.mirror_upload(
+        target, resource_id=resource_id, owner_id=user.id if user else None,
+        course_id=target_course_id, subject_id=subject_id, title=original_name,
+        source_type=source_type, mime=file.content_type, size_bytes=size,
+    )
+
     job = new_job(target_course_id, resource_id)
     job.trace = {"file": original_name, "source_type": source_type, "bytes": size,
                  "mode": mode if source_type == "video" else "full"}
@@ -329,8 +344,12 @@ async def ingest_file(
     return job_payload(job)
 
 
-@router.post("/courses/{course_id}/ingest-youtube")
-async def ingest_youtube_route(course_id: str, body: YouTubeIngestRequest) -> dict:
+@router.post("/courses/{course_id}/ingest-youtube", dependencies=_GATED)
+async def ingest_youtube_route(
+    course_id: str,
+    body: YouTubeIngestRequest,
+    user: Annotated[AuthUser | None, Depends(get_current_user)] = None,
+) -> dict:
     from app.ingestion.youtube import parse_youtube_id
 
     if not parse_youtube_id(body.url):
@@ -356,6 +375,13 @@ async def ingest_youtube_route(course_id: str, body: YouTubeIngestRequest) -> di
             )
         # The subject owns the real course; the path id is only a route hint.
         target_course_id = subject.course_id
+
+    from app.ingestion import remote_assets
+
+    remote_assets.record_youtube(
+        resource_id=resource_id, owner_id=user.id if user else None,
+        course_id=target_course_id, subject_id=body.subject_id,
+    )
 
     job = new_job(target_course_id, resource_id)
     log.info(
@@ -588,8 +614,12 @@ async def report_position(
     return body_out
 
 
-@router.delete("/courses/{course_id}/resources/{resource_id}")
-async def delete_resource(course_id: str, resource_id: str) -> dict:
+@router.delete("/courses/{course_id}/resources/{resource_id}", dependencies=_GATED)
+async def delete_resource(
+    course_id: str,
+    resource_id: str,
+    user: Annotated[AuthUser | None, Depends(get_current_user)] = None,
+) -> dict:
     """Delete one resource: detach from every subject, then purge it.
 
     The course in the path must own the resource; otherwise 404 and nothing is
@@ -602,6 +632,16 @@ async def delete_resource(course_id: str, resource_id: str) -> dict:
 
     if not _SAFE_RESOURCE_ID.fullmatch(resource_id) or not resource_exists(
         resource_id, course_id
+    ):
+        raise HTTPException(
+            status_code=404,
+            detail=f"unknown resource {resource_id} in course {course_id}",
+        )
+
+    from app.ingestion import remote_assets
+
+    if not await asyncio.to_thread(
+        remote_assets.may_delete, resource_id, user.id if user else None
     ):
         raise HTTPException(
             status_code=404,
@@ -645,6 +685,13 @@ def _purge_chapters(resource_id: str) -> None:
 async def stream_media(resource_id: str) -> FileResponse:
     """Stream a resource's stored asset for the player's per-resource URL."""
     asset = resolve_asset(resource_id)
+    if asset is None and _SAFE_RESOURCE_ID.fullmatch(resource_id or ""):
+        # Ephemeral disk: bring the file back from Storage to the exact path
+        # resolve_asset (and therefore purge) expects, then serve it normally.
+        from app.ingestion import remote_assets
+
+        await asyncio.to_thread(remote_assets.restore_asset, resource_id, UPLOAD_DIR)
+        asset = resolve_asset(resource_id)
     if asset is None:
         raise HTTPException(
             status_code=404, detail=f"no stored media for {resource_id}"

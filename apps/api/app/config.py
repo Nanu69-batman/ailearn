@@ -69,6 +69,21 @@ class Settings(BaseSettings):
     # Developer view: record pipeline steps for GET /dev/trace. DEV_TRACE=false
     # turns recording off (the endpoint then returns no events).
     dev_trace: bool = True
+    # Supabase (docs/SUPABASE_PLAN.md). Features turn on only when both the
+    # URL and the service-role key are set; the key is server only (it
+    # bypasses RLS). JWT_SECRET is for legacy HS256 projects; empty = verify
+    # access tokens through the project's JWKS (ES256/RS256).
+    supabase_url: str = ""
+    supabase_service_role_key: str = ""
+    supabase_jwt_secret: str = ""
+    supabase_storage_bucket: str = "media"
+    # AUTH_REQUIRED=true refuses anonymous callers on gated routes (deployed).
+    # Default false keeps tests and local dev working without a login.
+    auth_required: bool = False
+
+    def supabase_enabled(self) -> bool:
+        """True only when both ``supabase_url`` and the service-role key are set."""
+        return bool(self.supabase_url and self.supabase_service_role_key)
 
     def expected_embedding_dim(self) -> int:
         """Vector width every chunk and every query must agree on.

@@ -12,6 +12,7 @@ import {
   readLastVisit,
   readStudyDays,
   subjectProgress,
+  syncActivityFromAccount,
   type LastVisit,
 } from "@/lib/activity";
 import { LEARNER_NAME, SUBJECTS_PATH, contentPath } from "@/lib/learn";
@@ -178,13 +179,23 @@ export default function Dashboard() {
 
   // Clock and browser records are read after mount so server and client HTML agree.
   useEffect(() => {
+    const read = () =>
+      setActivity({
+        days: readStudyDays(),
+        last: readLastVisit(),
+        accessed: readAccessed(),
+        archived: readArchived(),
+      });
     setNow(new Date());
-    setActivity({
-      days: readStudyDays(),
-      last: readLastVisit(),
-      accessed: readAccessed(),
-      archived: readArchived(),
+    read();
+    // Signed in: replace this browser's records with the account's, then re-read.
+    let live = true;
+    void syncActivityFromAccount().then((synced) => {
+      if (synced && live) read();
     });
+    return () => {
+      live = false;
+    };
   }, []);
 
   useEffect(() => {
