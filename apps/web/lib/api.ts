@@ -215,6 +215,11 @@ export interface ChatRequest {
    * not tied to one open material. Intersected server-side: never widens it.
    */
   scope_resource_ids?: string[];
+  /**
+   * A chat in no subject (Malai's general chat): answered from general
+   * knowledge unless the message explicitly asks about the learner's materials.
+   */
+  general?: boolean;
 }
 
 export type CitationSourceType =
@@ -280,7 +285,8 @@ export interface ChatResponse {
   /**
    * Where the answer came from: "grounded" (retrieved lesson passages),
    * "supplemental" (general knowledge, not from the video) or
-   * "conversational" (small talk). Optional: older backends and mocks omit it.
+   * "conversational" (small talk) or "general" (a chat in no subject,
+   * answered from general knowledge). Optional: older backends and mocks omit it.
    */
   mode?: AnswerMode;
   /** True when the answer is backed by retrieved lesson passages. */
@@ -322,7 +328,7 @@ export interface LiveFrameCapture {
 
 export type MessageRole = "user" | "assistant";
 
-export type AnswerMode = "grounded" | "supplemental" | "conversational";
+export type AnswerMode = "grounded" | "supplemental" | "conversational" | "general";
 
 /** Client-side provenance of an assistant message; absent for loaded history. */
 export type MessageKind = AnswerMode | "refused";

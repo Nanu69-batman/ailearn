@@ -248,6 +248,7 @@ async def _answer(body: ChatRequest) -> ChatResponse:
                 if body.scope_resource_ids is not None
                 else {}
             ),
+            **({"general": True} if body.general else {}),
         )
     except SessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail="session not found") from exc

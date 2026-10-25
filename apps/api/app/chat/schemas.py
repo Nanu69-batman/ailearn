@@ -70,6 +70,10 @@ class ChatRequest(BaseModel):
     scope_resource_ids: list[Annotated[str, Field(max_length=64)]] | None = Field(
         default=None, max_length=256
     )
+    #: A chat that belongs to no subject (Malai's general chat). It answers
+    #: from general knowledge and only searches the learner's materials when
+    #: the message explicitly asks about them.
+    general: bool = False
 
 
 #: What kind of signal a citation was drawn from, for material where that
@@ -164,8 +168,9 @@ class ChatResponse(BaseModel):
     #: the answer text and carrying ZERO citations, because nothing in it came
     #: from the video. ``"conversational"`` is a greeting / thanks / "who are
     #: you" turn: no retrieval ran, nothing about the lesson is claimed, and it
-    #: carries ZERO citations.
-    mode: Literal["grounded", "supplemental", "conversational"] = "grounded"
+    #: carries ZERO citations. ``"general"`` is a turn in a chat tied to no
+    #: subject: answered from general knowledge, no retrieval, ZERO citations.
+    mode: Literal["grounded", "supplemental", "conversational", "general"] = "grounded"
     #: Convenience mirror of ``mode == "grounded"`` for clients that branch on a
     #: boolean. A refusal is NOT grounded (``False``) -- nothing was served from
     #: the lesson -- so this is only ``True`` when a cited answer was returned.

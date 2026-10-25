@@ -21,6 +21,7 @@ from app.chat.intent import (
     SMALLTALK,
     classify_intent,
     has_subject_content,
+    refers_to_materials,
 )
 from app.chat.llm import DeterministicStubLLM
 from app.chat.prompts import (
@@ -28,6 +29,7 @@ from app.chat.prompts import (
     REFUSAL_TEXT,
     SCOPE_REFUSAL_TEXT,
     build_conversational_prompt,
+    build_general_prompt,
     build_grounded_prompt,
     build_supplemental_prompt,
     extract_cited_ids,
@@ -262,6 +264,7 @@ class ChatService:
         no_frame_note: str | None = None,
         completed_resource_ids: Sequence[str] = (),
         scope_resource_ids: Sequence[str] | None = None,
+        general: bool = False,
     ) -> ChatResponse:
         """Answer one learner question; flags ``visual_pending`` when visuals lag."""
         from app.chat.launch import clamp_current_time_ms
@@ -298,6 +301,7 @@ class ChatService:
                 visual_through=visual_through,
                 completed_resource_ids=completed_resource_ids,
                 scope_resource_ids=scope_resource_ids,
+                general=general,
             )
         except BaseException as exc:
             devtrace.end_run(token, "error", data={"error": type(exc).__name__})
@@ -340,6 +344,7 @@ class ChatService:
         visual_through: int | None = None,
         completed_resource_ids: Sequence[str] = (),
         scope_resource_ids: Sequence[str] | None = None,
+        general: bool = False,
     ) -> ChatResponse:
         """Answer one learner question.
 
@@ -362,6 +367,17 @@ class ChatService:
         session = narrow_session(self._sessions.get(session_id), scope_resource_ids)
         if session is None:
             raise SessionNotFoundError(session_id)
+
+        # A chat in no subject is a general study chat: the learner's materials
+        # are only searched when the message explicitly points at them ("what
+        # do my notes say..."). Otherwise no retrieval runs at all, so nothing
+        # is claimed about the course and no citation can be produced.
+        if general and live_frame is None and not refers_to_materials(message):
+            devtrace.emit(
+                "route", "end", title="General chat (no materials)",
+                data={"path": "general"},
+            )
+            return await self._general_answer(session_id, message)
 
         t_ms = clamp_current_time_ms(current_time_ms)
         allowed = effective_resource_scope(session.resource_scope, focus_resource_id)
@@ -842,6 +858,32 @@ class ChatService:
             live_frame=state,
             mode=outcome.kind,
             grounded=outcome.kind == "grounded",
+        )
+
+    async def _general_answer(self, session_id: str, message: str) -> ChatResponse:
+        """Answer from general knowledge in a subject-less chat: no retrieval.
+
+        Zero citations by construction: none are built and any marker the model
+        writes anyway is stripped. A declined or failed provider call is a
+        provider error like any other (the route turns it into a 502).
+        """
+        history = [
+            (m.role, m.content) for m in self._messages.list_for_session(session_id)
+        ][-6:]
+        system, user_prompt = build_general_prompt(message, history)
+        result = await self._llm.complete(
+            system=system, user_prompt=user_prompt, passages=[], mode="qa"
+        )
+        text = strip_citation_markers((result.text or "").strip())
+        if not text:
+            text = REFUSAL_TEXT
+        self._persist(session_id, message, text, [])
+        return ChatResponse(
+            answer=text,
+            citations=[],
+            refused=False,
+            mode="general",
+            grounded=False,
         )
 
     async def _conversational_answer(

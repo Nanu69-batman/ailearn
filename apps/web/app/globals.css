@@ -48,16 +48,20 @@ body {
   .md > :first-child { margin-top: 0; }
   .md > :last-child { margin-bottom: 0; }
   .md p { margin: 0 0 0.85em; }
-  .md h1, .md h2, .md h3, .md h4 {
+  .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 {
     font-weight: 600;
     line-height: 1.35;
+    letter-spacing: -0.01em;
     color: #111827;
-    margin: 1.4em 0 0.5em;
+    margin: 1.5em 0 0.55em;
   }
-  .md h1 { font-size: 1.35em; }
-  .md h2 { font-size: 1.2em; }
-  .md h3 { font-size: 1.07em; }
-  .md h4 { font-size: 1em; }
+  .md h1 { font-size: 1.5em; font-weight: 700; }
+  .md h2 { font-size: 1.3em; }
+  .md h3 { font-size: 1.13em; }
+  .md h4 { font-size: 1.02em; }
+  .md h5, .md h6 { font-size: 0.95em; color: #374151; }
+  .md h6 { text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.8em; }
+  .md h1 + h2, .md h2 + h3, .md h3 + h4 { margin-top: 0.6em; }
   .md strong { font-weight: 600; color: #111827; }
   .md ul, .md ol { margin: 0 0 0.85em; padding-left: 1.6em; }
   .md ul { list-style: disc; }

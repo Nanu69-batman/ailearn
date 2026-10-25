@@ -1,26 +1,61 @@
 /**
- * Normalises the LaTeX delimiters models use into the ones remark-math reads.
+ * Normalises the LaTeX layouts models write into the ones remark-math reads.
  *
- * The prompt asks for `$…$` and `$$…$$`, but Gemini still writes `\(…\)` and
- * `\[…\]` now and then, which would show up as raw source. This rewrites only
- * those two delimiter pairs (code spans and fenced blocks are left alone); the
- * maths itself is still parsed and rendered by remark-math + rehype-katex.
- *
- * Display math is put on its own lines, because mdast-util-math only emits a
- * centred block when the `$$` fences stand alone.
+ * remark-math only renders a centred display equation when the `$$` fences
+ * stand on their own lines. Models routinely write `$$ … $$` on one line, or
+ * mid-sentence, or use `\[ … \]` / `\( … \)`; all of those came out as small
+ * inline maths jammed against the text. This rewrites only delimiters and
+ * line layout (code spans and fenced blocks are left alone); the maths itself
+ * is still parsed and rendered by remark-math + rehype-katex.
  */
 const DOLLARS = "$$";
 
+/** `\[x\]` and `\(x\)` into dollar delimiters. */
+function dollarDelimiters(prose: string): string {
+  return prose
+    // The newlines mark it as display, so displayBlocks never inlines it.
+    .replace(/\\\[([\s\S]+?)\\\]/g, (_, body: string) => DOLLARS + "\n" + body.trim() + "\n" + DOLLARS)
+    .replace(/\\\(([\s\S]+?)\\\)/g, (_, body: string) => "$" + body.trim() + "$");
+}
+
+/**
+ * Every `$$…$$` in prose as a block: fences on their own lines, indented to
+ * stay inside the list item or quote it was written in. Trailing punctuation
+ * moves inside the equation so it does not become a paragraph of its own. A
+ * short one inside a sentence ("where $$a$$ is…") was meant inline: it
+ * becomes `$a$`.
+ */
+function displayBlocks(prose: string): string {
+  return prose.replace(
+    /\$\$([\s\S]+?)\$\$([.,;:])?/g,
+    (_m, raw: string, punct: string | undefined, offset: number, whole: string) => {
+      const body = raw.trim();
+      if (!body) return _m;
+      const lineStart = whole.lastIndexOf("\n", offset - 1) + 1;
+      const lineEnd = whole.indexOf("\n", offset);
+      const before = whole.slice(lineStart, offset);
+      const after = whole.slice(offset + _m.length, lineEnd === -1 ? undefined : lineEnd);
+      // Container prefix of this line: quote markers, then a list marker's width.
+      const m = /^(\s*(?:>\s?)*)((?:[-*+]|\d+[.)])\s+)?/.exec(before) ?? ["", "", undefined];
+      const indent = m[1] + " ".repeat(m[2]?.length ?? 0);
+      const inSentence = before.length > m[0].length && after.trim().length > 0;
+      if (inSentence && !raw.includes("\n") && body.length <= 24) {
+        return "$" + body + "$" + (punct ?? "");
+      }
+      const blank = "\n" + indent.trimEnd() + "\n" + indent;
+      // Opening a list item or quote ("1. $$…"), the fence starts right there.
+      const lead = before.length > m[0].length ? blank : "";
+      const lines = (body + (punct ?? "")).split("\n").map((l) => indent + l.trim());
+      return lead + DOLLARS + "\n" + lines.join("\n") + "\n" + indent + DOLLARS + blank;
+    },
+  );
+}
+
 export function normalizeMath(text: string): string {
-  if (!text.includes("\\(") && !text.includes("\\[")) return text;
+  if (!text.includes(DOLLARS) && !text.includes("\\(") && !text.includes("\\[")) return text;
   // Split out fenced blocks and inline code; only prose is rewritten.
   const parts = text.split(/(```[\s\S]*?(?:```|$)|`[^`\n]*`)/);
   return parts
-    .map((part, i) => {
-      if (i % 2 === 1) return part;
-      return part
-        .replace(/\\\[([\s\S]+?)\\\]/g, (_, body: string) => `\n${DOLLARS}\n${body.trim()}\n${DOLLARS}\n`)
-        .replace(/\\\(([\s\S]+?)\\\)/g, (_, body: string) => "$" + body.trim() + "$");
-    })
+    .map((part, i) => (i % 2 === 1 ? part : displayBlocks(dollarDelimiters(part))))
     .join("");
 }

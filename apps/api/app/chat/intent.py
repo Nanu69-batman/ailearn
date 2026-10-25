@@ -165,3 +165,31 @@ def has_subject_content(text: str) -> bool:
     """
     words = re.findall(r"[A-Za-z]+", (text or "").lower())
     return any(len(w) > 3 and w not in _NON_CONTENT_WORDS for w in words)
+
+
+#: Nouns that name the learner's own course material.
+_MATERIAL_NOUN = (
+    r"(?:course\s+)?(?:materials?|notes|lectures?|videos?|pdfs?|slides?|"
+    r"slide\s*deck|documents?|docs|resources?|uploads?|files?|lessons?|course(?!\s+of\b)|"
+    r"syllabus|textbook|readings?|subjects?|transcripts?)"
+)
+
+#: An explicit pointer at that material: "my notes", "the uploaded pdf",
+#: "check the lecture", "according to the slides", "in the video".
+_MATERIAL_RE = re.compile(
+    r"\b(?:my|our|the|this|these|those|uploaded|attached)\s+(?:\w+\s+)?"
+    + _MATERIAL_NOUN
+    + r"\b",
+    re.IGNORECASE,
+)
+
+
+def refers_to_materials(text: str) -> bool:
+    """True when the learner explicitly asks about their own materials.
+
+    Used by a chat that belongs to no subject: such a chat answers from general
+    knowledge and only searches the learner's materials when asked to ("what
+    do my notes say about X", "explain the second lecture"). A miss costs only
+    a general answer; a hit runs the ordinary grounded pipeline.
+    """
+    return bool(_MATERIAL_RE.search(text or ""))

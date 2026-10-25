@@ -260,7 +260,8 @@ export default function MalaiChatView() {
           message: text,
           mode: "qa",
           completed_resource_ids: doneResourceIds(subject ? [subject] : subjects),
-          ...(subject ? { scope_resource_ids: subject.resource_ids ?? [] } : {}),
+          // No subject: a general chat; materials are read only when asked for.
+          ...(subject ? { scope_resource_ids: subject.resource_ids ?? [] } : { general: true }),
         };
         return streamChat(req, {
           onStatus: (status) => setPreview((p) => ({ status, text: p?.text ?? "" })),
