@@ -216,6 +216,12 @@ flowchart TD
   CH --> EMB["5. Turn each piece into numbers<br/>that capture its meaning<br/>(embeddings)"]:::ai
   EMB --> IDX[("6. Save in the search index<br/>(Pinecone)")]:::store
   IDX --> READY["Ready: learners can ask about<br/>everything processed so far"]:::good
+  IDX --> CHAP["7. AI splits the material into<br/>named chapters: time ranges for a video,<br/>page or slide ranges for a document"]:::ai
+  CHAP --> CHOK{"Chapter list usable?<br/>(real boundaries, no gaps)"}:::check
+  CHOK -->|"yes"| CHS[("Save the chapters<br/>beside the file")]:::store
+  CHOK -->|"no"| CHF["Fixed split instead<br/>(by headings or even lengths)"]:::server
+  CHF --> CHS
+  CHS --> CHR["Chapters tab ready; rebuilt as<br/>stream mode processes more"]:::good
   STREAM["Stream mode: only the first 2 minutes<br/>are processed now; the next sections are<br/>processed while the learner watches"]:::person -.-> WIN
 
   classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
@@ -333,7 +339,9 @@ through the strict-T gate.
 flowchart TD
   Q["1. Learner pauses at, say, 4:10<br/>and asks a question"]:::person --> AUTH{"A real, signed-in session?"}:::check
   AUTH -->|"no"| NO["Rejected"]:::stop
-  AUTH -->|"yes"| SC["2. Work out what they may read:<br/>this video up to 4:10, plus any<br/>material they ticked as done"]:::server
+  AUTH -->|"yes"| GEN{"A Malai chat in no subject,<br/>not asking about their materials?"}:::check
+  GEN -->|"yes"| GK["General study answer from<br/>Gemini's own knowledge,<br/>no sources claimed"]:::ai
+  GEN -->|"no"| SC["2. Work out what they may read:<br/>this video up to 4:10, plus any<br/>material they ticked as done;<br/>a subject chat reads only that subject"]:::server
   SC --> HAS{"AI tutor available?"}:::server
 
   subgraph AGENT["AI tutor path (Nemotron)"]
@@ -355,6 +363,8 @@ flowchart TD
   AV -->|"no, or the tutor is busy"| SR
   CIT -->|"yes"| OK
   CIT -->|"no"| RF["Says it cannot answer that yet,<br/>instead of guessing"]:::stop
+  LLM -.->|"while it writes"| LIVE["Answer appears word by word;<br/>the checked answer then replaces it"]:::person
+  LIVE -.-> OK
 
   classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
   classDef server fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:1.5px
@@ -466,19 +476,25 @@ go back to the model for grading.
 ```mermaid
 %%{init: {"theme": "base", "fontFamily": "Arial, Helvetica, sans-serif", "themeVariables": {"fontSize": "16px", "fontFamily": "Arial, Helvetica, sans-serif", "lineColor": "#64748b", "primaryTextColor": "#0f172a"}, "flowchart": {"curve": "basis", "padding": 14, "wrappingWidth": 340}}}%%
 flowchart TD
-  L["1. Learner picks how many questions<br/>and which kinds: multiple choice,<br/>number answer, written answer"]:::person --> AUTH{"A real, signed-in session?"}:::check
+  ASK["Learner types &quot;quiz me on...&quot;<br/>or /quiz in any chat"]:::person -.->|"opens the form"| L
+  L["1. Quiz form: 1 to 20 questions,<br/>which kinds (multiple choice, number<br/>answer, written answer), optional<br/>instructions such as a topic"]:::person --> AUTH{"A real, signed-in session?"}:::check
   AUTH -->|"no"| NO["Rejected"]:::stop
-  AUTH -->|"yes"| READ["2. Gather what they have watched,<br/>only up to the paused moment,<br/>plus materials ticked as done"]:::server
+  AUTH -->|"yes"| WHERE{"Which chat is it from?"}:::server
+  WHERE -->|"lesson or subject chat"| READ["2. Gather what they may read:<br/>watched only up to the paused moment,<br/>materials ticked as done; a subject<br/>chat reads only that subject"]:::server
+  WHERE -->|"Malai chat in no subject"| GQ["General-knowledge quiz on<br/>the topic of the chat, no sources"]:::ai
   READ --> BAL["Mix: mostly what the teacher said,<br/>some of what was on screen;<br/>a new mix for every new quiz"]:::server
   BAL --> GEN["3. One AI call writes the whole quiz<br/>(Gemini, Nemotron as backup)"]:::ai
   GEN --> VAL{"Does each question point to a<br/>real piece of the lesson?"}:::check
   VAL -->|"no"| DROP["That question is thrown away"]:::stop
   VAL -->|"yes"| UI["4. Quiz appears;<br/>answers stay hidden"]:::person
+  GQ --> UI
   UI --> T{"Learner answers"}:::person
   T -->|"multiple choice or number"| LOCAL["Checked instantly in the browser,<br/>no AI call"]:::good
   T -->|"written"| GR["AI marks it from 0 to 1 against<br/>the key points (keyword check<br/>if the AI is unavailable)"]:::ai
-  LOCAL --> REV["5. Shows the right answer, why,<br/>and a link to the exact video moment<br/>or PDF page it came from"]:::good
+  LOCAL --> REV["5. Shows the right answer, why,<br/>and, for a lesson quiz, a link to the<br/>exact video moment or PDF page"]:::good
   GR --> REV
+  UI -.-> NOTE[("Quiz started and final score<br/>written into the chat by the server")]:::store
+  REV -.-> NOTE
 
   classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
   classDef server fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:1.5px
@@ -522,10 +538,22 @@ remembered per browser. The Transcript tab is UI only for now.
 ```mermaid
 %%{init: {"theme": "base", "fontFamily": "Arial, Helvetica, sans-serif", "themeVariables": {"fontSize": "16px", "fontFamily": "Arial, Helvetica, sans-serif", "lineColor": "#64748b", "primaryTextColor": "#0f172a"}, "flowchart": {"curve": "basis", "padding": 14, "wrappingWidth": 340}}}%%
 flowchart TD
-  CL["Course checklist<br/>tick a material as done"]:::person
-  CH["Chat tab<br/>several separate chats"]:::person
-  QZ["Quiz tab"]:::person
-  CL -->|"done materials can be<br/>read in full"| API["Our server<br/>never goes beyond what<br/>this learner was given"]:::server
+  subgraph LESSON["Lesson window"]
+    PL["Video player or PDF viewer"]:::person
+    CHP["Chapters tab<br/>named parts of the material"]:::person
+    RES["Resources tab<br/>tick a material as done"]:::person
+  end
+
+  subgraph MALAI["Malai window"]
+    CH["Chat<br/>several separate chats;<br/>type / for commands"]:::person
+    QZ["Quiz<br/>opened from the switch,<br/>/quiz or &quot;quiz me&quot;"]:::person
+  end
+
+  TB["Floating toolbar: show or hide<br/>each window, side by side or<br/>stacked, swap; or drag Malai<br/>to any edge"]:::person -.-> LESSON
+  TB -.-> MALAI
+
+  CHP -->|"click a chapter"| PL
+  RES -->|"done materials can be<br/>read in full"| API["Our server<br/>never goes beyond what<br/>this learner was given"]:::server
   CH --> API
   QZ --> API
   API --> CIT["Answer or quiz question<br/>with its sources"]:::good

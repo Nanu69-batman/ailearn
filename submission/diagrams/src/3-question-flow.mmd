@@ -2,7 +2,9 @@
 flowchart TD
   Q["1. Learner pauses at, say, 4:10<br/>and asks a question"]:::person --> AUTH{"A real, signed-in session?"}:::check
   AUTH -->|"no"| NO["Rejected"]:::stop
-  AUTH -->|"yes"| SC["2. Work out what they may read:<br/>this video up to 4:10, plus any<br/>material they ticked as done"]:::server
+  AUTH -->|"yes"| GEN{"A Malai chat in no subject,<br/>not asking about their materials?"}:::check
+  GEN -->|"yes"| GK["General study answer from<br/>Gemini's own knowledge,<br/>no sources claimed"]:::ai
+  GEN -->|"no"| SC["2. Work out what they may read:<br/>this video up to 4:10, plus any<br/>material they ticked as done;<br/>a subject chat reads only that subject"]:::server
   SC --> HAS{"AI tutor available?"}:::server
 
   subgraph AGENT["AI tutor path (Nemotron)"]
@@ -24,6 +26,8 @@ flowchart TD
   AV -->|"no, or the tutor is busy"| SR
   CIT -->|"yes"| OK
   CIT -->|"no"| RF["Says it cannot answer that yet,<br/>instead of guessing"]:::stop
+  LLM -.->|"while it writes"| LIVE["Answer appears word by word;<br/>the checked answer then replaces it"]:::person
+  LIVE -.-> OK
 
   classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
   classDef server fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:1.5px

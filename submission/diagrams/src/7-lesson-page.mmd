@@ -1,9 +1,21 @@
 %%{init: {"theme": "base", "fontFamily": "Arial, Helvetica, sans-serif", "themeVariables": {"fontSize": "16px", "fontFamily": "Arial, Helvetica, sans-serif", "lineColor": "#64748b", "primaryTextColor": "#0f172a"}, "flowchart": {"curve": "basis", "padding": 14, "wrappingWidth": 340}}}%%
 flowchart TD
-  CL["Course checklist<br/>tick a material as done"]:::person
-  CH["Chat tab<br/>several separate chats"]:::person
-  QZ["Quiz tab"]:::person
-  CL -->|"done materials can be<br/>read in full"| API["Our server<br/>never goes beyond what<br/>this learner was given"]:::server
+  subgraph LESSON["Lesson window"]
+    PL["Video player or PDF viewer"]:::person
+    CHP["Chapters tab<br/>named parts of the material"]:::person
+    RES["Resources tab<br/>tick a material as done"]:::person
+  end
+
+  subgraph MALAI["Malai window"]
+    CH["Chat<br/>several separate chats;<br/>type / for commands"]:::person
+    QZ["Quiz<br/>opened from the switch,<br/>/quiz or &quot;quiz me&quot;"]:::person
+  end
+
+  TB["Floating toolbar: show or hide<br/>each window, side by side or<br/>stacked, swap; or drag Malai<br/>to any edge"]:::person -.-> LESSON
+  TB -.-> MALAI
+
+  CHP -->|"click a chapter"| PL
+  RES -->|"done materials can be<br/>read in full"| API["Our server<br/>never goes beyond what<br/>this learner was given"]:::server
   CH --> API
   QZ --> API
   API --> CIT["Answer or quiz question<br/>with its sources"]:::good

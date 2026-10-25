@@ -1,18 +1,24 @@
 %%{init: {"theme": "base", "fontFamily": "Arial, Helvetica, sans-serif", "themeVariables": {"fontSize": "16px", "fontFamily": "Arial, Helvetica, sans-serif", "lineColor": "#64748b", "primaryTextColor": "#0f172a"}, "flowchart": {"curve": "basis", "padding": 14, "wrappingWidth": 340}}}%%
 flowchart TD
-  L["1. Learner picks how many questions<br/>and which kinds: multiple choice,<br/>number answer, written answer"]:::person --> AUTH{"A real, signed-in session?"}:::check
+  ASK["Learner types &quot;quiz me on...&quot;<br/>or /quiz in any chat"]:::person -.->|"opens the form"| L
+  L["1. Quiz form: 1 to 20 questions,<br/>which kinds (multiple choice, number<br/>answer, written answer), optional<br/>instructions such as a topic"]:::person --> AUTH{"A real, signed-in session?"}:::check
   AUTH -->|"no"| NO["Rejected"]:::stop
-  AUTH -->|"yes"| READ["2. Gather what they have watched,<br/>only up to the paused moment,<br/>plus materials ticked as done"]:::server
+  AUTH -->|"yes"| WHERE{"Which chat is it from?"}:::server
+  WHERE -->|"lesson or subject chat"| READ["2. Gather what they may read:<br/>watched only up to the paused moment,<br/>materials ticked as done; a subject<br/>chat reads only that subject"]:::server
+  WHERE -->|"Malai chat in no subject"| GQ["General-knowledge quiz on<br/>the topic of the chat, no sources"]:::ai
   READ --> BAL["Mix: mostly what the teacher said,<br/>some of what was on screen;<br/>a new mix for every new quiz"]:::server
   BAL --> GEN["3. One AI call writes the whole quiz<br/>(Gemini, Nemotron as backup)"]:::ai
   GEN --> VAL{"Does each question point to a<br/>real piece of the lesson?"}:::check
   VAL -->|"no"| DROP["That question is thrown away"]:::stop
   VAL -->|"yes"| UI["4. Quiz appears;<br/>answers stay hidden"]:::person
+  GQ --> UI
   UI --> T{"Learner answers"}:::person
   T -->|"multiple choice or number"| LOCAL["Checked instantly in the browser,<br/>no AI call"]:::good
   T -->|"written"| GR["AI marks it from 0 to 1 against<br/>the key points (keyword check<br/>if the AI is unavailable)"]:::ai
-  LOCAL --> REV["5. Shows the right answer, why,<br/>and a link to the exact video moment<br/>or PDF page it came from"]:::good
+  LOCAL --> REV["5. Shows the right answer, why,<br/>and, for a lesson quiz, a link to the<br/>exact video moment or PDF page"]:::good
   GR --> REV
+  UI -.-> NOTE[("Quiz started and final score<br/>written into the chat by the server")]:::store
+  REV -.-> NOTE
 
   classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
   classDef server fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:1.5px

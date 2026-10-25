@@ -16,6 +16,12 @@ flowchart TD
   CH --> EMB["5. Turn each piece into numbers<br/>that capture its meaning<br/>(embeddings)"]:::ai
   EMB --> IDX[("6. Save in the search index<br/>(Pinecone)")]:::store
   IDX --> READY["Ready: learners can ask about<br/>everything processed so far"]:::good
+  IDX --> CHAP["7. AI splits the material into<br/>named chapters: time ranges for a video,<br/>page or slide ranges for a document"]:::ai
+  CHAP --> CHOK{"Chapter list usable?<br/>(real boundaries, no gaps)"}:::check
+  CHOK -->|"yes"| CHS[("Save the chapters<br/>beside the file")]:::store
+  CHOK -->|"no"| CHF["Fixed split instead<br/>(by headings or even lengths)"]:::server
+  CHF --> CHS
+  CHS --> CHR["Chapters tab ready; rebuilt as<br/>stream mode processes more"]:::good
   STREAM["Stream mode: only the first 2 minutes<br/>are processed now; the next sections are<br/>processed while the learner watches"]:::person -.-> WIN
 
   classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
