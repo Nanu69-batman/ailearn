@@ -14,6 +14,7 @@ import SubjectCard, {
 } from "@/components/SubjectCard";
 import SubjectCreateDialog from "@/components/SubjectCreateDialog";
 import SubjectDeleteDialog from "@/components/SubjectDeleteDialog";
+import Select from "@/components/Select";
 import { useSubjects } from "@/components/useSubjects";
 
 /**
@@ -254,21 +255,7 @@ export default function SubjectList() {
         </div>
 
         <div className="flex items-center gap-3 lg:ml-auto">
-          <label className="relative">
-            <span className="sr-only">Sort subjects</span>
-            <select
-              value={sort}
-              onChange={(e) => setSort(e.target.value as Sort)}
-              className="appearance-none rounded-full border border-gray-200 bg-white py-2 pl-4 pr-10 text-sm font-medium text-gray-700 shadow-sm outline-none transition focus:border-violet-400 focus:ring-2 focus:ring-violet-200"
-            >
-              {SORTS.map((s) => (
-                <option key={s.value} value={s.value}>{s.label}</option>
-              ))}
-            </select>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="pointer-events-none absolute right-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" aria-hidden="true">
-              <path d="M6 9l6 6 6-6" />
-            </svg>
-          </label>
+          <Select value={sort} options={SORTS} onChange={setSort} label="Sort subjects" />
           <div className="flex items-center gap-1" role="group" aria-label="Layout">
             {(["grid", "list"] as const).map((v) => (
               <button

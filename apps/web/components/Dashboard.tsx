@@ -101,6 +101,8 @@ function Heatmap({ days, today }: { days: Record<string, number>; today: Date })
     <div ref={scrollRef} className="overflow-x-auto pb-1">
       <div className="min-w-[640px]">
         <div className="grid h-6 text-[11px] text-gray-500" style={{ gridTemplateColumns: columns, columnGap: "3px" }} aria-hidden="true">
+          {/* Covers month names scrolling under the pinned weekday column. */}
+          <span className="sticky left-0 z-10 -mr-[3px] bg-white" style={{ gridColumnStart: 1, gridRowStart: 1 }} />
           {monthCols.map(({ month, col }) => (
             <span key={month} style={{ gridColumnStart: col + 2, gridRowStart: 1 }} className="whitespace-nowrap">
               {MONTHS[month]}
@@ -113,8 +115,9 @@ function Heatmap({ days, today }: { days: Record<string, number>; today: Date })
           role="img"
           aria-label="Study activity for this year"
         >
+          {/* The weekday column stays pinned while the weeks scroll under it. */}
           {WEEKDAYS.map((d, i) => (
-            <span key={d} aria-hidden="true" className="flex items-center text-[11px] leading-none text-gray-500">
+            <span key={d} aria-hidden="true" className="sticky left-0 z-10 -mr-[3px] flex items-center bg-white text-[11px] leading-none text-gray-500">
               {i % 2 === 1 ? d : ""}
             </span>
           ))}
@@ -128,7 +131,7 @@ function Heatmap({ days, today }: { days: Record<string, number>; today: Date })
                 <span
                   key={key}
                   title={`${date.getDate()} ${MONTHS[date.getMonth()]}: ${secs ? formatStudyTime(secs) + " studied" : "no study"}`}
-                  className={`aspect-square w-full rounded-[3px] ${cellTone(secs, future)} ${key === todayKey ? "ring-1 ring-violet-400" : ""}`}
+                  className={`aspect-square w-full self-center rounded-[3px] ${cellTone(secs, future)} ${key === todayKey ? "ring-1 ring-violet-400" : ""}`}
                 />
               );
             }),
@@ -162,40 +165,6 @@ function ArrowCircle({ href, label }: { href: string; label: string }) {
         <path d="M9 6l6 6-6 6" />
       </svg>
     </Link>
-  );
-}
-
-function Robot() {
-  return (
-    <svg viewBox="0 0 160 160" className="h-36 w-36" aria-hidden="true">
-      <defs>
-        <linearGradient id="rb-body" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor="#ffffff" />
-          <stop offset="1" stopColor="#ddd6fe" />
-        </linearGradient>
-        <linearGradient id="rb-face" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#4c1d95" />
-          <stop offset="1" stopColor="#1e1b4b" />
-        </linearGradient>
-      </defs>
-      <g fill="#c4b5fd" opacity="0.8">
-        <path d="M22 40l3 7 7 3-7 3-3 7-3-7-7-3 7-3z" />
-        <path d="M138 30l2 5 5 2-5 2-2 5-2-5-5-2 5-2z" />
-      </g>
-      <line x1="80" y1="22" x2="80" y2="36" stroke="#a78bfa" strokeWidth="3" strokeLinecap="round" />
-      <circle cx="80" cy="18" r="6" fill="#8b5cf6" />
-      <rect x="36" y="58" width="12" height="26" rx="6" fill="#c4b5fd" />
-      <rect x="112" y="58" width="12" height="26" rx="6" fill="#c4b5fd" />
-      <rect x="44" y="34" width="72" height="62" rx="30" fill="url(#rb-body)" stroke="#ddd6fe" strokeWidth="2" />
-      <rect x="54" y="46" width="52" height="38" rx="19" fill="url(#rb-face)" />
-      <ellipse cx="70" cy="64" rx="6" ry="7" fill="#a5b4fc" />
-      <ellipse cx="90" cy="64" rx="6" ry="7" fill="#a5b4fc" />
-      <path d="M72 76q8 5 16 0" stroke="#a5b4fc" strokeWidth="2.5" fill="none" strokeLinecap="round" />
-      <path d="M52 104q28-12 56 0v28q-28 10-56 0z" fill="url(#rb-body)" stroke="#ddd6fe" strokeWidth="2" />
-      <circle cx="80" cy="116" r="6" fill="#c4b5fd" />
-      <rect x="38" y="104" width="12" height="26" rx="6" fill="#ddd6fe" transform="rotate(14 44 117)" />
-      <rect x="110" y="104" width="12" height="26" rx="6" fill="#ddd6fe" transform="rotate(-14 116 117)" />
-    </svg>
   );
 }
 
@@ -329,7 +298,7 @@ export default function Dashboard() {
       {/* Malai / continue / next task */}
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
         <section className="relative flex overflow-hidden rounded-2xl border border-violet-100 bg-gradient-to-br from-violet-50 via-white to-violet-100 p-6 shadow-sm">
-          <div className="relative z-10 flex max-w-[16rem] flex-col">
+          <div className="relative z-10 flex flex-col">
             <p className="flex items-center gap-2 text-sm font-semibold text-violet-700">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5" aria-hidden="true">
                 <path d="M12 2a7 7 0 00-7 7c0 2.4 1.2 4.5 3 5.7V17a2 2 0 002 2h4a2 2 0 002-2v-2.3c1.8-1.2 3-3.3 3-5.7a7 7 0 00-7-7zM9 22h6" />
@@ -347,9 +316,6 @@ export default function Dashboard() {
                 <path d="M5 12h14M13 6l6 6-6 6" />
               </svg>
             </Link>
-          </div>
-          <div className="pointer-events-none absolute -right-2 bottom-0 opacity-90 sm:right-2">
-            <Robot />
           </div>
         </section>
 

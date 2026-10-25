@@ -247,6 +247,18 @@ export default function LearnShell({ children }: { children: ReactNode }) {
         {!collapsed && (
           <>
             <span className="truncate">{item.label}</span>
+            {/* In Malai with the app navigation showing: this item brings the chats back. */}
+            {item.href === MALAI_PATH && onMalai && !showMalai && (
+              <span
+                aria-hidden="true"
+                className="ml-auto flex shrink-0 items-center gap-0.5 text-[11px] font-medium text-violet-100"
+              >
+                Chats
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="h-3 w-3">
+                  <path d="M5 12h14M13 6l6 6-6 6" />
+                </svg>
+              </span>
+            )}
             {unavailable && (
               // Secondary metadata, deliberately slate rather than violet so it
               // never competes with the label or with the active item.
