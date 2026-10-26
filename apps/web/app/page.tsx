@@ -3,6 +3,12 @@ import Link from "next/link";
 import { DASHBOARD_PATH, contentPath } from "@/lib/learn";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 
+export const metadata = {
+  title: "Malai Pioneer — Timestamp-aware AI learning assistant",
+  description:
+    "A personal AI tutor that follows where you are in a lecture or document, explains in context, quizzes you and cites every answer.",
+};
+
 /** The bundled demo lesson; public without signing in (middleware.ts). */
 const DEMO_LESSON = contentPath("sub_06dea46b30bf4ee7", "res_2e629d682a3d");
 
@@ -13,41 +19,57 @@ const SECONDARY_BTN = `inline-flex items-center justify-center gap-1.5 rounded-x
 
 const FEATURES = [
   {
-    title: "Answers from your lesson",
-    body: "Every answer is grounded in the video and documents of the course, with clickable citations that jump to the exact moment or page.",
-    icon: "M8 10h8M8 14h5M21 12a9 9 0 1 1-3.6-7.2L21 3v6h-6",
+    title: "A tutor, not a search box",
+    body: "Ask in your own words and get step-by-step explanations, worked examples and follow-ups, the way a good tutor would explain it.",
+    icon: "M7 8h10M7 12h6M4 4h16v12H8l-4 4z",
   },
   {
-    title: "No spoilers",
-    body: "Pause anywhere and ask. The tutor only uses what you have already watched, so it never gets ahead of you.",
+    title: "Timestamp-aware context",
+    body: "The tutor knows the moment you are at in a lecture and the page you are on in your notes, and answers about exactly that.",
     icon: "M12 8v4l3 2M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z",
   },
   {
-    title: "Videos, PDFs and slides",
-    body: "Upload lectures, notes and decks, or paste a YouTube link. They are split into chapters and indexed for questions.",
-    icon: "M4 6h16M4 12h16M4 18h10",
+    title: "Cited, never made up",
+    body: "Every answer is checked against your course material and cites the timestamp or page it came from. If the material does not cover it, the tutor says so.",
+    icon: "M9 12l2 2 4-4M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z",
   },
   {
-    title: "Quizzes on demand",
-    body: "Ask for a quiz on any chapter and get questions built from the material you just covered, with explanations.",
+    title: "Quizzes on what you learned",
+    body: "Ask for a quiz on any chapter or chat and get questions built from what you have covered so far, with an explanation for each answer.",
     icon: "M9 12l2 2 4-4M5 4h14v16H5z",
   },
   {
-    title: "Streaks and progress",
-    body: "A study heatmap, daily streak and lesson progress that follow your account across devices.",
-    icon: "M4 20V10M10 20V4M16 20v-7M22 20H2",
+    title: "Any course material",
+    body: "Lecture videos, YouTube links, PDFs and slide decks. Everything is split into chapters you can ask about.",
+    icon: "M4 6h16M4 12h16M4 18h10",
   },
   {
-    title: "Malai, your study chat",
-    body: "A general assistant for the questions outside a lesson, with streamed answers, maths and code.",
-    icon: "M7 8h10M7 12h6M4 4h16v12H8l-4 4z",
+    title: "Progress you can see",
+    body: "A study heatmap, daily streak and lesson progress that follow your account, so you always know what to pick up next.",
+    icon: "M4 20V10M10 20V4M16 20v-7M22 20H2",
   },
 ];
 
 const STEPS = [
-  { title: "Add a subject", body: "Create a subject and upload its videos, PDFs or slides." },
-  { title: "Watch and ask", body: "Pause the lesson and ask about what is on screen." },
-  { title: "Check yourself", body: "Take a quiz and keep your streak going." },
+  { title: "Bring your course", body: "Create a subject and add its lectures, notes and slides." },
+  {
+    title: "Learn with your tutor",
+    body: "Study at your own pace and ask whenever something is unclear. The tutor follows where you are.",
+  },
+  { title: "Check and keep going", body: "Quiz yourself on what you covered and keep your streak alive." },
+];
+
+const TIMELINE: Array<{ label: string; width: number; covered: boolean }> = [
+  { label: "Intro", width: 18, covered: true },
+  { label: "Weights", width: 24, covered: true },
+  { label: "Activation", width: 22, covered: false },
+  { label: "Training", width: 36, covered: false },
+];
+
+const TIMESTAMP_POINTS = [
+  "Questions like “what did she just mean?” work, because the tutor sees the current frame and transcript.",
+  "Nothing past your position is used, so there are no spoilers and no confusing jumps ahead.",
+  "Every claim links back to a timestamp or page you can check yourself.",
 ];
 
 function Icon({ d, className = "h-5 w-5" }: { d: string; className?: string }) {
@@ -91,7 +113,7 @@ function ProductPreview() {
           <span className="h-2.5 w-2.5 rounded-full bg-gray-300" />
           <span className="h-2.5 w-2.5 rounded-full bg-gray-300" />
           <span className="h-2.5 w-2.5 rounded-full bg-gray-300" />
-          <span className="ml-3 truncate text-xs text-gray-400">Lesson · Neural networks, chapter 2</span>
+          <span className="ml-3 truncate text-xs text-gray-400">AI tutor · Neural networks · Chapter 2</span>
         </div>
         <div className="grid gap-0 md:grid-cols-[1.4fr_1fr]">
           <div className="border-b border-gray-100 p-4 md:border-b-0 md:border-r">
@@ -135,6 +157,10 @@ function ProductPreview() {
             </div>
           </div>
           <div className="flex flex-col gap-3 p-4 text-left text-[13px] leading-relaxed">
+            <div className="flex items-center gap-1.5 self-start rounded-full bg-violet-50 px-2.5 py-1 text-[11px] font-medium text-violet-700">
+              <span className="h-1.5 w-1.5 rounded-full bg-violet-500" />
+              Context: up to 04:12 · slide 4
+            </div>
             <div className="ml-auto max-w-[85%] rounded-2xl rounded-br-md bg-gradient-to-r from-indigo-500 to-violet-500 px-3.5 py-2 text-white">
               Why does the network need a bias term here?
             </div>
@@ -150,13 +176,84 @@ function ProductPreview() {
               .
             </div>
             <div className="mt-auto flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-gray-400">
-              <span className="flex-1">Ask about this moment…</span>
+              <span className="flex-1">Ask your tutor anything…</span>
               <span className="rounded-md bg-gray-100 px-1.5 py-0.5 text-[10px]">/quiz</span>
             </div>
           </div>
         </div>
       </div>
     </div>
+  );
+}
+
+/** The problem statement, drawn: what the tutor may use at the learner's position. */
+function TimestampSection() {
+  return (
+    <section id="timestamp" className="scroll-mt-20 border-t border-gray-200/70 bg-white px-4 py-20 sm:px-6">
+      <div className="mx-auto grid max-w-6xl items-center gap-12 lg:grid-cols-2">
+        <div>
+          <span className="text-sm font-semibold uppercase tracking-wider text-violet-600">Timestamp-aware</span>
+          <h2 className="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">
+            It answers for the moment you are in, not the whole course
+          </h2>
+          <p className="mt-4 leading-relaxed text-gray-600">
+            A general chatbot knows nothing about your lesson, or answers from all of it at once and gives away
+            what comes later. Malai Pioneer knows your position: the second of the lecture you paused on and the
+            page you are reading. It builds each answer only from what you have already covered.
+          </p>
+          <ul className="mt-6 space-y-3 text-sm text-gray-700">
+            {TIMESTAMP_POINTS.map((t) => (
+              <li key={t} className="flex gap-3">
+                <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-violet-100 text-violet-700">
+                  <Icon d="M5 12l4 4L19 7" className="h-3.5 w-3.5" />
+                </span>
+                <span>{t}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div className="rounded-2xl border border-gray-200 bg-gray-50 p-6 shadow-sm">
+          <div className="flex items-center justify-between text-xs text-gray-500">
+            <span>Lecture timeline</span>
+            <span className="font-mono">you are at 04:12</span>
+          </div>
+          <div className="relative mt-4">
+            <div className="flex h-12 overflow-hidden rounded-xl">
+              {TIMELINE.map((c) => (
+                <div
+                  key={c.label}
+                  style={{ width: `${c.width}%` }}
+                  className={`flex items-center justify-center border-r border-white text-[11px] font-medium last:border-r-0 ${
+                    c.covered
+                      ? "bg-gradient-to-r from-indigo-500 to-violet-500 text-white"
+                      : "bg-gray-200 text-gray-400"
+                  }`}
+                >
+                  {c.label}
+                </div>
+              ))}
+            </div>
+            <div className="absolute -bottom-2 -top-2 left-[42%] w-0.5 rounded bg-gray-900" aria-hidden="true">
+              <span className="absolute -top-1 left-1/2 h-2.5 w-2.5 -translate-x-1/2 rounded-full bg-gray-900" />
+            </div>
+          </div>
+          <div className="mt-6 grid gap-3 sm:grid-cols-2">
+            <div className="rounded-xl border border-violet-200 bg-white p-4">
+              <div className="text-xs font-semibold text-violet-700">The tutor can use</div>
+              <p className="mt-1.5 text-sm text-gray-600">
+                Transcript and frames up to 04:12, plus the notes and slides you have opened.
+              </p>
+            </div>
+            <div className="rounded-xl border border-dashed border-gray-300 bg-white/60 p-4">
+              <div className="text-xs font-semibold text-gray-500">Held back until you get there</div>
+              <p className="mt-1.5 text-sm text-gray-500">
+                Activation, Training, and everything after your position.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -174,6 +271,7 @@ export default async function Home() {
             <span className="font-semibold tracking-tight">Malai Pioneer</span>
           </Link>
           <div className="hidden items-center gap-7 text-sm text-gray-600 md:flex">
+            <a href="#timestamp" className="transition hover:text-gray-900">Timestamp-aware</a>
             <a href="#features" className="transition hover:text-gray-900">Features</a>
             <a href="#how" className="transition hover:text-gray-900">How it works</a>
           </div>
@@ -208,17 +306,19 @@ export default async function Home() {
           <div className="relative mx-auto max-w-3xl">
             <span className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-white px-3 py-1 text-xs font-medium text-violet-700 shadow-sm">
               <span className="h-1.5 w-1.5 rounded-full bg-violet-500" />
-              AI tutor for video lessons
+              Timestamp-aware AI learning assistant
             </span>
             <h1 className="mt-6 text-4xl font-bold tracking-tight text-gray-900 sm:text-6xl">
-              Pause the lecture.{" "}
+              The AI tutor that knows{" "}
               <span className="bg-gradient-to-r from-indigo-600 to-violet-600 bg-clip-text text-transparent">
-                Ask anything.
-              </span>
+                where you are
+              </span>{" "}
+              in your lesson.
             </h1>
             <p className="mx-auto mt-5 max-w-2xl text-base leading-relaxed text-gray-600 sm:text-lg">
-              Malai Pioneer turns your course videos, PDFs and slides into a tutor that answers from the
-              lesson itself, cites the exact moment, and never spoils what is coming next.
+              Malai Pioneer is a personal AI tutor for your courses. It follows the exact moment of the lecture
+              and the page of the notes you are on, explains concepts in context, quizzes you, and cites every
+              answer without jumping ahead of what you have learned.
             </p>
             <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
               {signedIn ? (
@@ -239,12 +339,14 @@ export default async function Home() {
           <ProductPreview />
         </section>
 
-        <section id="features" className="scroll-mt-20 border-t border-gray-200/70 bg-white px-4 py-20 sm:px-6">
+        <TimestampSection />
+
+        <section id="features" className="scroll-mt-20 border-t border-gray-200/70 px-4 py-20 sm:px-6">
           <div className="mx-auto max-w-6xl">
             <div className="mx-auto max-w-2xl text-center">
-              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">Built for how you actually study</h2>
+              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">Everything a tutor should do</h2>
               <p className="mt-3 text-gray-600">
-                One place for the lecture, the notes and the questions you have while watching.
+                Explain, check, test and track, all grounded in your own course material.
               </p>
             </div>
             <div className="mt-12 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
@@ -264,7 +366,7 @@ export default async function Home() {
           </div>
         </section>
 
-        <section id="how" className="scroll-mt-20 px-4 py-20 sm:px-6">
+        <section id="how" className="scroll-mt-20 border-t border-gray-200/70 bg-white px-4 py-20 sm:px-6">
           <div className="mx-auto max-w-5xl">
             <h2 className="text-center text-3xl font-bold tracking-tight sm:text-4xl">How it works</h2>
             <ol className="mt-12 grid gap-6 md:grid-cols-3">
@@ -281,9 +383,9 @@ export default async function Home() {
 
         <section className="px-4 pb-20 sm:px-6">
           <div className="mx-auto max-w-5xl overflow-hidden rounded-3xl bg-gradient-to-br from-indigo-600 via-violet-600 to-fuchsia-600 px-6 py-14 text-center text-white shadow-xl shadow-violet-600/20 sm:px-12">
-            <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">Ready for your next lesson?</h2>
+            <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">Learn with a tutor that keeps up with you</h2>
             <p className="mx-auto mt-3 max-w-xl text-white/80">
-              Try the demo now, or create an account to keep your subjects, chats and streak.
+              Try the demo lesson now, or create an account to keep your subjects, tutor chats and streak.
             </p>
             <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
               <Link
@@ -305,7 +407,7 @@ export default async function Home() {
 
       <footer className="border-t border-gray-200/70 px-4 py-8 sm:px-6">
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-3 text-sm text-gray-500 sm:flex-row">
-          <span>© {new Date().getFullYear()} Malai Pioneer · AI Learning Assistant</span>
+          <span>© {new Date().getFullYear()} Malai Pioneer · Timestamp-aware AI learning assistant</span>
           <div className="flex gap-5">
             <a href="#features" className="hover:text-gray-900">Features</a>
             <Link href={DEMO_LESSON} className="hover:text-gray-900">Demo</Link>
