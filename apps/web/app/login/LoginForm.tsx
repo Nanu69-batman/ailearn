@@ -19,7 +19,10 @@ export default function LoginForm() {
   const params = useSearchParams();
   const next = safeNextPath(params.get("next"));
 
-  const [mode, setMode] = useState<Mode>("signin");
+  // `/login?mode=signup` (the landing page's "Sign up") opens on the sign-up form.
+  const [mode, setMode] = useState<Mode>(
+    params.get("mode") === "signup" ? "signup" : "signin",
+  );
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
