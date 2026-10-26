@@ -16,7 +16,7 @@ const DEMO_LESSON = contentPath("sub_06dea46b30bf4ee7", "res_2e629d682a3d");
 const FOCUS =
   "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600";
 const PRIMARY_BTN = `inline-flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-indigo-500 to-violet-500 font-medium text-white shadow-sm shadow-violet-500/20 transition hover:-translate-y-0.5 hover:shadow-lg hover:shadow-violet-500/30 ${FOCUS}`;
-const SECONDARY_BTN = `inline-flex items-center justify-center gap-1.5 rounded-xl border border-white/70 bg-white/50 font-medium text-gray-700 shadow-sm backdrop-blur-md transition hover:-translate-y-0.5 hover:bg-white/80 ${FOCUS}`;
+const SECONDARY_BTN = `inline-flex items-center justify-center gap-1.5 rounded-xl border border-gray-200 bg-white font-medium text-gray-700 shadow-sm transition hover:-translate-y-0.5 hover:bg-gray-50 ${FOCUS}`;
 
 const SECTIONS = [
   { id: "top", label: "Home" },
@@ -99,8 +99,8 @@ function Screen({
 /** A static picture of the lesson page: the lecture with the tutor beside it. */
 function ProductPreview() {
   return (
-    <div className="anim-float overflow-hidden rounded-2xl border border-white/70 bg-white/50 backdrop-blur-xl shadow-2xl shadow-indigo-900/10">
-      <div className="flex items-center gap-1.5 border-b border-white/60 bg-white/40 px-4 py-2.5">
+    <div className="anim-float overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl shadow-indigo-900/15">
+      <div className="flex items-center gap-1.5 border-b border-gray-100 bg-gray-50 px-4 py-2.5">
         <span className="h-2.5 w-2.5 rounded-full bg-gray-300" />
         <span className="h-2.5 w-2.5 rounded-full bg-gray-300" />
         <span className="h-2.5 w-2.5 rounded-full bg-gray-300" />
@@ -136,7 +136,7 @@ function ProductPreview() {
           <div className="ml-auto max-w-[85%] rounded-2xl rounded-br-md bg-gradient-to-r from-indigo-500 to-violet-500 px-3.5 py-2 text-white">
             Why add a bias here?
           </div>
-          <div className="max-w-[92%] rounded-2xl rounded-bl-md border border-white/80 bg-white/70 px-3.5 py-2 text-gray-700">
+          <div className="max-w-[92%] rounded-2xl rounded-bl-md border border-gray-100 bg-gray-50 px-3.5 py-2 text-gray-700">
             It shifts the activation, so a neuron can fire with zero input
             <span className="ml-1 inline-flex rounded-md bg-violet-100 px-1.5 font-mono text-[10px] font-semibold text-violet-700">
               03:48
@@ -154,7 +154,7 @@ export default async function Home() {
 
   return (
     <div id="landing-scroll" className="landing-scroll h-screen snap-y snap-proximity overflow-y-auto scroll-smooth bg-gray-50 text-gray-900 md:snap-mandatory">
-      <header className="fixed inset-x-0 top-0 z-30 border-b border-white/50 bg-white/30 backdrop-blur-xl">
+      <header className="fixed inset-x-0 top-0 z-30 border-b border-gray-200/70 bg-gray-50/80 backdrop-blur">
         <nav className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-4 sm:px-6">
           <Link href="#top" className={`flex items-center gap-2.5 rounded-lg ${FOCUS}`}>
             <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 text-sm font-bold text-white">
@@ -195,7 +195,7 @@ export default async function Home() {
           <div className="relative mx-auto grid w-full max-w-6xl items-center gap-12 lg:grid-cols-[1.1fr_1fr]">
             <div className="text-center lg:text-left">
               <Reveal>
-                <span className="inline-flex items-center gap-2 rounded-full border border-white/70 bg-white/50 backdrop-blur-md px-3 py-1 text-xs font-medium text-violet-700 shadow-sm">
+                <span className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-white px-3 py-1 text-xs font-medium text-violet-700 shadow-sm">
                   <span className="relative flex h-1.5 w-1.5">
                     <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-violet-400 opacity-75" />
                     <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-violet-500" />
@@ -248,7 +248,7 @@ export default async function Home() {
             <Reveal delay={150}>
               <div className="mt-14 text-left">
                 <div className="relative">
-                  <div className="h-3 rounded-full bg-white/60 ring-1 ring-white/70 backdrop-blur" />
+                  <div className="h-3 rounded-full bg-gray-200" />
                   <div className="anim-fill absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-indigo-500 to-violet-500" />
                   <div className="anim-playhead absolute -top-3 h-9 w-0.5 -translate-x-1/2 bg-gray-900">
                     <span className="absolute -top-7 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md bg-gray-900 px-2 py-0.5 font-mono text-[11px] text-white">
@@ -267,13 +267,13 @@ export default async function Home() {
             </Reveal>
             <div className="mt-12 grid gap-4 sm:grid-cols-2">
               <Reveal delay={250}>
-                <div className="rounded-2xl border border-violet-200/70 bg-violet-100/40 p-6 backdrop-blur-xl">
+                <div className="rounded-2xl border border-violet-200 bg-violet-50/60 p-6">
                   <div className="font-semibold text-violet-700">✓ Tutor uses</div>
                   <p className="mt-1 text-sm text-gray-600">What you&apos;ve watched and read</p>
                 </div>
               </Reveal>
               <Reveal delay={350}>
-                <div className="rounded-2xl border border-dashed border-gray-400/50 bg-white/30 p-6 backdrop-blur-xl">
+                <div className="rounded-2xl border border-dashed border-gray-300 p-6">
                   <div className="font-semibold text-gray-500">⏸ Held back</div>
                   <p className="mt-1 text-sm text-gray-500">Everything after your position</p>
                 </div>
@@ -290,12 +290,12 @@ export default async function Home() {
             <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {FEATURES.map((f, i) => (
                 <Reveal key={f.title} delay={i * 80}>
-                  <div className="group h-full rounded-2xl border border-white/70 bg-white/50 backdrop-blur-xl p-6 transition duration-300 hover:-translate-y-1 hover:border-white hover:bg-white/70 hover:shadow-xl hover:shadow-violet-500/10">
+                  <div className="group h-full rounded-2xl border border-gray-200 bg-white p-6 transition duration-300 hover:-translate-y-1 hover:border-violet-200 hover:shadow-xl hover:shadow-violet-500/10">
                     <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 text-white transition duration-300 group-hover:rotate-6 group-hover:scale-110">
                       <Icon d={f.icon} />
                     </span>
                     <h3 className="mt-4 font-semibold">{f.title}</h3>
-                    <p className="mt-1 text-sm text-gray-600">{f.body}</p>
+                    <p className="mt-1 text-sm text-gray-500">{f.body}</p>
                   </div>
                 </Reveal>
               ))}
@@ -317,7 +317,7 @@ export default async function Home() {
                       {i + 1}
                     </span>
                     <h3 className="mt-5 text-lg font-semibold">{s.title}</h3>
-                    <p className="mt-1 text-sm text-gray-600">{s.body}</p>
+                    <p className="mt-1 text-sm text-gray-500">{s.body}</p>
                   </div>
                 </Reveal>
               ))}
@@ -327,7 +327,7 @@ export default async function Home() {
 
         <Screen id="start" className="flex-col justify-center">
           <Reveal className="mx-auto w-full max-w-4xl">
-            <div className="relative overflow-hidden rounded-3xl border border-white/20 bg-gradient-to-br from-indigo-600/85 via-violet-600/80 to-fuchsia-600/75 px-6 backdrop-blur-xl py-16 text-center text-white shadow-2xl shadow-violet-600/30 sm:px-12">
+            <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-indigo-600 via-violet-600 to-fuchsia-600 px-6 py-16 text-center text-white shadow-2xl shadow-violet-600/30 sm:px-12">
               <div aria-hidden="true" className="anim-blob absolute -right-16 -top-16 h-64 w-64 rounded-full bg-white/10 blur-2xl" />
               <h2 className="relative text-3xl font-bold tracking-tight sm:text-5xl">Start learning smarter.</h2>
               <div className="relative mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
