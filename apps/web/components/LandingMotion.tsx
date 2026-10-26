@@ -42,10 +42,10 @@ export function Reveal({
 
 /** Each blob drifts from its start toward `to` (in vw/vh) as the page scrolls. */
 const BLOBS = [
-  { className: "left-[-10vw] top-[-10vh] h-[55vh] w-[55vh] bg-indigo-300/40", to: [55, 70], turn: 120 },
-  { className: "right-[-12vw] top-[20vh] h-[50vh] w-[50vh] bg-fuchsia-300/30", to: [-60, 50], turn: -90 },
-  { className: "bottom-[-15vh] left-[30vw] h-[60vh] w-[60vh] bg-violet-300/40", to: [-30, -80], turn: 160 },
-  { className: "left-[60vw] top-[60vh] h-[40vh] w-[40vh] bg-sky-200/40", to: [-50, -30], turn: -140 },
+  { className: "left-[-10vw] top-[-10vh] h-[55vh] w-[55vh] bg-indigo-300/30", to: [55, 70], turn: 120 },
+  { className: "right-[-12vw] top-[20vh] h-[50vh] w-[50vh] bg-fuchsia-300/20", to: [-60, 50], turn: -90 },
+  { className: "bottom-[-15vh] left-[30vw] h-[60vh] w-[60vh] bg-violet-300/30", to: [-30, -80], turn: 160 },
+  { className: "left-[60vw] top-[60vh] h-[40vh] w-[40vh] bg-sky-200/30", to: [-50, -30], turn: -140 },
 ];
 
 /**

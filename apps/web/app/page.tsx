@@ -154,7 +154,7 @@ export default async function Home() {
 
   return (
     <div id="landing-scroll" className="landing-scroll h-screen snap-y snap-proximity overflow-y-auto scroll-smooth bg-gray-50 text-gray-900 md:snap-mandatory">
-      <header className="fixed inset-x-0 top-0 z-30 border-b border-gray-200/70 bg-gray-50/80 backdrop-blur">
+      <header className="fixed inset-x-0 top-0 z-30 border-b border-gray-200 bg-white/90 backdrop-blur">
         <nav className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-4 sm:px-6">
           <Link href="#top" className={`flex items-center gap-2.5 rounded-lg ${FOCUS}`}>
             <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 text-sm font-bold text-white">
@@ -232,7 +232,7 @@ export default async function Home() {
           <a
             href="#timestamp"
             aria-label="Scroll down"
-            className="absolute bottom-6 left-1/2 hidden -translate-x-1/2 animate-bounce text-gray-400 hover:text-gray-600 md:block"
+            className="absolute bottom-6 left-1/2 hidden -translate-x-1/2 animate-bounce text-gray-500 hover:text-gray-700 md:block"
           >
             <Icon d="M6 9l6 6 6-6" className="h-6 w-6" />
           </a>
@@ -246,7 +246,7 @@ export default async function Home() {
               <p className="mt-4 text-lg text-gray-600">Only what you&apos;ve covered. No spoilers.</p>
             </Reveal>
             <Reveal delay={150}>
-              <div className="mt-14 text-left">
+              <div className="mt-12 rounded-3xl border border-gray-200 bg-white p-6 pt-12 text-left shadow-xl shadow-indigo-900/5 sm:p-10 sm:pt-14">
                 <div className="relative">
                   <div className="h-3 rounded-full bg-gray-200" />
                   <div className="anim-fill absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-indigo-500 to-violet-500" />
@@ -263,22 +263,18 @@ export default async function Home() {
                     </span>
                   ))}
                 </div>
+                <div className="mt-8 grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-2xl border border-violet-200 bg-violet-50 p-5">
+                    <div className="font-semibold text-violet-700">✓ Tutor uses</div>
+                    <p className="mt-1 text-sm text-gray-600">What you&apos;ve watched and read</p>
+                  </div>
+                  <div className="rounded-2xl border border-dashed border-gray-300 bg-gray-50 p-5">
+                    <div className="font-semibold text-gray-600">⏸ Held back</div>
+                    <p className="mt-1 text-sm text-gray-500">Everything after your position</p>
+                  </div>
+                </div>
               </div>
             </Reveal>
-            <div className="mt-12 grid gap-4 sm:grid-cols-2">
-              <Reveal delay={250}>
-                <div className="rounded-2xl border border-violet-200 bg-violet-50/60 p-6">
-                  <div className="font-semibold text-violet-700">✓ Tutor uses</div>
-                  <p className="mt-1 text-sm text-gray-600">What you&apos;ve watched and read</p>
-                </div>
-              </Reveal>
-              <Reveal delay={350}>
-                <div className="rounded-2xl border border-dashed border-gray-300 p-6">
-                  <div className="font-semibold text-gray-500">⏸ Held back</div>
-                  <p className="mt-1 text-sm text-gray-500">Everything after your position</p>
-                </div>
-              </Reveal>
-            </div>
           </div>
         </Screen>
 
@@ -290,12 +286,12 @@ export default async function Home() {
             <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {FEATURES.map((f, i) => (
                 <Reveal key={f.title} delay={i * 80}>
-                  <div className="group h-full rounded-2xl border border-gray-200 bg-white p-6 transition duration-300 hover:-translate-y-1 hover:border-violet-200 hover:shadow-xl hover:shadow-violet-500/10">
+                  <div className="group h-full rounded-2xl border border-gray-200 bg-white p-6 shadow-sm transition duration-300 hover:-translate-y-1 hover:border-violet-200 hover:shadow-xl hover:shadow-violet-500/10">
                     <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 text-white transition duration-300 group-hover:rotate-6 group-hover:scale-110">
                       <Icon d={f.icon} />
                     </span>
                     <h3 className="mt-4 font-semibold">{f.title}</h3>
-                    <p className="mt-1 text-sm text-gray-500">{f.body}</p>
+                    <p className="mt-1 text-sm text-gray-600">{f.body}</p>
                   </div>
                 </Reveal>
               ))}
@@ -309,15 +305,14 @@ export default async function Home() {
               <h2 className="text-3xl font-bold tracking-tight sm:text-5xl">Three steps.</h2>
             </Reveal>
             <div className="relative mt-14 grid gap-8 md:grid-cols-3">
-              <div aria-hidden="true" className="absolute left-[16%] right-[16%] top-7 hidden h-0.5 bg-gradient-to-r from-indigo-200 via-violet-300 to-fuchsia-200 md:block" />
               {STEPS.map((s, i) => (
                 <Reveal key={s.title} delay={i * 150}>
-                  <div className="relative text-center">
+                  <div className="h-full rounded-2xl border border-gray-200 bg-white shadow-sm p-8 text-center">
                     <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-500 font-mono text-lg font-bold text-white shadow-lg shadow-violet-500/25">
                       {i + 1}
                     </span>
                     <h3 className="mt-5 text-lg font-semibold">{s.title}</h3>
-                    <p className="mt-1 text-sm text-gray-500">{s.body}</p>
+                    <p className="mt-1 text-sm text-gray-600">{s.body}</p>
                   </div>
                 </Reveal>
               ))}
@@ -346,7 +341,7 @@ export default async function Home() {
               </div>
             </div>
           </Reveal>
-          <footer className="absolute inset-x-0 bottom-6 text-center text-sm text-gray-400">
+          <footer className="absolute inset-x-0 bottom-6 text-center text-sm text-gray-500">
             © {new Date().getFullYear()} Malai Pioneer
           </footer>
         </Screen>
