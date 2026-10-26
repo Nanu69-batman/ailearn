@@ -624,3 +624,79 @@ def test_transcribe_relays_interim_final_and_ends_stream_on_stop(client, launch,
     assert [m.value for m in config.response_modalities] == ["TEXT"]
     assert config.input_audio_transcription.mode == types.AudioTranscriptionConfigMode.SMART
     assert config.input_audio_transcription.language_codes == ["en"]
+
+
+# --- voices, language, recap -------------------------------------------------
+
+
+def test_models_list_voices_and_tones(client):
+    body = client.get("/voice/models").json()
+    names = [v["name"] for v in body["voices"]]
+    assert body["default_voice"] in names and "Kore" in names
+    assert body["default_tone"] in [t["key"] for t in body["tones"]]
+
+
+def test_live_config_carries_voice_tone_language_and_personalization():
+    from app.chat.schemas import Personalization
+    from app.voice.models import get_dialog_model
+
+    vm = get_dialog_model("live")
+    cfg = gemini.live_config(
+        vm, voice="Kore", tone="calm", personalization=Personalization(name="Rohan")
+    )
+    assert cfg.speech_config.voice_config.prebuilt_voice_config.voice_name == "Kore"
+    assert "Hinglish" in cfg.system_instruction
+    assert "unhurried" in cfg.system_instruction
+    assert "Rohan" in cfg.system_instruction
+    unknown = gemini.live_config(vm, voice="NotAVoice")
+    assert unknown.speech_config.voice_config.prebuilt_voice_config.voice_name == "Puck"
+
+
+def test_transliterate_devanagari_to_hinglish():
+    from app.voice.hinglish import has_devanagari, transliterate
+
+    out = transliterate("मुझे समझ नहीं आ रहा है")
+    assert not has_devanagari(out)
+    assert out == "mujhe samajh nahin aa raha hai"
+    assert transliterate("plain English") == "plain English"
+
+
+def test_voice_style_note_only_for_voice():
+    from app.chat.prompts import VOICE_STYLE, style_for
+
+    assert style_for(None) == ""
+    assert VOICE_STYLE in style_for(None, voice=True)
+
+
+def test_stop_sends_recap_saved_to_chat_and_uses_fast_pipeline(client, launch, monkeypatch):
+    from app.chat.sessions import MAIN_THREAD, message_store
+
+    svc = FakeService()
+    chat_router.set_service_override(svc)
+    fake = FakeSession(script=[_tool_call()])
+    _install(monkeypatch, fake)
+    with client.websocket_connect("/voice/live") as ws:
+        ws.send_json(_start(launch))
+        ws.receive_json()
+        ws.send_bytes(b"\x00\x00")
+        _read_until(ws, _is("answer"))
+        assert _wait(lambda: fake.tool_responses)
+        ws.send_json({"type": "stop"})
+        frames = _read_until(ws, _is("closed"), limit=200)
+    recap = next(f for f in frames if isinstance(f, dict) and f.get("type") == "recap")
+    assert "Voice chat recap" in recap["response"]["answer"]
+    assert "what is gradient descent?" in recap["response"]["answer"]
+    assert svc.calls[0]["fast"] is True
+    saved = message_store.list_for_session(launch["session_id"], MAIN_THREAD)
+    assert [m.role for m in saved] == ["assistant"]
+    assert "Voice chat recap" in saved[0].content
+
+
+def test_no_recap_without_exchanges(client, launch, monkeypatch):
+    _install(monkeypatch, FakeSession())
+    with client.websocket_connect("/voice/live") as ws:
+        ws.send_json(_start(launch))
+        ws.receive_json()
+        ws.send_json({"type": "stop"})
+        frames = _read_until(ws, _is("closed"), limit=200)
+    assert not any(isinstance(f, dict) and f.get("type") == "recap" for f in frames)

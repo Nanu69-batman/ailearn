@@ -10,25 +10,28 @@ interface VoicePanelProps {
   models: VoiceModels;
   getStart: () => VoiceStartFields;
   getCurrentTimeMs?: () => number;
-  onExchange: (question: string | null, response: ChatResponse) => void;
+  /** A recap of the conversation (every 5 minutes and at the end), already saved to the chat. */
+  onRecap: (response: ChatResponse) => void;
   onClose: () => void;
   /** Where the learner is talking, for the heading ("this video"). */
   subtitle?: string;
 }
 
 const MODEL_KEY = "ailearn.voice_model";
+const VOICE_KEY = "ailearn.voice_name";
+const TONE_KEY = "ailearn.voice_tone";
 
-function readModel(): string | null {
+function readPref(key: string): string | null {
   try {
-    return window.localStorage.getItem(MODEL_KEY);
+    return window.localStorage.getItem(key);
   } catch {
     return null;
   }
 }
 
-function writeModel(key: string): void {
+function writePref(key: string, value: string): void {
   try {
-    window.localStorage.setItem(MODEL_KEY, key);
+    window.localStorage.setItem(key, value);
   } catch {
     // Storage unavailable -> the choice lasts for this panel only.
   }
@@ -86,17 +89,32 @@ function Orb({ activity, live }: { activity: VoiceActivity; live: boolean }) {
 }
 
 /** The voice conversation, laid over the chat. Mount it to connect; unmount (or End) to disconnect. */
-export default function VoicePanel({ models, getStart, getCurrentTimeMs, onExchange, onClose, subtitle }: VoicePanelProps) {
+export default function VoicePanel({ models, getStart, getCurrentTimeMs, onRecap, onClose, subtitle }: VoicePanelProps) {
   const options = useMemo(() => models.dialog.map((m) => ({ value: m.key, label: m.label })), [models]);
+  const voiceOptions = useMemo(
+    () => (models.voices ?? []).map((v) => ({ value: v.name, label: `${v.name} · ${v.description}` })),
+    [models],
+  );
+  const toneOptions = useMemo(() => (models.tones ?? []).map((t) => ({ value: t.key, label: t.label })), [models]);
   const [model, setModel] = useState<string>(() => {
-    const saved = readModel();
+    const saved = readPref(MODEL_KEY);
     return models.dialog.find((m) => m.key === saved)?.key ?? models.dialog.find((m) => m.key === "live")?.key ?? models.dialog[0]?.key ?? "live";
+  });
+  const [voice, setVoice] = useState<string | undefined>(() => {
+    const saved = readPref(VOICE_KEY);
+    return models.voices?.find((v) => v.name === saved)?.name ?? models.default_voice;
+  });
+  const [tone, setTone] = useState<string | undefined>(() => {
+    const saved = readPref(TONE_KEY);
+    return models.tones?.find((t) => t.key === saved)?.key ?? models.default_tone;
   });
   const { status, activity, inputText, outputText, error, end, restart } = useVoiceSession({
     model,
+    voice,
+    tone,
     getStart,
     getCurrentTimeMs,
-    onExchange,
+    onRecap,
   });
 
   // Esc ends the conversation, like the End button.
@@ -122,8 +140,36 @@ export default function VoicePanel({ models, getStart, getCurrentTimeMs, onExcha
           <h2 className="text-sm font-semibold text-gray-900">Talk with Malai</h2>
           {subtitle && <p className="truncate text-xs text-gray-500">{subtitle}</p>}
         </div>
-        <Select<string> className="w-64 max-w-[60%]" label="Voice model" value={model} options={options} onChange={(k) => { setModel(k); writeModel(k); }} />
+        <Select<string> className="w-64 max-w-[60%]" label="Voice model" value={model} options={options} onChange={(k) => { setModel(k); writePref(MODEL_KEY, k); }} />
       </div>
+      {(voiceOptions.length > 0 || toneOptions.length > 0) && (
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-gray-100 px-4 py-2">
+          {voiceOptions.length > 0 && voice && (
+            <Select<string>
+              className="min-w-[10rem] flex-1"
+              label="Voice"
+              value={voice}
+              options={voiceOptions}
+              onChange={(v) => {
+                setVoice(v);
+                writePref(VOICE_KEY, v);
+              }}
+            />
+          )}
+          {toneOptions.length > 0 && tone && (
+            <Select<string>
+              className="min-w-[8rem] flex-1"
+              label="Tone"
+              value={tone}
+              options={toneOptions}
+              onChange={(t) => {
+                setTone(t);
+                writePref(TONE_KEY, t);
+              }}
+            />
+          )}
+        </div>
+      )}
 
       <div className="flex min-h-0 flex-1 flex-col items-center gap-3 overflow-y-auto px-5 py-6 text-center">
         <Orb activity={activity} live={live} />
@@ -149,7 +195,7 @@ export default function VoicePanel({ models, getStart, getCurrentTimeMs, onExcha
             </p>
           )}
         </div>
-        {live && !inputText && !outputText && <p className="text-xs text-gray-400">Ask about the lesson out loud. Answers are saved to this chat.</p>}
+        {live && !inputText && !outputText && <p className="text-xs text-gray-400">Ask about the lesson out loud. A recap is added to this chat when you end, and every 5 minutes.</p>}
       </div>
 
       <div className="flex shrink-0 items-center justify-center gap-3 border-t border-gray-100 px-4 py-3">

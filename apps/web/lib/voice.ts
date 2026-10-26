@@ -17,6 +17,11 @@ export interface VoiceModels {
   enabled: boolean;
   dialog: VoiceModel[];
   transcribe: { model: string };
+  /** Prebuilt voices and speaking tones; absent from an older API. */
+  voices?: Array<{ name: string; description: string }>;
+  default_voice?: string;
+  tones?: Array<{ key: string; label: string }>;
+  default_tone?: string;
 }
 
 function baseUrl(): string {

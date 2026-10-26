@@ -51,6 +51,7 @@ from app.chat.prompts import (
     extract_cited_ids,
     rewrite_query,
     strip_dangling_marker,
+    with_style,
 )
 from app.ingestion.backoff import QuotaExhaustedError
 from app.retrieval.store import TIME_GATED_SOURCE_TYPES
@@ -455,7 +456,12 @@ class LessonAgent:
         user_lines.append(f"Learner ({mode}): {message}")
 
         messages: list[dict] = [
-            {"role": "system", "content": build_agent_system(t_ms, mode, has_done=bool(completed))},
+            {
+                "role": "system",
+                "content": with_style(
+                    build_agent_system(t_ms, mode, has_done=bool(completed))
+                ),
+            },
             {"role": "user", "content": "\n".join(user_lines)},
         ]
         tool_calls_made = 0

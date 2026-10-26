@@ -44,3 +44,35 @@ def get_dialog_model(key: str | None) -> VoiceModel | None:
 
 def voice_enabled() -> bool:
     return bool(settings.llm_api_key)
+
+
+#: Gemini Live prebuilt voices offered in the picker: (name, description).
+VOICES: list[tuple[str, str]] = [
+    ("Puck", "Upbeat"),
+    ("Kore", "Firm"),
+    ("Aoede", "Breezy"),
+    ("Charon", "Informative"),
+    ("Leda", "Youthful"),
+    ("Zephyr", "Bright"),
+    ("Orus", "Steady"),
+    ("Fenrir", "Excitable"),
+]
+DEFAULT_VOICE = "Puck"
+
+#: Speaking styles: key -> (label, instruction for the voice model).
+TONES: dict[str, tuple[str, str]] = {
+    "friendly": ("Friendly", "Sound warm, friendly and encouraging."),
+    "calm": ("Calm", "Speak calmly and patiently, at an unhurried pace."),
+    "energetic": ("Energetic", "Sound lively and enthusiastic, with upbeat energy."),
+    "professional": ("Professional", "Sound clear, precise and professional."),
+}
+DEFAULT_TONE = "friendly"
+
+
+def voice_name(name: str | None) -> str:
+    names = {n for n, _ in VOICES}
+    return name if name in names else DEFAULT_VOICE
+
+
+def tone_instruction(key: str | None) -> str:
+    return TONES.get(key or DEFAULT_TONE, TONES[DEFAULT_TONE])[1]

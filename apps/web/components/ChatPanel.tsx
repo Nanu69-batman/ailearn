@@ -360,21 +360,19 @@ export default function ChatPanel({
   }, [input, dictation.interim]);
 
   /** The voice conversation answered: show the exchange like a typed one. */
-  function voiceExchange(question: string | null, res: ChatResponse): void {
-    const now = new Date().toISOString();
+  /** A voice recap: the conversation itself stays out of the chat, the recap is saved to it. */
+  function voiceRecap(res: ChatResponse): void {
     setMessages((prev) => [
       ...prev,
-      ...(question ? [{ id: newId(), role: "user" as const, content: question, citations: [], created_at: now }] : []),
       {
         id: newId(),
         role: "assistant",
         content: res.answer,
         citations: res.citations,
-        created_at: now,
-        kind: res.refused ? "refused" : res.mode,
+        created_at: new Date().toISOString(),
+        kind: res.mode,
       },
     ]);
-    if (question) onAsk?.(threadId, question);
     void refreshThreads();
   }
 
@@ -927,7 +925,7 @@ export default function ChatPanel({
             models={voiceModels}
             getStart={voiceStart}
             getCurrentTimeMs={isVideo ? getCurrentTimeMs : undefined}
-            onExchange={voiceExchange}
+            onRecap={voiceRecap}
             onClose={() => setVoiceOpen(false)}
             subtitle={`About this ${isVideo ? "video" : "material"}`}
           />

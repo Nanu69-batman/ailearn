@@ -267,8 +267,16 @@ def _authorize_chat(body: ChatRequest, request: Request) -> None:
     _use_thread(session.id, body.thread_id)
 
 
-async def _answer(body: ChatRequest) -> ChatResponse:
+async def _answer(body: ChatRequest, *, voice: bool = False) -> ChatResponse:
+    """Run one question through the chat service.
+
+    ``voice`` asks for a short spoken-style answer on the fast (non-agent)
+    pipeline; the gate, citation validation and refusals are the same.
+    """
+    from app.chat.prompts import style_for, style_note
+
     service = get_service()
+    note = style_note.set(style_for(body.personalization, voice=voice))
     try:
         return await service.chat(
             session_id=body.session_id,
@@ -286,6 +294,7 @@ async def _answer(body: ChatRequest) -> ChatResponse:
                 else {}
             ),
             **({"general": True} if body.general else {}),
+            **({"fast": True} if voice else {}),
         )
     except SessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail="session not found") from exc
@@ -301,6 +310,8 @@ async def _answer(body: ChatRequest) -> ChatResponse:
         # M5: log specifics server-side; never leak provider internals.
         log.error("chat provider error: %s", f"{name}: {exc}")
         raise HTTPException(status_code=502, detail="upstream provider error") from exc
+    finally:
+        style_note.reset(note)
 
 
 @router.post("/chat", response_model=ChatResponse)

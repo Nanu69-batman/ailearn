@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChatResponse } from "@/lib/api";
+import { personalizationForRequest } from "@/lib/personalization";
 import {
   PcmPlayer,
   fetchVoiceModels,
@@ -31,14 +32,19 @@ export type VoiceActivity = "listening" | "thinking" | "speaking";
 
 interface Options {
   model: string;
+  /** Prebuilt voice name and speaking tone (GET /voice/models lists both). */
+  voice?: string;
+  tone?: string;
   getStart: () => VoiceStartFields;
   /** Present where a playhead exists: sent as `time` every second. */
   getCurrentTimeMs?: () => number;
-  /** The course pipeline answered: `question` is what was asked, null if the server sent none. */
-  onExchange: (question: string | null, response: ChatResponse) => void;
+  /** A recap of the conversation so far (every 5 minutes and at the end); already saved to the chat. */
+  onRecap: (response: ChatResponse) => void;
 }
 
 const MAX_PENDING = 30;
+/** After End, how long the socket stays open for the closing recap. */
+const RECAP_WAIT_MS = 30_000;
 
 /** Voice models from GET /voice/models; null while loading, or when voice is off or unavailable. */
 export function useVoiceModels(active: boolean): VoiceModels | null {
@@ -60,7 +66,7 @@ export function useVoiceModels(active: boolean): VoiceModels | null {
 }
 
 /** One live conversation over WS /voice/live; connects on mount and on model change, cleans up on unmount. */
-export function useVoiceSession({ model, getStart, getCurrentTimeMs, onExchange }: Options) {
+export function useVoiceSession({ model, voice, tone, getStart, getCurrentTimeMs, onRecap }: Options) {
   const [status, setStatus] = useState<VoiceStatus>("connecting");
   const [activity, setActivity] = useState<VoiceActivity>("listening");
   const [inputText, setInputText] = useState("");
@@ -69,8 +75,8 @@ export function useVoiceSession({ model, getStart, getCurrentTimeMs, onExchange 
   const [attempt, setAttempt] = useState(0);
   const wsRef = useRef<WebSocket | null>(null);
   const stopRef = useRef<() => void>(() => {});
-  const cb = useRef({ getStart, getCurrentTimeMs, onExchange });
-  cb.current = { getStart, getCurrentTimeMs, onExchange };
+  const cb = useRef({ getStart, getCurrentTimeMs, onRecap });
+  cb.current = { getStart, getCurrentTimeMs, onRecap };
 
   useEffect(() => {
     const url = voiceWsUrl("live");
@@ -80,7 +86,8 @@ export function useVoiceSession({ model, getStart, getCurrentTimeMs, onExchange 
     let timer: ReturnType<typeof setInterval> | null = null;
     let ws: WebSocket | null = null;
     let ready = false;
-    let question: string | null = null;
+    // After End: the mic and audio are off, the socket waits for the recap.
+    let draining = false;
     let lastKind: "input" | "output" | null = null;
     const pending: ArrayBuffer[] = [];
 
@@ -90,14 +97,27 @@ export function useVoiceSession({ model, getStart, getCurrentTimeMs, onExchange 
     setOutputText("");
     setError(null);
 
-    const cleanup = (): void => {
-      closed = true;
+    const silence = (): void => {
       if (timer) clearInterval(timer);
       timer = null;
       mic?.stop();
       mic = null;
       player?.close();
       player = null;
+    };
+    const cleanup = (): void => {
+      closed = true;
+      silence();
+      // Ending (not unmounting mid-call): keep the socket for the closing recap.
+      if (draining && ws) {
+        const sock = ws;
+        ws = null;
+        wsRef.current = null;
+        const done = window.setTimeout(() => sock.close(), RECAP_WAIT_MS);
+        sock.onclose = () => window.clearTimeout(done);
+        sock.onerror = () => window.clearTimeout(done);
+        return;
+      }
       if (ws) {
         ws.onmessage = null;
         ws.onclose = null;
@@ -118,7 +138,10 @@ export function useVoiceSession({ model, getStart, getCurrentTimeMs, onExchange 
       setStatus(s);
     };
     stopRef.current = () => {
-      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "stop" }));
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "stop" }));
+        draining = true;
+      }
       finish("ended");
     };
 
@@ -134,12 +157,16 @@ export function useVoiceSession({ model, getStart, getCurrentTimeMs, onExchange 
         wsRef.current = sock;
         sock.binaryType = "arraybuffer";
 
+        const personal = personalizationForRequest();
         sock.onopen = () =>
           sock.send(
             JSON.stringify({
               type: "start",
               model,
+              ...(voice ? { voice } : {}),
+              ...(tone ? { tone } : {}),
               ...cb.current.getStart(),
+              ...(personal ? { personalization: personal } : {}),
               ...(token ? { access_token: token } : {}),
             }),
           );
@@ -152,6 +179,16 @@ export function useVoiceSession({ model, getStart, getCurrentTimeMs, onExchange 
           try {
             msg = JSON.parse(e.data);
           } catch {
+            return;
+          }
+          // The recap can arrive after End, when the rest is already torn down.
+          if (msg.type === "recap") {
+            if (msg.response) cb.current.onRecap(msg.response as ChatResponse);
+            if (closed) sock.close();
+            return;
+          }
+          if (closed) {
+            if (msg.type === "closed") sock.close();
             return;
           }
           switch (msg.type) {
@@ -182,13 +219,6 @@ export function useVoiceSession({ model, getStart, getCurrentTimeMs, onExchange 
             }
             case "interrupted":
               player?.flush();
-              break;
-            case "question":
-              question = String(msg.text ?? "");
-              break;
-            case "answer":
-              if (msg.response) cb.current.onExchange(question, msg.response as ChatResponse);
-              question = null;
               break;
             case "error":
               finish("error", String(msg.message || "Voice failed."));
@@ -226,7 +256,7 @@ export function useVoiceSession({ model, getStart, getCurrentTimeMs, onExchange 
     }
     void run();
     return cleanup;
-  }, [model, attempt]);
+  }, [model, voice, tone, attempt]);
 
   const end = useCallback(() => stopRef.current(), []);
   const restart = useCallback(() => setAttempt((n) => n + 1), []);

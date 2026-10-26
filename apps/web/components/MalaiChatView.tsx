@@ -333,21 +333,20 @@ export default function MalaiChatView() {
     };
   };
 
-  const voiceExchange = (question: string | null, res: ChatResponse): void => {
-    const now = new Date().toISOString();
+  /** A voice recap: the conversation itself stays out of the chat, the recap is saved to it. */
+  const voiceRecap = (res: ChatResponse): void => {
     setMessages((prev) => [
       ...prev,
-      ...(question ? [{ id: newMessageId(), role: "user" as const, content: question, citations: [], created_at: now }] : []),
       {
         id: newMessageId(),
         role: "assistant",
         content: res.answer,
         citations: res.citations,
-        created_at: now,
-        kind: res.refused ? "refused" : res.mode,
+        created_at: new Date().toISOString(),
+        kind: res.mode,
       },
     ]);
-    if (voiceChat) updateChat(voiceChat.id, { updatedAt: Date.now(), ...(question ? { preview: titleFrom(question) } : {}) });
+    if (voiceChat) updateChat(voiceChat.id, { updatedAt: Date.now() });
   };
 
   const send = useCallback(async () => {
@@ -688,7 +687,7 @@ export default function MalaiChatView() {
             <VoicePanel
               models={voiceModels}
               getStart={voiceStart}
-              onExchange={voiceExchange}
+              onRecap={voiceRecap}
               onClose={() => setVoiceChat(null)}
               subtitle={subject ? subject.name : "General"}
             />

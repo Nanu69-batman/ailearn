@@ -45,6 +45,21 @@ class LmsSessionResponse(BaseModel):
     session_token: str
 
 
+class Personalization(BaseModel):
+    """The learner's saved preferences (Malai personalization). Style only."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str | None = Field(default=None, max_length=60)
+    about: str | None = Field(default=None, max_length=300)
+    traits: list[Annotated[str, Field(max_length=40)]] = Field(
+        default_factory=list, max_length=8
+    )
+    instructions: str | None = Field(default=None, max_length=1500)
+    language: Literal["auto", "english", "hinglish", "hindi"] = "auto"
+    length: Literal["concise", "balanced", "detailed"] = "balanced"
+
+
 class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -74,6 +89,8 @@ class ChatRequest(BaseModel):
     #: from general knowledge and only searches the learner's materials when
     #: the message explicitly asks about them.
     general: bool = False
+    #: The learner's personalization, applied as a style note to the prompt.
+    personalization: Personalization | None = None
 
 
 #: What kind of signal a citation was drawn from, for material where that

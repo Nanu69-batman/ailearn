@@ -32,7 +32,9 @@ async def _traced(label: str, impl, *, system: str, user_prompt: str, passages: 
     """Run one provider call inside a developer-view trace span."""
     from app import devtrace
     from app.chat import streaming
+    from app.chat.prompts import with_style
 
+    system = with_style(system)
     sink = streaming.current()
     if sink is not None:
         sink.reset()

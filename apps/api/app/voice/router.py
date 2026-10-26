@@ -23,12 +23,28 @@ from starlette.websockets import WebSocketDisconnect
 from app.auth.supabase import user_from_token
 from app.chat import router as chat_router
 from app.chat.launch import clamp_current_time_ms
-from app.chat.prompts import strip_citation_markers
-from app.chat.schemas import ChatMode, ChatRequest
-from app.chat.sessions import session_store
+from app.chat.prompts import (
+    LANGUAGE_RULE,
+    strip_citation_markers,
+    style_for,
+    style_note,
+)
+from app.chat.schemas import ChatMode, ChatRequest, ChatResponse, Personalization
+from app.chat.service import voice_turns
+from app.chat.sessions import message_store, session_store
 from app.config import settings
 from app.voice import gemini
-from app.voice.models import VoiceModel, dialog_models, get_dialog_model, voice_enabled
+from app.voice.hinglish import romanize, transliterate
+from app.voice.models import (
+    DEFAULT_TONE,
+    DEFAULT_VOICE,
+    TONES,
+    VOICES,
+    VoiceModel,
+    dialog_models,
+    get_dialog_model,
+    voice_enabled,
+)
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +54,10 @@ START_TIMEOUT_S = 10.0
 SESSION_LIMIT_S = 600.0
 #: After ``stop`` in dictation, how long to wait for the last finals.
 DRAIN_TIMEOUT_S = 3.0
+#: A recap of the conversation so far is posted to the chat this often, and
+#: once more when the conversation ends.
+RECAP_INTERVAL_S = 300.0
+RECAP_TIMEOUT_S = 30.0
 
 UNAVAILABLE_MSG = "Voice is unavailable right now. Please try again."
 COURSE_UNAVAILABLE_MSG = "The course assistant is unavailable right now."
@@ -52,6 +72,10 @@ def voice_models() -> dict:
             for m in dialog_models()
         ],
         "transcribe": {"model": settings.voice_transcribe_model},
+        "voices": [{"name": n, "description": d} for n, d in VOICES],
+        "default_voice": DEFAULT_VOICE,
+        "tones": [{"key": k, "label": label} for k, (label, _) in TONES.items()],
+        "default_tone": DEFAULT_TONE,
     }
 
 
@@ -76,6 +100,9 @@ class LiveStart(_StartBase):
     scope_resource_ids: list[str] | None = Field(default=None, max_length=256)
     general: bool = False
     mode: ChatMode = ChatMode.qa
+    voice: str | None = Field(default=None, max_length=32)
+    tone: str | None = Field(default=None, max_length=32)
+    personalization: Personalization | None = None
 
 
 class TranscribeStart(_StartBase):
@@ -167,11 +194,16 @@ class _Stop(Exception):
 
 
 async def _supervise(
-    ws: WebSocket, tasks: list[asyncio.Task], *, timeout: float
+    ws: WebSocket,
+    tasks: list[asyncio.Task],
+    *,
+    timeout: float,
+    close_on_timeout: bool = True,
 ) -> bool:
     """Wait for the first task to end (or the session cap), then cancel all.
 
-    Returns False when the session hit its time limit (already closed 4408).
+    Returns False when the session hit its time limit (closed 4408 unless
+    ``close_on_timeout`` is False, when the caller closes).
     """
     timed_out = False
     try:
@@ -180,8 +212,9 @@ async def _supervise(
         )
         if not done:
             timed_out = True
-            await _send_json(ws, {"type": "closed", "reason": "time limit"})
-            await _close(ws, 4408, "session time limit")
+            if close_on_timeout:
+                await _send_json(ws, {"type": "closed", "reason": "time limit"})
+                await _close(ws, 4408, "session time limit")
         else:
             failed = False
             for t in done:
@@ -216,6 +249,11 @@ class _LiveSession:
         self.pending = ""
         self.relay_busy = False
         self.relay_queued: str | None = None
+        # Voice Q&A stays out of the chat thread; recaps are saved instead.
+        self.turns: list[tuple[str, str]] = []
+        self.exchanges: list[dict] = []
+        self.recapped = 0
+        self.recap_lock = asyncio.Lock()
 
     async def set_state(self, state: str) -> None:
         if state != self.state:
@@ -290,23 +328,26 @@ class _LiveSession:
                 if data:
                     await self.set_state("speaking")
                     await _send_bytes(ws, data)
+            # Captions in Roman script: spoken Hindi arrives in Devanagari.
             interim = _get(_get(sc, "interim_input_transcription"), "text")
             if interim:
                 await _send_json(
-                    ws, {"type": "input_transcript", "text": interim, "final": False}
+                    ws,
+                    {"type": "input_transcript", "text": transliterate(interim), "final": False},
                 )
             final = _get(_get(sc, "input_transcription"), "text")
             if final:
                 if self.relay:
                     self.pending += final
                 await _send_json(
-                    ws, {"type": "input_transcript", "text": final, "final": True}
+                    ws,
+                    {"type": "input_transcript", "text": transliterate(final), "final": True},
                 )
             out = _get(_get(sc, "output_transcription"), "text")
             if out:
                 self.out_buf += out
                 await _send_json(
-                    ws, {"type": "output_transcript", "text": self.out_buf}
+                    ws, {"type": "output_transcript", "text": transliterate(self.out_buf)}
                 )
             status = _get(sc, "interaction_status")
             if status is not None:
@@ -355,10 +396,12 @@ class _LiveSession:
         stripped; sends the ``question`` and ``answer``/``error`` events.
         """
         await self.set_state("thinking")
-        await _send_json(self.ws, {"type": "question", "text": question})
+        shown = transliterate(question)
+        await _send_json(self.ws, {"type": "question", "text": shown})
         s = self.start
         try:
             chat_router._use_thread(s.session_id, s.thread_id)
+            voice_turns.set(self.turns)
             body = ChatRequest(
                 session_id=s.session_id,
                 session_token=s.session_token,
@@ -371,11 +414,14 @@ class _LiveSession:
                 completed_resource_ids=s.completed_resource_ids,
                 scope_resource_ids=s.scope_resource_ids,
                 general=s.general,
+                personalization=s.personalization,
             )
             # On its own thread and loop: the pipeline has blocking stretches
             # (seconds) that would otherwise stall the live audio relay and
             # the Gemini socket's keepalive.
-            resp = await asyncio.to_thread(asyncio.run, chat_router._answer(body))
+            resp = await asyncio.to_thread(
+                asyncio.run, chat_router._answer(body, voice=True)
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - never leak provider text
@@ -386,6 +432,14 @@ class _LiveSession:
             return {"answer": "", "refused": True, "error": "unavailable"}
         await _send_json(
             self.ws, {"type": "answer", "response": resp.model_dump(mode="json")}
+        )
+        self.exchanges.append(
+            {
+                "question": shown,
+                "answer": strip_citation_markers(resp.answer),
+                "refused": bool(resp.refused),
+                "citations": [c.model_dump(mode="json") for c in resp.citations],
+            }
         )
         return {
             "answer": strip_citation_markers(resp.answer),
@@ -402,6 +456,34 @@ class _LiveSession:
             )
             return
         await self.respond(call, await self.ask_course(question))
+
+    # recap
+    async def recap_loop(self) -> None:
+        while True:
+            await asyncio.sleep(RECAP_INTERVAL_S)
+            await self.recap()
+
+    async def recap(self) -> None:
+        """Recap the exchanges since the last one: a ``recap`` event + the chat."""
+        async with self.recap_lock:
+            items = self.exchanges[self.recapped :]
+            if not items:
+                return
+            self.recapped = len(self.exchanges)
+            s = self.start
+            try:
+                chat_router._use_thread(s.session_id, s.thread_id)
+                resp = await asyncio.to_thread(
+                    asyncio.run, _write_recap(s.session_id, items, s.personalization)
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - a recap must not break voice
+                log.warning("voice recap failed: %s", type(exc).__name__)
+                return
+            await _send_json(
+                self.ws, {"type": "recap", "response": resp.model_dump(mode="json")}
+            )
 
     # relay mode (thinking model)
     def relay_submit(self, question: str) -> None:
@@ -432,6 +514,72 @@ class _LiveSession:
             self.relay_busy = False
 
 
+_RECAP_SYSTEM = (
+    "You write a short recap of a voice study session between a learner and "
+    "Malai, their tutor. Use ONLY the answers given below; add no facts of "
+    "your own. Format in Markdown: one short opening line, then three to six "
+    "bullets with the key points the learner went over. If some questions "
+    "could not be answered from the course, end with one line listing them. "
+    "No headings, no citation markers. "
+)
+
+
+def _fallback_recap(items: list[dict]) -> str:
+    lines = []
+    for it in items:
+        if it["refused"] or not it["answer"]:
+            lines.append(f"- **{it['question']}**: not covered by the course so far.")
+        else:
+            first = it["answer"].strip().split("\n")[0][:300]
+            lines.append(f"- **{it['question']}**: {first}")
+    return "Here is what we went over:\n\n" + "\n".join(lines)
+
+
+async def _write_recap(
+    session_id: str, items: list[dict], personalization: Personalization | None
+) -> ChatResponse:
+    """Summarise validated voice answers (never new facts); save it to the chat."""
+    qa = "\n\n".join(
+        f"Q{i}: {it['question']}\nA{i}: "
+        + ("(not covered by the course)" if it["refused"] else it["answer"])
+        for i, it in enumerate(items, 1)
+    )
+    note = style_note.set(style_for(personalization))
+    try:
+        result = await chat_router.get_service()._llm.complete(
+            system=_RECAP_SYSTEM + LANGUAGE_RULE,
+            user_prompt=f"Voice session:\n\n{qa}\n\nWrite the recap.",
+            passages=[],
+            mode="summarize",
+        )
+        text = strip_citation_markers((result.text or "").strip())
+    except Exception as exc:  # noqa: BLE001 - fall back to a plain list
+        log.warning("voice recap model failed: %s", type(exc).__name__)
+        text = ""
+    finally:
+        style_note.reset(note)
+    if not text:
+        text = _fallback_recap(items)
+    text = "**Voice chat recap**\n\n" + text
+    # The citations of the answers being summarised, each once.
+    seen: set[str] = set()
+    citations: list[dict] = []
+    for it in items:
+        for c in it["citations"]:
+            if c.get("chunk_id") and c["chunk_id"] not in seen:
+                seen.add(c["chunk_id"])
+                citations.append(c)
+    citations = citations[:8]
+    message_store.append(session_id, "assistant", text, citations)
+    return ChatResponse(
+        answer=text,
+        citations=citations,
+        refused=False,
+        mode="grounded" if citations else "conversational",
+        grounded=bool(citations),
+    )
+
+
 @router.websocket("/voice/live")
 async def voice_live(ws: WebSocket) -> None:
     await ws.accept()
@@ -458,7 +606,12 @@ async def voice_live(ws: WebSocket) -> None:
         return
 
     try:
-        cm = gemini.connect(vm.model, gemini.live_config(vm))
+        cm = gemini.connect(
+            vm.model,
+            gemini.live_config(
+                vm, voice=start.voice, tone=start.tone, personalization=start.personalization
+            ),
+        )
         gs = await cm.__aenter__()
     except Exception as exc:  # noqa: BLE001 - never leak provider text
         log.warning("voice connect failed: %s", type(exc).__name__)
@@ -474,16 +627,29 @@ async def voice_live(ws: WebSocket) -> None:
             asyncio.create_task(live.read_client()),
             asyncio.create_task(live.receive_gemini()),
         ]
-        in_time = await _supervise(ws, tasks, timeout=SESSION_LIMIT_S)
+        recaps = asyncio.create_task(live.recap_loop())
+        try:
+            in_time = await _supervise(
+                ws, tasks, timeout=SESSION_LIMIT_S, close_on_timeout=False
+            )
+        finally:
+            recaps.cancel()
+            await asyncio.gather(recaps, return_exceptions=True)
     finally:
         for t in list(live.tool_tasks):
             t.cancel()
         await asyncio.gather(*live.tool_tasks, return_exceptions=True)
         with contextlib.suppress(Exception):
             await cm.__aexit__(None, None, None)
+    # The closing recap: sent while the learner is still connected, saved either way.
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(live.recap(), timeout=RECAP_TIMEOUT_S)
     if in_time:
         await _send_json(ws, {"type": "closed", "reason": live.reason})
         await _close(ws, 1000)
+    else:
+        await _send_json(ws, {"type": "closed", "reason": "time limit"})
+        await _close(ws, 4408, "session time limit")
 
 
 # --- dictation ---------------------------------------------------------------
@@ -554,12 +720,13 @@ async def voice_transcribe(ws: WebSocket) -> None:
             async for msg in gs.receive():
                 got = True
                 sc = _get(msg, "server_content")
+                # Roman script for the input box: spoken Hindi arrives in Devanagari.
                 interim = _get(_get(sc, "interim_input_transcription"), "text")
                 if interim:
-                    await _send_json(ws, {"type": "interim", "text": interim})
+                    await _send_json(ws, {"type": "interim", "text": transliterate(interim)})
                 final = _get(_get(sc, "input_transcription"), "text")
                 if final:
-                    await _send_json(ws, {"type": "final", "text": final})
+                    await _send_json(ws, {"type": "final", "text": await romanize(final)})
                 if _get(sc, "turn_complete") and stopped.is_set():
                     return
             if not got:

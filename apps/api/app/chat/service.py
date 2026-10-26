@@ -6,6 +6,7 @@ import asyncio
 import dataclasses
 import logging
 from collections.abc import Sequence
+from contextvars import ContextVar
 
 from app import devtrace
 from app.chat import streaming
@@ -47,6 +48,13 @@ from app.retrieval.recency import (
 from app.retrieval.store import TIME_GATED_SOURCE_TYPES
 
 log = logging.getLogger(__name__)
+
+#: Voice turns. When set (by the voice relay), a request's question and answer
+#: are kept in this list instead of the chat thread, and follow-up history reads
+#: the thread plus these turns. The voice session saves one recap instead.
+voice_turns: ContextVar[list[tuple[str, str]] | None] = ContextVar(
+    "voice_turns", default=None
+)
 
 PROCESSING_PENDING_TEXT = (
     "This part of the video hasn't been processed yet, so I can't answer "
@@ -265,6 +273,7 @@ class ChatService:
         completed_resource_ids: Sequence[str] = (),
         scope_resource_ids: Sequence[str] | None = None,
         general: bool = False,
+        fast: bool = False,
     ) -> ChatResponse:
         """Answer one learner question; flags ``visual_pending`` when visuals lag."""
         from app.chat.launch import clamp_current_time_ms
@@ -302,6 +311,7 @@ class ChatService:
                 completed_resource_ids=completed_resource_ids,
                 scope_resource_ids=scope_resource_ids,
                 general=general,
+                fast=fast,
             )
         except BaseException as exc:
             devtrace.end_run(token, "error", data={"error": type(exc).__name__})
@@ -345,8 +355,13 @@ class ChatService:
         completed_resource_ids: Sequence[str] = (),
         scope_resource_ids: Sequence[str] | None = None,
         general: bool = False,
+        fast: bool = False,
     ) -> ChatResponse:
         """Answer one learner question.
+
+        ``fast`` (voice) skips the agent and goes straight to the classic
+        pipeline: same gate, citation validation and refusals, fewer and faster
+        model calls.
 
         ``live_frame`` (:class:`app.ingestion.liveframe.LiveFrame`, or ``None``)
         is the frame the learner actually captured, already described and already
@@ -420,7 +435,11 @@ class ChatService:
             },
         )
 
-        use_agent = self._agent is not None and self._pending_frontier(allowed, t_ms) is None
+        use_agent = (
+            not fast
+            and self._agent is not None
+            and self._pending_frontier(allowed, t_ms) is None
+        )
         devtrace.emit(
             "route", "end", title="Agent" if use_agent else "Classic RAG pipeline",
             data={"path": "agent" if use_agent else "classic"},
@@ -447,7 +466,7 @@ class ChatService:
 
         intent = classify_intent(message) if live_frame is None else None
         if intent == SMALLTALK:
-            history = self._messages.user_texts(session_id, limit=5)
+            history = self._user_history(session_id)
             return await self._conversational_answer(session_id, message, history)
         # Study / overview requests ("what questions can the prof ask me") are
         # about the covered material as a whole. They take quiz / summarize
@@ -471,7 +490,7 @@ class ChatService:
                 processed_through_ms=pending,
             )
 
-        history = self._messages.user_texts(session_id, limit=5)
+        history = self._user_history(session_id)
         # The literal meta-question has no semantic overlap with the lesson, so a
         # coverage request retrieves with a content query instead. Retrieval is
         # still strict-T gated and scope-intersected; only the query text and k
@@ -807,7 +826,7 @@ class ChatService:
         if live_frame is not None:
             live_passage = live_frame_passage(live_frame)
             assert_live_frame_at(live_passage, t_ms)
-        history = self._messages.user_texts(session.id, limit=5)
+        history = self._user_history(session.id)
         from app.config import settings
 
         try:
@@ -869,9 +888,7 @@ class ChatService:
         writes anyway is stripped. A declined or failed provider call is a
         provider error like any other (the route turns it into a 502).
         """
-        history = [
-            (m.role, m.content) for m in self._messages.list_for_session(session_id)
-        ][-6:]
+        history = self._history_pairs(session_id)[-6:]
         system, user_prompt = build_general_prompt(message, history, mode)
         result = await self._llm.complete(
             system=system, user_prompt=user_prompt, passages=[], mode="qa"
@@ -917,8 +934,23 @@ class ChatService:
             grounded=False,
         )
 
+    def _user_history(self, session_id: str, limit: int = 5) -> list[str]:
+        texts = self._messages.user_texts(session_id, limit=limit)
+        turns = voice_turns.get()
+        if turns:
+            texts = (list(texts) + [c for r, c in turns if r == "user"])[-limit:]
+        return texts
+
+    def _history_pairs(self, session_id: str) -> list[tuple[str, str]]:
+        pairs = [(m.role, m.content) for m in self._messages.list_for_session(session_id)]
+        return pairs + list(voice_turns.get() or [])
+
     def _persist(
         self, session_id: str, user_text: str, answer: str, citations: list[dict]
     ) -> None:
+        turns = voice_turns.get()
+        if turns is not None:
+            turns.extend([("user", user_text), ("assistant", answer)])
+            return
         self._messages.append(session_id, "user", user_text, [])
         self._messages.append(session_id, "assistant", answer, citations)

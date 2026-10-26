@@ -17,6 +17,7 @@ import {
   useSubjectResources,
   type MalaiChat,
 } from "@/lib/malai";
+import PersonalizationModal from "@/components/PersonalizationModal";
 import { initials, subjectAccent } from "@/components/SubjectCard";
 import { useSubjects } from "@/components/useSubjects";
 
@@ -51,6 +52,7 @@ const NEW_CHAT_ICON = "M12 20h9M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z";
 const BACK_ICON = "M19 12H5M12 19l-7-7 7-7";
 const COLLAPSE_ICON = "M15 6l-6 6 6 6";
 const EXPAND_ICON = "M9 6l6 6-6 6";
+const PERSONALIZE_ICON = "M4 6h9m4 0h3M4 12h3m4 0h9M4 18h11m4 0h1M15 4v4M9 10v4M17 16v4";
 
 function ChatMenu({
   chat,
@@ -464,6 +466,9 @@ export default function MalaiSidebar({ collapsed, onToggleCollapse, onBack, onNa
   };
 
   const closeFlyout = useCallback(() => setFlyout(null), []);
+  const [personalizing, setPersonalizing] = useState(false);
+  const closePersonalize = useCallback(() => setPersonalizing(false), []);
+  const personalizeModal = personalizing && <PersonalizationModal onClose={closePersonalize} />;
 
   const iconButton =
     "flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400";
@@ -480,6 +485,16 @@ export default function MalaiSidebar({ collapsed, onToggleCollapse, onBack, onNa
         <button type="button" onClick={onBack} aria-label="Back to main sidebar" title="Back to main sidebar" className={`${iconButton} text-gray-300 hover:bg-white/10 hover:text-white`}>
           <Icon d={BACK_ICON} />
         </button>
+        <button
+          type="button"
+          onClick={() => setPersonalizing(true)}
+          aria-label="Personalize Malai"
+          title="Personalize Malai"
+          className={`${iconButton} mt-auto text-gray-300 hover:bg-white/10 hover:text-white`}
+        >
+          <Icon d={PERSONALIZE_ICON} />
+        </button>
+        {personalizeModal}
       </div>
     );
   }
@@ -627,6 +642,18 @@ export default function MalaiSidebar({ collapsed, onToggleCollapse, onBack, onNa
           )}
         </section>
       </div>
+
+      <div className="shrink-0 border-t border-white/10 px-3 py-3">
+        <button
+          type="button"
+          onClick={() => setPersonalizing(true)}
+          className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm text-gray-200 transition hover:bg-white/5 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
+        >
+          <Icon d={PERSONALIZE_ICON} className="h-[18px] w-[18px] text-violet-300" />
+          <span className="flex-1">Personalization</span>
+        </button>
+      </div>
+      {personalizeModal}
     </div>
   );
 }

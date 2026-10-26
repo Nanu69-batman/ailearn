@@ -11,6 +11,7 @@
  * fixtures (lib/fixtures.ts) when the API is unreachable.
  */
 
+import { personalizationForRequest } from "@/lib/personalization";
 import { getAccessToken } from "@/lib/supabase/client";
 
 export type ChatMode =
@@ -466,13 +467,23 @@ export async function createLmsSession(
   });
 }
 
+/** The chat request body: the session token and the learner's personalization added. */
+function chatBody(req: ChatRequest, token: string | undefined): string {
+  const personalization = personalizationForRequest();
+  return JSON.stringify({
+    ...req,
+    ...(token ? { session_token: token } : {}),
+    ...(personalization ? { personalization } : {}),
+  });
+}
+
 export function postChat(req: ChatRequest): Promise<ChatResponse> {
   // Header X-Session-Token preferred; body field kept for back-compat since
   // apps/api/app/chat/router.py verifies body.session_token on POST /chat.
   const token = req.session_token ?? getStoredSessionToken() ?? undefined;
   return apiFetch<ChatResponse>("/chat", {
     method: "POST",
-    body: JSON.stringify(token ? { ...req, session_token: token } : req),
+    body: chatBody(req, token),
     headers: token ? { "X-Session-Token": token } : undefined,
   });
 }
@@ -503,7 +514,7 @@ export async function streamChat(
   try {
     res = await fetch(`${base}/chat/stream`, {
       method: "POST",
-      body: JSON.stringify(token ? { ...req, session_token: token } : req),
+      body: chatBody(req, token),
       headers: {
         "Content-Type": "application/json",
         Accept: "text/event-stream",

@@ -6,8 +6,9 @@ from typing import Any
 
 from google.genai import types
 
+from app.chat.prompts import personalization_note
 from app.config import settings
-from app.voice.models import VoiceModel
+from app.voice.models import VoiceModel, tone_instruction, voice_name
 
 TOOL_NAME = "ask_course"
 
@@ -20,8 +21,9 @@ SYSTEM_INSTRUCTION = (
     "If the tool result says refused is true, tell the learner plainly that the "
     "course material so far does not cover that; do not guess. If the tool "
     "returns an error, say you cannot reach the course right now. Greetings and "
-    "checks such as 'can you hear me' may be answered without the tool. Keep "
-    "replies short and conversational."
+    "checks such as 'can you hear me' may be answered without the tool. Call "
+    "the tool straight away: before it, say nothing or at most a few words, and "
+    "never repeat a filler. Keep replies short and conversational."
 )
 
 
@@ -33,6 +35,16 @@ RELAY_SYSTEM_INSTRUCTION = (
     "answer faithfully and naturally, adding no facts. If it says REFUSED, tell "
     "the learner the course material so far does not cover that; if it says "
     "UNAVAILABLE, say you cannot reach the course right now. Keep replies short."
+)
+
+#: How to speak. The course answers already follow the chat's language rule;
+#: this keeps the voice itself in the same register.
+SPOKEN_LANGUAGE_RULE = (
+    "Speak the learner's language. If they speak Hindi or Hinglish, speak "
+    "natural Hinglish the way English-medium students in India talk: Hindi "
+    "sentence flow with English technical terms and most content words in "
+    "English. Never use formal or shuddh Hindi words; say 'example', "
+    "'important', 'concept'. Explain concepts in that same Hinglish."
 )
 
 
@@ -66,7 +78,24 @@ def ask_course_tool(*, non_blocking: bool) -> types.Tool:
     return types.Tool(function_declarations=[decl])
 
 
-def live_config(vm: VoiceModel) -> types.LiveConnectConfig:
+def system_instruction(
+    vm: VoiceModel, *, tone: str | None = None, personalization: Any = None
+) -> str:
+    base = RELAY_SYSTEM_INSTRUCTION if vm.thinking else SYSTEM_INSTRUCTION
+    parts = [base, SPOKEN_LANGUAGE_RULE, tone_instruction(tone)]
+    note = personalization_note(personalization)
+    if note:
+        parts.append(note)
+    return "\n\n".join(parts)
+
+
+def live_config(
+    vm: VoiceModel,
+    *,
+    voice: str | None = None,
+    tone: str | None = None,
+    personalization: Any = None,
+) -> types.LiveConnectConfig:
     kwargs: dict[str, Any] = {}
     if vm.thinking:
         kwargs["thinking_config"] = types.ThinkingConfig(
@@ -75,13 +104,20 @@ def live_config(vm: VoiceModel) -> types.LiveConnectConfig:
     # The extended-thinking model never emits tool calls to the client (seen
     # live, 2026-10-26), so it runs in server-driven relay mode: no tools, the
     # server asks the course pipeline itself and injects the answer as a turn.
-    if vm.thinking:
-        kwargs["system_instruction"] = RELAY_SYSTEM_INSTRUCTION
-    else:
-        kwargs["system_instruction"] = SYSTEM_INSTRUCTION
+    kwargs["system_instruction"] = system_instruction(
+        vm, tone=tone, personalization=personalization
+    )
+    if not vm.thinking:
         kwargs["tools"] = [ask_course_tool(non_blocking=False)]
     return types.LiveConnectConfig(
         response_modalities=["AUDIO"],
+        speech_config=types.SpeechConfig(
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                    voice_name=voice_name(voice)
+                )
+            )
+        ),
         input_audio_transcription=types.AudioTranscriptionConfig(),
         output_audio_transcription=types.AudioTranscriptionConfig(),
         **kwargs,
