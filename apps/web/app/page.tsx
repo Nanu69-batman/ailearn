@@ -1,12 +1,13 @@
 import Link from "next/link";
 
+import { Reveal, SectionDots } from "@/components/LandingMotion";
 import { DASHBOARD_PATH, contentPath } from "@/lib/learn";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 
 export const metadata = {
   title: "Malai Pioneer — Timestamp-aware AI learning assistant",
   description:
-    "A personal AI tutor that follows where you are in a lecture or document, explains in context, quizzes you and cites every answer.",
+    "An AI tutor that follows where you are in a lecture or document, explains in context, quizzes you and cites every answer.",
 };
 
 /** The bundled demo lesson; public without signing in (middleware.ts). */
@@ -14,62 +15,37 @@ const DEMO_LESSON = contentPath("sub_06dea46b30bf4ee7", "res_2e629d682a3d");
 
 const FOCUS =
   "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600";
-const PRIMARY_BTN = `inline-flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-indigo-500 to-violet-500 font-medium text-white shadow-sm shadow-violet-500/20 transition hover:opacity-90 ${FOCUS}`;
-const SECONDARY_BTN = `inline-flex items-center justify-center gap-1.5 rounded-xl border border-gray-200 bg-white font-medium text-gray-700 shadow-sm transition hover:bg-gray-50 ${FOCUS}`;
+const PRIMARY_BTN = `inline-flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-indigo-500 to-violet-500 font-medium text-white shadow-sm shadow-violet-500/20 transition hover:-translate-y-0.5 hover:shadow-lg hover:shadow-violet-500/30 ${FOCUS}`;
+const SECONDARY_BTN = `inline-flex items-center justify-center gap-1.5 rounded-xl border border-gray-200 bg-white font-medium text-gray-700 shadow-sm transition hover:-translate-y-0.5 hover:bg-gray-50 ${FOCUS}`;
+
+const SECTIONS = [
+  { id: "top", label: "Home" },
+  { id: "timestamp", label: "Timestamp-aware" },
+  { id: "features", label: "Features" },
+  { id: "how", label: "How it works" },
+  { id: "start", label: "Get started" },
+];
 
 const FEATURES = [
-  {
-    title: "A tutor, not a search box",
-    body: "Ask in your own words and get step-by-step explanations, worked examples and follow-ups, the way a good tutor would explain it.",
-    icon: "M7 8h10M7 12h6M4 4h16v12H8l-4 4z",
-  },
-  {
-    title: "Timestamp-aware context",
-    body: "The tutor knows the moment you are at in a lecture and the page you are on in your notes, and answers about exactly that.",
-    icon: "M12 8v4l3 2M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z",
-  },
-  {
-    title: "Cited, never made up",
-    body: "Every answer is checked against your course material and cites the timestamp or page it came from. If the material does not cover it, the tutor says so.",
-    icon: "M9 12l2 2 4-4M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z",
-  },
-  {
-    title: "Quizzes on what you learned",
-    body: "Ask for a quiz on any chapter or chat and get questions built from what you have covered so far, with an explanation for each answer.",
-    icon: "M9 12l2 2 4-4M5 4h14v16H5z",
-  },
-  {
-    title: "Any course material",
-    body: "Lecture videos, YouTube links, PDFs and slide decks. Everything is split into chapters you can ask about.",
-    icon: "M4 6h16M4 12h16M4 18h10",
-  },
-  {
-    title: "Progress you can see",
-    body: "A study heatmap, daily streak and lesson progress that follow your account, so you always know what to pick up next.",
-    icon: "M4 20V10M10 20V4M16 20v-7M22 20H2",
-  },
+  { title: "Explains like a tutor", body: "Step by step, with follow-ups.", icon: "M7 8h10M7 12h6M4 4h16v12H8l-4 4z" },
+  { title: "Knows your moment", body: "Your timestamp and page, always.", icon: "M12 8v4l3 2M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z" },
+  { title: "Cites every answer", body: "Grounded in your material.", icon: "M9 12l2 2 4-4M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z" },
+  { title: "Quizzes you", body: "On what you just covered.", icon: "M9 12l2 2 4-4M5 4h14v16H5z" },
+  { title: "Any material", body: "Videos, YouTube, PDFs, slides.", icon: "M4 6h16M4 12h16M4 18h10" },
+  { title: "Tracks progress", body: "Streaks, heatmap, completion.", icon: "M4 20V10M10 20V4M16 20v-7M22 20H2" },
 ];
 
 const STEPS = [
-  { title: "Bring your course", body: "Create a subject and add its lectures, notes and slides." },
-  {
-    title: "Learn with your tutor",
-    body: "Study at your own pace and ask whenever something is unclear. The tutor follows where you are.",
-  },
-  { title: "Check and keep going", body: "Quiz yourself on what you covered and keep your streak alive." },
+  { title: "Add your course", body: "Lectures, notes, slides." },
+  { title: "Learn and ask", body: "Pause anywhere. Ask anything." },
+  { title: "Quiz and repeat", body: "Keep the streak alive." },
 ];
 
-const TIMELINE: Array<{ label: string; width: number; covered: boolean }> = [
-  { label: "Intro", width: 18, covered: true },
-  { label: "Weights", width: 24, covered: true },
-  { label: "Activation", width: 22, covered: false },
-  { label: "Training", width: 36, covered: false },
-];
-
-const TIMESTAMP_POINTS = [
-  "Questions like “what did she just mean?” work, because the tutor sees the current frame and transcript.",
-  "Nothing past your position is used, so there are no spoilers and no confusing jumps ahead.",
-  "Every claim links back to a timestamp or page you can check yourself.",
+const CHAPTERS = [
+  { label: "Intro", width: 18 },
+  { label: "Weights", width: 24 },
+  { label: "Activation", width: 22 },
+  { label: "Training", width: 36 },
 ];
 
 function Icon({ d, className = "h-5 w-5" }: { d: string; className?: string }) {
@@ -100,85 +76,71 @@ async function isSignedIn(): Promise<boolean> {
   }
 }
 
-/** A static picture of the lesson page: the video with a question beside it. */
+/** A full-screen, snap-aligned section. */
+function Screen({
+  id,
+  className = "",
+  children,
+}: {
+  id: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section
+      id={id}
+      className={`relative flex min-h-screen snap-start items-center overflow-hidden px-4 pb-12 pt-24 sm:px-6 ${className}`}
+    >
+      {children}
+    </section>
+  );
+}
+
+/** A static picture of the lesson page: the lecture with the tutor beside it. */
 function ProductPreview() {
   return (
-    <div className="relative mx-auto mt-16 max-w-5xl">
-      <div
-        aria-hidden="true"
-        className="absolute -inset-x-8 -top-8 bottom-0 -z-10 rounded-[2.5rem] bg-gradient-to-tr from-indigo-200/60 via-violet-200/50 to-fuchsia-200/40 blur-2xl"
-      />
-      <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-xl shadow-indigo-900/10">
-        <div className="flex items-center gap-1.5 border-b border-gray-100 bg-gray-50 px-4 py-2.5">
-          <span className="h-2.5 w-2.5 rounded-full bg-gray-300" />
-          <span className="h-2.5 w-2.5 rounded-full bg-gray-300" />
-          <span className="h-2.5 w-2.5 rounded-full bg-gray-300" />
-          <span className="ml-3 truncate text-xs text-gray-400">AI tutor · Neural networks · Chapter 2</span>
-        </div>
-        <div className="grid gap-0 md:grid-cols-[1.4fr_1fr]">
-          <div className="border-b border-gray-100 p-4 md:border-b-0 md:border-r">
-            <div className="relative flex aspect-video items-center justify-center overflow-hidden rounded-xl bg-gradient-to-br from-slate-800 to-indigo-950">
-              <svg viewBox="0 0 200 100" className="h-3/5 w-3/5 text-indigo-300/70" aria-hidden="true">
-                {[20, 50, 80].map((y) => (
-                  <circle key={`a${y}`} cx="40" cy={y} r="6" fill="currentColor" />
-                ))}
-                {[35, 65].map((y) => (
-                  <circle key={`b${y}`} cx="100" cy={y} r="6" fill="currentColor" />
-                ))}
-                <circle cx="160" cy="50" r="6" fill="currentColor" />
-                {[20, 50, 80].flatMap((y1) =>
-                  [35, 65].map((y2) => (
-                    <line key={`${y1}-${y2}`} x1="46" y1={y1} x2="94" y2={y2} stroke="currentColor" strokeWidth="1" opacity="0.5" />
-                  )),
-                )}
-                {[35, 65].map((y) => (
-                  <line key={`o${y}`} x1="106" y1={y} x2="154" y2="50" stroke="currentColor" strokeWidth="1" opacity="0.5" />
-                ))}
-              </svg>
-              <div className="absolute inset-x-3 bottom-3 flex items-center gap-2">
-                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white/90 text-[10px] text-slate-800">❚❚</span>
-                <div className="h-1 flex-1 rounded-full bg-white/20">
-                  <div className="h-1 w-[42%] rounded-full bg-violet-400" />
-                </div>
-                <span className="font-mono text-[10px] text-white/70">04:12</span>
-              </div>
+    <div className="anim-float overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl shadow-indigo-900/15">
+      <div className="flex items-center gap-1.5 border-b border-gray-100 bg-gray-50 px-4 py-2.5">
+        <span className="h-2.5 w-2.5 rounded-full bg-gray-300" />
+        <span className="h-2.5 w-2.5 rounded-full bg-gray-300" />
+        <span className="h-2.5 w-2.5 rounded-full bg-gray-300" />
+        <span className="ml-3 truncate text-xs text-gray-400">AI tutor · Neural networks</span>
+      </div>
+      <div className="p-4">
+        <div className="relative flex aspect-video items-center justify-center overflow-hidden rounded-xl bg-gradient-to-br from-slate-800 to-indigo-950">
+          <svg viewBox="0 0 200 100" className="h-3/5 w-3/5 text-indigo-300/70" aria-hidden="true">
+            {[20, 50, 80].flatMap((y1) =>
+              [35, 65].map((y2) => (
+                <line key={`${y1}-${y2}`} x1="46" y1={y1} x2="94" y2={y2} stroke="currentColor" strokeWidth="1" opacity="0.5" />
+              )),
+            )}
+            {[35, 65].map((y) => (
+              <line key={`o${y}`} x1="106" y1={y} x2="154" y2="50" stroke="currentColor" strokeWidth="1" opacity="0.5" />
+            ))}
+            {[20, 50, 80].map((y) => (
+              <circle key={`a${y}`} cx="40" cy={y} r="6" fill="currentColor" />
+            ))}
+            {[35, 65].map((y) => (
+              <circle key={`b${y}`} cx="100" cy={y} r="6" fill="currentColor" />
+            ))}
+            <circle cx="160" cy="50" r="6" fill="currentColor" />
+          </svg>
+          <div className="absolute inset-x-3 bottom-3 flex items-center gap-2">
+            <div className="h-1 flex-1 rounded-full bg-white/20">
+              <div className="h-1 w-[42%] rounded-full bg-violet-400" />
             </div>
-            <div className="mt-3 flex gap-2">
-              {["Intro", "Weights", "Activation", "Training"].map((c, i) => (
-                <span
-                  key={c}
-                  className={`rounded-lg px-2.5 py-1 text-[11px] font-medium ${
-                    i === 1 ? "bg-violet-100 text-violet-700" : "bg-gray-100 text-gray-500"
-                  }`}
-                >
-                  {c}
-                </span>
-              ))}
-            </div>
+            <span className="font-mono text-[10px] text-white/70">04:12</span>
           </div>
-          <div className="flex flex-col gap-3 p-4 text-left text-[13px] leading-relaxed">
-            <div className="flex items-center gap-1.5 self-start rounded-full bg-violet-50 px-2.5 py-1 text-[11px] font-medium text-violet-700">
-              <span className="h-1.5 w-1.5 rounded-full bg-violet-500" />
-              Context: up to 04:12 · slide 4
-            </div>
-            <div className="ml-auto max-w-[85%] rounded-2xl rounded-br-md bg-gradient-to-r from-indigo-500 to-violet-500 px-3.5 py-2 text-white">
-              Why does the network need a bias term here?
-            </div>
-            <div className="max-w-[92%] rounded-2xl rounded-bl-md border border-gray-100 bg-gray-50 px-3.5 py-2.5 text-gray-700">
-              The bias lets each neuron shift its activation, so it can fire even when all inputs are zero
-              <span className="ml-1 inline-flex rounded-md bg-violet-100 px-1.5 font-mono text-[10px] font-semibold text-violet-700">
-                03:48
-              </span>
-              . The slide on this frame shows it as the extra <em>b</em> in <span className="font-mono">w·x + b</span>
-              <span className="ml-1 inline-flex rounded-md bg-indigo-100 px-1.5 font-mono text-[10px] font-semibold text-indigo-700">
-                p. 4
-              </span>
-              .
-            </div>
-            <div className="mt-auto flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-gray-400">
-              <span className="flex-1">Ask your tutor anything…</span>
-              <span className="rounded-md bg-gray-100 px-1.5 py-0.5 text-[10px]">/quiz</span>
-            </div>
+        </div>
+        <div className="mt-3 flex flex-col gap-2 text-[13px] leading-relaxed">
+          <div className="ml-auto max-w-[85%] rounded-2xl rounded-br-md bg-gradient-to-r from-indigo-500 to-violet-500 px-3.5 py-2 text-white">
+            Why add a bias here?
+          </div>
+          <div className="max-w-[92%] rounded-2xl rounded-bl-md border border-gray-100 bg-gray-50 px-3.5 py-2 text-gray-700">
+            It shifts the activation, so a neuron can fire with zero input
+            <span className="ml-1 inline-flex rounded-md bg-violet-100 px-1.5 font-mono text-[10px] font-semibold text-violet-700">
+              03:48
+            </span>
           </div>
         </div>
       </div>
@@ -186,95 +148,20 @@ function ProductPreview() {
   );
 }
 
-/** The problem statement, drawn: what the tutor may use at the learner's position. */
-function TimestampSection() {
-  return (
-    <section id="timestamp" className="scroll-mt-20 border-t border-gray-200/70 bg-white px-4 py-20 sm:px-6">
-      <div className="mx-auto grid max-w-6xl items-center gap-12 lg:grid-cols-2">
-        <div>
-          <span className="text-sm font-semibold uppercase tracking-wider text-violet-600">Timestamp-aware</span>
-          <h2 className="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">
-            It answers for the moment you are in, not the whole course
-          </h2>
-          <p className="mt-4 leading-relaxed text-gray-600">
-            A general chatbot knows nothing about your lesson, or answers from all of it at once and gives away
-            what comes later. Malai Pioneer knows your position: the second of the lecture you paused on and the
-            page you are reading. It builds each answer only from what you have already covered.
-          </p>
-          <ul className="mt-6 space-y-3 text-sm text-gray-700">
-            {TIMESTAMP_POINTS.map((t) => (
-              <li key={t} className="flex gap-3">
-                <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-violet-100 text-violet-700">
-                  <Icon d="M5 12l4 4L19 7" className="h-3.5 w-3.5" />
-                </span>
-                <span>{t}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-        <div className="rounded-2xl border border-gray-200 bg-gray-50 p-6 shadow-sm">
-          <div className="flex items-center justify-between text-xs text-gray-500">
-            <span>Lecture timeline</span>
-            <span className="font-mono">you are at 04:12</span>
-          </div>
-          <div className="relative mt-4">
-            <div className="flex h-12 overflow-hidden rounded-xl">
-              {TIMELINE.map((c) => (
-                <div
-                  key={c.label}
-                  style={{ width: `${c.width}%` }}
-                  className={`flex items-center justify-center border-r border-white text-[11px] font-medium last:border-r-0 ${
-                    c.covered
-                      ? "bg-gradient-to-r from-indigo-500 to-violet-500 text-white"
-                      : "bg-gray-200 text-gray-400"
-                  }`}
-                >
-                  {c.label}
-                </div>
-              ))}
-            </div>
-            <div className="absolute -bottom-2 -top-2 left-[42%] w-0.5 rounded bg-gray-900" aria-hidden="true">
-              <span className="absolute -top-1 left-1/2 h-2.5 w-2.5 -translate-x-1/2 rounded-full bg-gray-900" />
-            </div>
-          </div>
-          <div className="mt-6 grid gap-3 sm:grid-cols-2">
-            <div className="rounded-xl border border-violet-200 bg-white p-4">
-              <div className="text-xs font-semibold text-violet-700">The tutor can use</div>
-              <p className="mt-1.5 text-sm text-gray-600">
-                Transcript and frames up to 04:12, plus the notes and slides you have opened.
-              </p>
-            </div>
-            <div className="rounded-xl border border-dashed border-gray-300 bg-white/60 p-4">
-              <div className="text-xs font-semibold text-gray-500">Held back until you get there</div>
-              <p className="mt-1.5 text-sm text-gray-500">
-                Activation, Training, and everything after your position.
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
-
 export default async function Home() {
   const signedIn = await isSignedIn();
+  const startHref = signedIn ? DASHBOARD_PATH : "/login?mode=signup";
 
   return (
-    <div className="min-h-screen bg-gray-50 text-gray-900">
-      <header className="sticky top-0 z-30 border-b border-gray-200/70 bg-gray-50/80 backdrop-blur">
+    <div className="h-screen snap-y snap-proximity overflow-y-auto scroll-smooth bg-gray-50 text-gray-900 md:snap-mandatory">
+      <header className="fixed inset-x-0 top-0 z-30 border-b border-gray-200/70 bg-gray-50/80 backdrop-blur">
         <nav className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-4 sm:px-6">
-          <Link href="/" className={`flex items-center gap-2.5 rounded-lg ${FOCUS}`}>
+          <Link href="#top" className={`flex items-center gap-2.5 rounded-lg ${FOCUS}`}>
             <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 text-sm font-bold text-white">
               M
             </span>
             <span className="font-semibold tracking-tight">Malai Pioneer</span>
           </Link>
-          <div className="hidden items-center gap-7 text-sm text-gray-600 md:flex">
-            <a href="#timestamp" className="transition hover:text-gray-900">Timestamp-aware</a>
-            <a href="#features" className="transition hover:text-gray-900">Features</a>
-            <a href="#how" className="transition hover:text-gray-900">How it works</a>
-          </div>
           <div className="flex items-center gap-2">
             {signedIn ? (
               <Link href={DASHBOARD_PATH} className={`${PRIMARY_BTN} px-4 py-2 text-sm`}>
@@ -285,7 +172,10 @@ export default async function Home() {
                 <Link href={DEMO_LESSON} className={`${SECONDARY_BTN} px-3 py-2 text-sm sm:px-4`}>
                   Try demo
                 </Link>
-                <Link href="/login" className={`hidden rounded-xl px-3 py-2 text-sm font-medium text-gray-700 transition hover:text-gray-900 sm:inline-flex ${FOCUS}`}>
+                <Link
+                  href="/login"
+                  className={`hidden rounded-xl px-3 py-2 text-sm font-medium text-gray-700 transition hover:text-gray-900 sm:inline-flex ${FOCUS}`}
+                >
                   Log in
                 </Link>
                 <Link href="/login?mode=signup" className={`${PRIMARY_BTN} px-4 py-2 text-sm`}>
@@ -297,126 +187,171 @@ export default async function Home() {
         </nav>
       </header>
 
+      <SectionDots sections={SECTIONS} />
+
       <main>
-        <section className="relative overflow-hidden px-4 pb-20 pt-16 text-center sm:px-6 sm:pt-24">
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-0 -z-0 bg-[radial-gradient(ellipse_at_top,rgba(139,92,246,0.14),transparent_60%)]"
-          />
-          <div className="relative mx-auto max-w-3xl">
-            <span className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-white px-3 py-1 text-xs font-medium text-violet-700 shadow-sm">
-              <span className="h-1.5 w-1.5 rounded-full bg-violet-500" />
-              Timestamp-aware AI learning assistant
-            </span>
-            <h1 className="mt-6 text-4xl font-bold tracking-tight text-gray-900 sm:text-6xl">
-              The AI tutor that knows{" "}
-              <span className="bg-gradient-to-r from-indigo-600 to-violet-600 bg-clip-text text-transparent">
-                where you are
-              </span>{" "}
-              in your lesson.
-            </h1>
-            <p className="mx-auto mt-5 max-w-2xl text-base leading-relaxed text-gray-600 sm:text-lg">
-              Malai Pioneer is a personal AI tutor for your courses. It follows the exact moment of the lecture
-              and the page of the notes you are on, explains concepts in context, quizzes you, and cites every
-              answer without jumping ahead of what you have learned.
-            </p>
-            <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
-              {signedIn ? (
-                <Link href={DASHBOARD_PATH} className={`${PRIMARY_BTN} w-full px-6 py-3 text-sm sm:w-auto`}>
-                  Go to your dashboard →
-                </Link>
-              ) : (
-                <Link href="/login?mode=signup" className={`${PRIMARY_BTN} w-full px-6 py-3 text-sm sm:w-auto`}>
-                  Get started free →
-                </Link>
-              )}
-              <Link href={DEMO_LESSON} className={`${SECONDARY_BTN} w-full px-6 py-3 text-sm sm:w-auto`}>
-                ▶ Try the demo lesson
-              </Link>
-            </div>
-            <p className="mt-3 text-xs text-gray-400">The demo works without an account.</p>
-          </div>
-          <ProductPreview />
-        </section>
-
-        <TimestampSection />
-
-        <section id="features" className="scroll-mt-20 border-t border-gray-200/70 px-4 py-20 sm:px-6">
-          <div className="mx-auto max-w-6xl">
-            <div className="mx-auto max-w-2xl text-center">
-              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">Everything a tutor should do</h2>
-              <p className="mt-3 text-gray-600">
-                Explain, check, test and track, all grounded in your own course material.
-              </p>
-            </div>
-            <div className="mt-12 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-              {FEATURES.map((f) => (
-                <div
-                  key={f.title}
-                  className="rounded-2xl border border-gray-200 bg-gray-50/60 p-6 transition hover:border-violet-200 hover:bg-white hover:shadow-md hover:shadow-violet-500/5"
-                >
-                  <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 text-white">
-                    <Icon d={f.icon} />
+        <Screen id="top">
+          <div aria-hidden="true" className="anim-blob pointer-events-none absolute -left-32 top-20 h-96 w-96 rounded-full bg-indigo-300/30 blur-3xl" />
+          <div aria-hidden="true" className="anim-blob pointer-events-none absolute -right-24 bottom-10 h-96 w-96 rounded-full bg-fuchsia-300/25 blur-3xl [animation-delay:-6s]" />
+          <div className="relative mx-auto grid w-full max-w-6xl items-center gap-12 lg:grid-cols-[1.1fr_1fr]">
+            <div className="text-center lg:text-left">
+              <Reveal>
+                <span className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-white px-3 py-1 text-xs font-medium text-violet-700 shadow-sm">
+                  <span className="relative flex h-1.5 w-1.5">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-violet-400 opacity-75" />
+                    <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-violet-500" />
                   </span>
-                  <h3 className="mt-4 font-semibold text-gray-900">{f.title}</h3>
-                  <p className="mt-1.5 text-sm leading-relaxed text-gray-600">{f.body}</p>
+                  Timestamp-aware AI learning assistant
+                </span>
+              </Reveal>
+              <Reveal delay={100}>
+                <h1 className="mt-6 text-4xl font-bold tracking-tight sm:text-6xl">
+                  Your AI tutor,{" "}
+                  <span className="bg-gradient-to-r from-indigo-600 to-violet-600 bg-clip-text text-transparent">
+                    right where you are.
+                  </span>
+                </h1>
+              </Reveal>
+              <Reveal delay={200}>
+                <p className="mt-5 text-lg text-gray-600">Pause any lesson. Ask. Get cited answers.</p>
+              </Reveal>
+              <Reveal delay={300}>
+                <div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row lg:justify-start">
+                  <Link href={startHref} className={`${PRIMARY_BTN} px-6 py-3 text-sm`}>
+                    {signedIn ? "Go to dashboard →" : "Get started free →"}
+                  </Link>
+                  <Link href={DEMO_LESSON} className={`${SECONDARY_BTN} px-6 py-3 text-sm`}>
+                    ▶ Try the demo
+                  </Link>
                 </div>
+              </Reveal>
+            </div>
+            <Reveal delay={250} className="mx-auto w-full max-w-md lg:max-w-none">
+              <ProductPreview />
+            </Reveal>
+          </div>
+          <a
+            href="#timestamp"
+            aria-label="Scroll down"
+            className="absolute bottom-6 left-1/2 hidden -translate-x-1/2 animate-bounce text-gray-400 hover:text-gray-600 md:block"
+          >
+            <Icon d="M6 9l6 6 6-6" className="h-6 w-6" />
+          </a>
+        </Screen>
+
+        <Screen id="timestamp" className="bg-white">
+          <div className="mx-auto w-full max-w-4xl text-center">
+            <Reveal>
+              <span className="text-sm font-semibold uppercase tracking-wider text-violet-600">Timestamp-aware</span>
+              <h2 className="mt-3 text-3xl font-bold tracking-tight sm:text-5xl">Answers for this moment.</h2>
+              <p className="mt-4 text-lg text-gray-600">Only what you&apos;ve covered. No spoilers.</p>
+            </Reveal>
+            <Reveal delay={150}>
+              <div className="mt-14 text-left">
+                <div className="relative">
+                  <div className="h-3 rounded-full bg-gray-200" />
+                  <div className="anim-fill absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-indigo-500 to-violet-500" />
+                  <div className="anim-playhead absolute -top-3 h-9 w-0.5 -translate-x-1/2 bg-gray-900">
+                    <span className="absolute -top-7 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md bg-gray-900 px-2 py-0.5 font-mono text-[11px] text-white">
+                      you
+                    </span>
+                  </div>
+                </div>
+                <div className="mt-3 flex text-xs font-medium text-gray-500">
+                  {CHAPTERS.map((c) => (
+                    <span key={c.label} style={{ width: `${c.width}%` }} className="truncate">
+                      {c.label}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </Reveal>
+            <div className="mt-12 grid gap-4 sm:grid-cols-2">
+              <Reveal delay={250}>
+                <div className="rounded-2xl border border-violet-200 bg-violet-50/60 p-6">
+                  <div className="font-semibold text-violet-700">✓ Tutor uses</div>
+                  <p className="mt-1 text-sm text-gray-600">What you&apos;ve watched and read</p>
+                </div>
+              </Reveal>
+              <Reveal delay={350}>
+                <div className="rounded-2xl border border-dashed border-gray-300 p-6">
+                  <div className="font-semibold text-gray-500">⏸ Held back</div>
+                  <p className="mt-1 text-sm text-gray-500">Everything after your position</p>
+                </div>
+              </Reveal>
+            </div>
+          </div>
+        </Screen>
+
+        <Screen id="features">
+          <div className="mx-auto w-full max-w-6xl">
+            <Reveal className="text-center">
+              <h2 className="text-3xl font-bold tracking-tight sm:text-5xl">Everything a tutor does.</h2>
+            </Reveal>
+            <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {FEATURES.map((f, i) => (
+                <Reveal key={f.title} delay={i * 80}>
+                  <div className="group h-full rounded-2xl border border-gray-200 bg-white p-6 transition duration-300 hover:-translate-y-1 hover:border-violet-200 hover:shadow-xl hover:shadow-violet-500/10">
+                    <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 text-white transition duration-300 group-hover:rotate-6 group-hover:scale-110">
+                      <Icon d={f.icon} />
+                    </span>
+                    <h3 className="mt-4 font-semibold">{f.title}</h3>
+                    <p className="mt-1 text-sm text-gray-500">{f.body}</p>
+                  </div>
+                </Reveal>
               ))}
             </div>
           </div>
-        </section>
+        </Screen>
 
-        <section id="how" className="scroll-mt-20 border-t border-gray-200/70 bg-white px-4 py-20 sm:px-6">
-          <div className="mx-auto max-w-5xl">
-            <h2 className="text-center text-3xl font-bold tracking-tight sm:text-4xl">How it works</h2>
-            <ol className="mt-12 grid gap-6 md:grid-cols-3">
+        <Screen id="how" className="bg-white">
+          <div className="mx-auto w-full max-w-5xl">
+            <Reveal className="text-center">
+              <h2 className="text-3xl font-bold tracking-tight sm:text-5xl">Three steps.</h2>
+            </Reveal>
+            <div className="relative mt-14 grid gap-8 md:grid-cols-3">
+              <div aria-hidden="true" className="absolute left-[16%] right-[16%] top-7 hidden h-0.5 bg-gradient-to-r from-indigo-200 via-violet-300 to-fuchsia-200 md:block" />
               {STEPS.map((s, i) => (
-                <li key={s.title} className="relative rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
-                  <span className="font-mono text-sm font-semibold text-violet-600">0{i + 1}</span>
-                  <h3 className="mt-2 font-semibold text-gray-900">{s.title}</h3>
-                  <p className="mt-1.5 text-sm leading-relaxed text-gray-600">{s.body}</p>
-                </li>
+                <Reveal key={s.title} delay={i * 150}>
+                  <div className="relative text-center">
+                    <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-500 font-mono text-lg font-bold text-white shadow-lg shadow-violet-500/25">
+                      {i + 1}
+                    </span>
+                    <h3 className="mt-5 text-lg font-semibold">{s.title}</h3>
+                    <p className="mt-1 text-sm text-gray-500">{s.body}</p>
+                  </div>
+                </Reveal>
               ))}
-            </ol>
-          </div>
-        </section>
-
-        <section className="px-4 pb-20 sm:px-6">
-          <div className="mx-auto max-w-5xl overflow-hidden rounded-3xl bg-gradient-to-br from-indigo-600 via-violet-600 to-fuchsia-600 px-6 py-14 text-center text-white shadow-xl shadow-violet-600/20 sm:px-12">
-            <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">Learn with a tutor that keeps up with you</h2>
-            <p className="mx-auto mt-3 max-w-xl text-white/80">
-              Try the demo lesson now, or create an account to keep your subjects, tutor chats and streak.
-            </p>
-            <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
-              <Link
-                href={signedIn ? DASHBOARD_PATH : "/login?mode=signup"}
-                className="inline-flex w-full items-center justify-center rounded-xl bg-white px-6 py-3 text-sm font-semibold text-violet-700 shadow-sm transition hover:bg-violet-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white sm:w-auto"
-              >
-                {signedIn ? "Open dashboard →" : "Create free account →"}
-              </Link>
-              <Link
-                href={DEMO_LESSON}
-                className="inline-flex w-full items-center justify-center rounded-xl border border-white/30 px-6 py-3 text-sm font-semibold text-white transition hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white sm:w-auto"
-              >
-                Try the demo
-              </Link>
             </div>
           </div>
-        </section>
-      </main>
+        </Screen>
 
-      <footer className="border-t border-gray-200/70 px-4 py-8 sm:px-6">
-        <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-3 text-sm text-gray-500 sm:flex-row">
-          <span>© {new Date().getFullYear()} Malai Pioneer · Timestamp-aware AI learning assistant</span>
-          <div className="flex gap-5">
-            <a href="#features" className="hover:text-gray-900">Features</a>
-            <Link href={DEMO_LESSON} className="hover:text-gray-900">Demo</Link>
-            <Link href={signedIn ? DASHBOARD_PATH : "/login"} className="hover:text-gray-900">
-              {signedIn ? "Dashboard" : "Log in"}
-            </Link>
-          </div>
-        </div>
-      </footer>
+        <Screen id="start" className="flex-col justify-center">
+          <Reveal className="mx-auto w-full max-w-4xl">
+            <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-indigo-600 via-violet-600 to-fuchsia-600 px-6 py-16 text-center text-white shadow-2xl shadow-violet-600/30 sm:px-12">
+              <div aria-hidden="true" className="anim-blob absolute -right-16 -top-16 h-64 w-64 rounded-full bg-white/10 blur-2xl" />
+              <h2 className="relative text-3xl font-bold tracking-tight sm:text-5xl">Start learning smarter.</h2>
+              <div className="relative mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
+                <Link
+                  href={startHref}
+                  className="inline-flex w-full items-center justify-center rounded-xl bg-white px-6 py-3 text-sm font-semibold text-violet-700 shadow-sm transition hover:-translate-y-0.5 hover:bg-violet-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white sm:w-auto"
+                >
+                  {signedIn ? "Open dashboard →" : "Create free account →"}
+                </Link>
+                <Link
+                  href={DEMO_LESSON}
+                  className="inline-flex w-full items-center justify-center rounded-xl border border-white/30 px-6 py-3 text-sm font-semibold text-white transition hover:-translate-y-0.5 hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white sm:w-auto"
+                >
+                  Try the demo
+                </Link>
+              </div>
+            </div>
+          </Reveal>
+          <footer className="absolute inset-x-0 bottom-6 text-center text-sm text-gray-400">
+            © {new Date().getFullYear()} Malai Pioneer
+          </footer>
+        </Screen>
+      </main>
     </div>
   );
 }

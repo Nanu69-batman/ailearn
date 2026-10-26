@@ -239,3 +239,40 @@ body {
   --dev-select: #18181b; --dev-check-ink: #ffffff;
   --dev-st-active: #7c3aed; --dev-st-done: #059669; --dev-st-error: #dc2626; --dev-st-idle: #d4d4d8;
 }
+
+/* Landing page (app/page.tsx, components/LandingMotion.tsx). */
+.reveal {
+  opacity: 0;
+  transform: translateY(28px);
+  transition: opacity 0.7s ease, transform 0.8s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.reveal.is-visible {
+  opacity: 1;
+  transform: none;
+}
+@keyframes landing-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+@keyframes landing-playhead {
+  0% { left: 4%; }
+  70%, 100% { left: 42%; }
+}
+@keyframes landing-fill {
+  0% { width: 4%; }
+  70%, 100% { width: 42%; }
+}
+@keyframes landing-blob {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(30px, -20px) scale(1.1); }
+}
+.anim-float { animation: landing-float 6s ease-in-out infinite; }
+.anim-playhead { animation: landing-playhead 4s ease-out infinite alternate; }
+.anim-fill { animation: landing-fill 4s ease-out infinite alternate; }
+.anim-blob { animation: landing-blob 12s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .reveal { opacity: 1; transform: none; transition: none; }
+  .anim-float, .anim-playhead, .anim-fill, .anim-blob { animation: none; }
+  .anim-playhead { left: 42%; }
+  .anim-fill { width: 42%; }
+}
