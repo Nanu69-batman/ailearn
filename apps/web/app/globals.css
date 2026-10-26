@@ -276,3 +276,30 @@ body {
   .anim-playhead { left: 42%; }
   .anim-fill { width: 42%; }
 }
+.scroll-blob {
+  transition: transform 0.6s cubic-bezier(0.2, 0.7, 0.2, 1);
+  will-change: transform;
+}
+/* The landing page scroller: a thin indigo-to-violet thumb on a clear track. */
+.landing-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #8b5cf6 transparent;
+}
+.landing-scroll::-webkit-scrollbar {
+  width: 10px;
+}
+.landing-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.landing-scroll::-webkit-scrollbar-thumb {
+  background: linear-gradient(to bottom, #6366f1, #8b5cf6, #d946ef);
+  border: 3px solid transparent;
+  border-radius: 9999px;
+  background-clip: padding-box;
+}
+.landing-scroll::-webkit-scrollbar-thumb:hover {
+  border-width: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .scroll-blob { transition: none; transform: none !important; }
+}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
 /**
  * Landing-page motion. `Reveal` fades its child in each time it scrolls into
@@ -36,6 +36,64 @@ export function Reveal({
       style={{ transitionDelay: visible ? `${delay}ms` : "0ms" }}
     >
       {children}
+    </div>
+  );
+}
+
+/** Each blob drifts from its start toward `to` (in vw/vh) as the page scrolls. */
+const BLOBS = [
+  { className: "left-[-10vw] top-[-10vh] h-[55vh] w-[55vh] bg-indigo-300/40", to: [55, 70], turn: 120 },
+  { className: "right-[-12vw] top-[20vh] h-[50vh] w-[50vh] bg-fuchsia-300/30", to: [-60, 50], turn: -90 },
+  { className: "bottom-[-15vh] left-[30vw] h-[60vh] w-[60vh] bg-violet-300/40", to: [-30, -80], turn: 160 },
+  { className: "left-[60vw] top-[60vh] h-[40vh] w-[40vh] bg-sky-200/40", to: [-50, -30], turn: -140 },
+];
+
+/**
+ * Fixed gradient blobs behind the landing page that move with the scroll
+ * position of the element `targetId` (the page scrolls inside that element,
+ * not the window). Progress goes into the `--p` custom property (0 to 1).
+ */
+export function ScrollGradient({ targetId }: { targetId: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const scroller = document.getElementById(targetId);
+    const layer = ref.current;
+    if (!scroller || !layer) return;
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      const max = scroller.scrollHeight - scroller.clientHeight;
+      layer.style.setProperty("--p", String(max > 0 ? scroller.scrollTop / max : 0));
+    };
+    const onScroll = () => {
+      if (!frame) frame = requestAnimationFrame(update);
+    };
+    update();
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      scroller.removeEventListener("scroll", onScroll);
+      cancelAnimationFrame(frame);
+    };
+  }, [targetId]);
+
+  return (
+    <div
+      ref={ref}
+      aria-hidden="true"
+      className="pointer-events-none fixed inset-0 z-0 overflow-hidden"
+      style={{ "--p": 0 } as CSSProperties}
+    >
+      {BLOBS.map((b, i) => (
+        <div
+          key={i}
+          className={`scroll-blob absolute rounded-full blur-3xl ${b.className}`}
+          style={{
+            transform: `translate3d(calc(var(--p) * ${b.to[0]}vw), calc(var(--p) * ${b.to[1]}vh), 0) rotate(calc(var(--p) * ${b.turn}deg)) scale(calc(1 + var(--p) * 0.3))`,
+          }}
+        />
+      ))}
+      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_40%,rgba(249,250,251,0.6))]" />
     </div>
   );
 }

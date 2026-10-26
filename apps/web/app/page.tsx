@@ -1,6 +1,6 @@
 import Link from "next/link";
 
-import { Reveal, SectionDots } from "@/components/LandingMotion";
+import { Reveal, ScrollGradient, SectionDots } from "@/components/LandingMotion";
 import { DASHBOARD_PATH, contentPath } from "@/lib/learn";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 
@@ -153,7 +153,7 @@ export default async function Home() {
   const startHref = signedIn ? DASHBOARD_PATH : "/login?mode=signup";
 
   return (
-    <div className="h-screen snap-y snap-proximity overflow-y-auto scroll-smooth bg-gray-50 text-gray-900 md:snap-mandatory">
+    <div id="landing-scroll" className="landing-scroll h-screen snap-y snap-proximity overflow-y-auto scroll-smooth bg-gray-50 text-gray-900 md:snap-mandatory">
       <header className="fixed inset-x-0 top-0 z-30 border-b border-gray-200/70 bg-gray-50/80 backdrop-blur">
         <nav className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-4 sm:px-6">
           <Link href="#top" className={`flex items-center gap-2.5 rounded-lg ${FOCUS}`}>
@@ -187,12 +187,11 @@ export default async function Home() {
         </nav>
       </header>
 
+      <ScrollGradient targetId="landing-scroll" />
       <SectionDots sections={SECTIONS} />
 
-      <main>
+      <main className="relative z-10">
         <Screen id="top">
-          <div aria-hidden="true" className="anim-blob pointer-events-none absolute -left-32 top-20 h-96 w-96 rounded-full bg-indigo-300/30 blur-3xl" />
-          <div aria-hidden="true" className="anim-blob pointer-events-none absolute -right-24 bottom-10 h-96 w-96 rounded-full bg-fuchsia-300/25 blur-3xl [animation-delay:-6s]" />
           <div className="relative mx-auto grid w-full max-w-6xl items-center gap-12 lg:grid-cols-[1.1fr_1fr]">
             <div className="text-center lg:text-left">
               <Reveal>
@@ -239,7 +238,7 @@ export default async function Home() {
           </a>
         </Screen>
 
-        <Screen id="timestamp" className="bg-white">
+        <Screen id="timestamp">
           <div className="mx-auto w-full max-w-4xl text-center">
             <Reveal>
               <span className="text-sm font-semibold uppercase tracking-wider text-violet-600">Timestamp-aware</span>
@@ -304,7 +303,7 @@ export default async function Home() {
           </div>
         </Screen>
 
-        <Screen id="how" className="bg-white">
+        <Screen id="how">
           <div className="mx-auto w-full max-w-5xl">
             <Reveal className="text-center">
               <h2 className="text-3xl font-bold tracking-tight sm:text-5xl">Three steps.</h2>
