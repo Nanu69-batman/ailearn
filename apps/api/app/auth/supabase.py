@@ -77,13 +77,15 @@ def _decode(token: str) -> dict:
     )
 
 
-def get_current_user(request: Request) -> AuthUser | None:
-    """The signed-in Supabase user, or ``None`` for an anonymous caller."""
-    token = _bearer_token(request)
+def user_from_token(token: str | None) -> AuthUser | None:
+    """Verify a raw access token (HTTP header or WebSocket start message).
+
+    ``None`` for no token, or when Supabase is not configured; 401 for a bad one.
+    """
     if token is None:
         return None
     if not settings.supabase_jwt_secret and not settings.supabase_url:
-        # No Supabase configured: ignore the header rather than reject it.
+        # No Supabase configured: ignore the token rather than reject it.
         return None
     try:
         claims = _decode(token)
@@ -95,6 +97,11 @@ def get_current_user(request: Request) -> AuthUser | None:
         raise HTTPException(status_code=401, detail="invalid token")
     email = claims.get("email")
     return AuthUser(id=sub, email=email if isinstance(email, str) else None)
+
+
+def get_current_user(request: Request) -> AuthUser | None:
+    """The signed-in Supabase user, or ``None`` for an anonymous caller."""
+    return user_from_token(_bearer_token(request))
 
 
 def require_user(

@@ -1,0 +1,240 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { ChatResponse } from "@/lib/api";
+import {
+  PcmPlayer,
+  fetchVoiceModels,
+  micErrorMessage,
+  startMicCapture,
+  voiceAccessToken,
+  voiceWsUrl,
+  type MicCapture,
+  type VoiceModels,
+} from "@/lib/voice";
+
+/** The `start` fields a composer already sends to streamChat, minus model and tokens. */
+export interface VoiceStartFields {
+  session_id: string;
+  session_token: string;
+  video_id?: string;
+  current_time_ms: number;
+  thread_id?: string;
+  completed_resource_ids?: string[];
+  scope_resource_ids?: string[];
+  general?: boolean;
+  mode?: string;
+}
+
+export type VoiceStatus = "connecting" | "live" | "ended" | "error";
+export type VoiceActivity = "listening" | "thinking" | "speaking";
+
+interface Options {
+  model: string;
+  getStart: () => VoiceStartFields;
+  /** Present where a playhead exists: sent as `time` every second. */
+  getCurrentTimeMs?: () => number;
+  /** The course pipeline answered: `question` is what was asked, null if the server sent none. */
+  onExchange: (question: string | null, response: ChatResponse) => void;
+}
+
+const MAX_PENDING = 30;
+
+/** Voice models from GET /voice/models; null while loading, or when voice is off or unavailable. */
+export function useVoiceModels(active: boolean): VoiceModels | null {
+  const [models, setModels] = useState<VoiceModels | null>(null);
+  useEffect(() => {
+    if (!active) {
+      setModels(null);
+      return;
+    }
+    let cancelled = false;
+    void fetchVoiceModels().then((m) => {
+      if (!cancelled) setModels(m);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [active]);
+  return models;
+}
+
+/** One live conversation over WS /voice/live; connects on mount and on model change, cleans up on unmount. */
+export function useVoiceSession({ model, getStart, getCurrentTimeMs, onExchange }: Options) {
+  const [status, setStatus] = useState<VoiceStatus>("connecting");
+  const [activity, setActivity] = useState<VoiceActivity>("listening");
+  const [inputText, setInputText] = useState("");
+  const [outputText, setOutputText] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const wsRef = useRef<WebSocket | null>(null);
+  const stopRef = useRef<() => void>(() => {});
+  const cb = useRef({ getStart, getCurrentTimeMs, onExchange });
+  cb.current = { getStart, getCurrentTimeMs, onExchange };
+
+  useEffect(() => {
+    const url = voiceWsUrl("live");
+    let closed = false;
+    let mic: MicCapture | null = null;
+    let player: PcmPlayer | null = null;
+    let timer: ReturnType<typeof setInterval> | null = null;
+    let ws: WebSocket | null = null;
+    let ready = false;
+    let question: string | null = null;
+    let lastKind: "input" | "output" | null = null;
+    const pending: ArrayBuffer[] = [];
+
+    setStatus("connecting");
+    setActivity("listening");
+    setInputText("");
+    setOutputText("");
+    setError(null);
+
+    const cleanup = (): void => {
+      closed = true;
+      if (timer) clearInterval(timer);
+      timer = null;
+      mic?.stop();
+      mic = null;
+      player?.close();
+      player = null;
+      if (ws) {
+        ws.onmessage = null;
+        ws.onclose = null;
+        ws.onerror = null;
+        try {
+          ws.close();
+        } catch {
+          // already closed
+        }
+      }
+      ws = null;
+      wsRef.current = null;
+    };
+    const finish = (s: VoiceStatus, message?: string): void => {
+      if (closed) return;
+      cleanup();
+      if (message) setError(message);
+      setStatus(s);
+    };
+    stopRef.current = () => {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "stop" }));
+      finish("ended");
+    };
+
+    async function run(): Promise<void> {
+      if (!url) return finish("error", "Voice needs the live API.");
+      try {
+        // The panel was opened by a click, so the browser lets this context play.
+        player = new PcmPlayer();
+        const token = await voiceAccessToken();
+        if (closed) return;
+        const sock = new WebSocket(url);
+        ws = sock;
+        wsRef.current = sock;
+        sock.binaryType = "arraybuffer";
+
+        sock.onopen = () =>
+          sock.send(
+            JSON.stringify({
+              type: "start",
+              model,
+              ...cb.current.getStart(),
+              ...(token ? { access_token: token } : {}),
+            }),
+          );
+        sock.onmessage = (e) => {
+          if (typeof e.data !== "string") {
+            player?.enqueue(e.data as ArrayBuffer);
+            return;
+          }
+          let msg: Record<string, unknown>;
+          try {
+            msg = JSON.parse(e.data);
+          } catch {
+            return;
+          }
+          switch (msg.type) {
+            case "ready":
+              ready = true;
+              for (const chunk of pending.splice(0)) sock.send(chunk);
+              setStatus("live");
+              break;
+            case "state":
+              setActivity(msg.state as VoiceActivity);
+              break;
+            case "input_transcript": {
+              // A new turn starts once the model has spoken: clear the last one.
+              if (lastKind === "output") {
+                setOutputText("");
+                setInputText("");
+              }
+              lastKind = "input";
+              setInputText(String(msg.text ?? ""));
+              break;
+            }
+            case "output_transcript": {
+              lastKind = "output";
+              const t = String(msg.text ?? "");
+              // Accumulated text replaces; a fragment is appended.
+              setOutputText((prev) => (t.startsWith(prev) ? t : prev + t));
+              break;
+            }
+            case "interrupted":
+              player?.flush();
+              break;
+            case "question":
+              question = String(msg.text ?? "");
+              break;
+            case "answer":
+              if (msg.response) cb.current.onExchange(question, msg.response as ChatResponse);
+              question = null;
+              break;
+            case "error":
+              finish("error", String(msg.message || "Voice failed."));
+              break;
+            case "closed":
+              finish("ended");
+              break;
+          }
+        };
+        sock.onerror = () => finish("error", "Could not reach the voice service.");
+        sock.onclose = (e) => {
+          if (e.code === 4401 || e.code === 4403 || e.code === 4404) {
+            finish("error", "Voice was refused for this session. Rejoin and try again.");
+          } else if (e.code === 4408) finish("ended", "The voice session reached its time limit.");
+          else finish("ended");
+        };
+
+        timer = setInterval(() => {
+          const t = cb.current.getCurrentTimeMs;
+          if (t && ready && sock.readyState === WebSocket.OPEN) {
+            sock.send(JSON.stringify({ type: "time", current_time_ms: t() }));
+          }
+        }, 1000);
+
+        const m = await startMicCapture((chunk) => {
+          if (sock.readyState !== WebSocket.OPEN) return;
+          if (ready) sock.send(chunk);
+          else if (pending.length < MAX_PENDING) pending.push(chunk);
+        });
+        if (closed) m.stop();
+        else mic = m;
+      } catch (err) {
+        finish("error", micErrorMessage(err));
+      }
+    }
+    void run();
+    return cleanup;
+  }, [model, attempt]);
+
+  const end = useCallback(() => stopRef.current(), []);
+  const restart = useCallback(() => setAttempt((n) => n + 1), []);
+  /** A typed turn inside the voice session. */
+  const sendText = useCallback((text: string) => {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN && text.trim()) ws.send(JSON.stringify({ type: "text", text }));
+  }, []);
+
+  return { status, activity, inputText, outputText, error, end, restart, sendText };
+}

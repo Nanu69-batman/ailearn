@@ -11,6 +11,7 @@ import {
   streamChat,
   type ChatMessage,
   type ChatMode,
+  type ChatResponse,
   type ChatRequest,
   type QuizScope,
 } from "@/lib/api";
@@ -46,6 +47,11 @@ import {
 } from "@/components/SlashCommands";
 import { initials, subjectAccent } from "@/components/SubjectCard";
 import { useSubjects } from "@/components/useSubjects";
+import { joinText, stripInterim, withInterim } from "@/lib/voice";
+import MicButton, { VoiceButton } from "@/components/MicButton";
+import VoicePanel from "@/components/VoicePanel";
+import { useDictation, type DictationState } from "@/components/useDictation";
+import { useVoiceModels, type VoiceStartFields } from "@/components/useVoiceSession";
 
 /**
  * /malai: chat with the tutor outside any one lesson.
@@ -90,7 +96,10 @@ function Composer({
   autoFocus,
   inputRef,
   slashContext,
+  voice,
 }: {
+  /** Dictation and the voice conversation; absent when voice is off. */
+  voice?: { state: DictationState; error: string | null; onMic: () => void; onTalk: () => void };
   value: string;
   onChange: (v: string) => void;
   onSend: () => void;
@@ -155,6 +164,12 @@ function Composer({
         aria-activedescendant={slash.menu ? `slash-opt-${slash.active}` : undefined}
         className="max-h-[180px] min-h-[2.75rem] flex-1 resize-none bg-transparent py-2.5 text-[15px] text-gray-900 placeholder-gray-400 outline-none"
       />
+      {voice && (
+        <>
+          <MicButton size="lg" state={voice.state} error={voice.error} onClick={voice.onMic} disabled={disabled || busy} />
+          <VoiceButton size="lg" onClick={voice.onTalk} disabled={disabled || busy} />
+        </>
+      )}
       <button
         type="submit"
         disabled={!canSend}
@@ -261,9 +276,84 @@ export default function MalaiChatView() {
     window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" });
   }, [messages.length, preview?.text]);
 
+  // ---- Voice -------------------------------------------------------------
+  // Dictation needs a session, so the first use in a new chat creates the chat
+  // the same way a first question does. The voice panel's questions and
+  // validated answers join the message list like typed ones.
+  const voiceModels = useVoiceModels(true);
+  const [voiceChat, setVoiceChat] = useState<MalaiChat | null>(null);
+
+  const ensureChat = async (): Promise<MalaiChat> => {
+    if (chat) return chat;
+    const thread = await openThread(allResourceIds(subjects));
+    const now = Date.now();
+    const created: MalaiChat = {
+      id: newChatId(),
+      ...thread,
+      title: "Voice chat",
+      subjectId: subject?.id ?? null,
+      preview: "",
+      createdAt: now,
+      updatedAt: now,
+    };
+    createdHere.current = created.id;
+    addChat(created);
+    window.history.replaceState(null, "", malaiChatPath(created.id));
+    return created;
+  };
+
+  const dictation = useDictation({
+    getSession: async () => {
+      const c = await ensureChat();
+      return { sessionId: c.sessionId, sessionToken: c.sessionToken };
+    },
+    onFinal: (t) => setDraft((prev) => joinText(prev, t)),
+  });
+  const stopDictation = dictation.stop;
+
+  const openVoice = async (): Promise<void> => {
+    stopDictation();
+    try {
+      setVoiceChat(await ensureChat());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  /** The same scope fields the typed question sends to streamChat. */
+  const voiceStart = (): VoiceStartFields => {
+    const c = voiceChat!;
+    return {
+      session_id: c.sessionId,
+      session_token: c.sessionToken,
+      thread_id: c.threadId === MAIN_THREAD_ID ? undefined : c.threadId,
+      current_time_ms: 0,
+      completed_resource_ids: doneResourceIds(subject ? [subject] : subjects),
+      ...(subject ? { scope_resource_ids: subject.resource_ids ?? [] } : { general: true }),
+    };
+  };
+
+  const voiceExchange = (question: string | null, res: ChatResponse): void => {
+    const now = new Date().toISOString();
+    setMessages((prev) => [
+      ...prev,
+      ...(question ? [{ id: newMessageId(), role: "user" as const, content: question, citations: [], created_at: now }] : []),
+      {
+        id: newMessageId(),
+        role: "assistant",
+        content: res.answer,
+        citations: res.citations,
+        created_at: now,
+        kind: res.refused ? "refused" : res.mode,
+      },
+    ]);
+    if (voiceChat) updateChat(voiceChat.id, { updatedAt: Date.now(), ...(question ? { preview: titleFrom(question) } : {}) });
+  };
+
   const send = useCallback(async () => {
     const typed = draft.trim();
     if (!typed || loading) return;
+    stopDictation();
     if (subject && (subject.resource_count ?? 0) === 0) {
       setError(`“${subject.name}” has no materials yet. Add some to it, or start a chat outside the subject.`);
       return;
@@ -369,7 +459,7 @@ export default function MalaiChatView() {
       setLoading(false);
       setPreview(null);
     }
-  }, [draft, loading, subject, subjects, chat, slashContext]);
+  }, [draft, loading, subject, subjects, chat, slashContext, stopDictation]);
 
   /** What a quiz from this chat may draw from: the chat's own reach. */
   const quizScope: QuizScope | null = quizChat
@@ -443,8 +533,13 @@ export default function MalaiChatView() {
   const notReady = subjectsState !== "ready";
   const composer = (
     <Composer
-      value={draft}
-      onChange={setDraft}
+      value={withInterim(draft, dictation.interim)}
+      onChange={(v) => setDraft(stripInterim(v, draft, dictation.interim))}
+      voice={
+        voiceModels
+          ? { state: dictation.state, error: dictation.error, onMic: dictation.toggle, onTalk: () => void openVoice() }
+          : undefined
+      }
       onSend={() => void send()}
       disabled={notReady}
       busy={loading}
@@ -585,6 +680,20 @@ export default function MalaiChatView() {
             </div>
           )}
         </>
+      )}
+
+      {voiceChat && voiceModels && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-gray-900/30 p-4">
+          <div className="h-[34rem] max-h-full w-full max-w-lg overflow-hidden rounded-3xl shadow-2xl shadow-gray-900/20">
+            <VoicePanel
+              models={voiceModels}
+              getStart={voiceStart}
+              onExchange={voiceExchange}
+              onClose={() => setVoiceChat(null)}
+              subtitle={subject ? subject.name : "General"}
+            />
+          </div>
+        </div>
       )}
 
       {quizChat && quizScope && (

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import type { ChatMessage, ChatMode, LiveFrameCapture } from "../lib/api";
+import type { ChatMessage, ChatMode, ChatResponse, LiveFrameCapture } from "../lib/api";
 import {
   ApiError,
   formatApiError,
@@ -33,6 +33,11 @@ import {
 } from "./SlashCommands";
 import QuizPanel, { type QuizOutcome, type QuizPreset } from "./QuizPanel";
 import { detectQuizIntent } from "../lib/quizIntent";
+import { joinText, stripInterim, withInterim } from "../lib/voice";
+import MicButton, { VoiceButton } from "./MicButton";
+import VoicePanel from "./VoicePanel";
+import { useDictation } from "./useDictation";
+import { useVoiceModels, type VoiceStartFields } from "./useVoiceSession";
 
 interface ChatPanelProps {
   sessionId: string;
@@ -203,6 +208,16 @@ export default function ChatPanel({
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
+  // ---- Voice -------------------------------------------------------------
+  // Dictation fills the input; the voice panel is a live conversation whose
+  // questions and validated answers land in the chat like typed ones.
+  const voiceModels = useVoiceModels(!offline);
+  const [voiceOpen, setVoiceOpen] = useState(false);
+  const dictation = useDictation({
+    getSession: async () => (sessionExpired ? null : { sessionId, sessionToken }),
+    onFinal: (t) => setInput((prev) => joinText(prev, t)),
+  });
+
   // ---- Chats -------------------------------------------------------------
   // Several chats per session, each its own history on the server. The
   // selection is per session and remembered locally; an id that no longer
@@ -342,7 +357,38 @@ export default function ChatPanel({
     const max = lineHeight * 6 + 16;
     el.style.height = `${Math.min(el.scrollHeight, max)}px`;
     el.style.overflowY = el.scrollHeight > max ? "auto" : "hidden";
-  }, [input]);
+  }, [input, dictation.interim]);
+
+  /** The voice conversation answered: show the exchange like a typed one. */
+  function voiceExchange(question: string | null, res: ChatResponse): void {
+    const now = new Date().toISOString();
+    setMessages((prev) => [
+      ...prev,
+      ...(question ? [{ id: newId(), role: "user" as const, content: question, citations: [], created_at: now }] : []),
+      {
+        id: newId(),
+        role: "assistant",
+        content: res.answer,
+        citations: res.citations,
+        created_at: now,
+        kind: res.refused ? "refused" : res.mode,
+      },
+    ]);
+    if (question) onAsk?.(threadId, question);
+    void refreshThreads();
+  }
+
+  /** The same scope fields the typed question sends to streamChat. */
+  function voiceStart(): VoiceStartFields {
+    return {
+      session_id: sessionId,
+      session_token: sessionToken,
+      video_id: videoId,
+      current_time_ms: getCurrentTimeMs(),
+      thread_id: threadId,
+      completed_resource_ids: completedResourceIds,
+    };
+  }
 
   function handleSubmit(e: React.FormEvent): void {
     e.preventDefault();
@@ -371,6 +417,7 @@ export default function ChatPanel({
   async function send(raw: string): Promise<void> {
     const typed = raw.trim();
     if (!typed || sending) return;
+    dictation.stop();
     // A slash command sets the answer style, or opens a quiz; so does a
     // message that asks for a quiz in so many words ("quiz me on this").
     const cmd = parseCommand(typed, slashContext);
@@ -607,7 +654,7 @@ export default function ChatPanel({
 
   return (
     <section
-      className={`flex flex-col overflow-hidden rounded-2xl bg-white ${fill ? "h-full min-h-0" : ""}`}
+      className={`relative flex flex-col overflow-hidden rounded-2xl bg-white ${fill ? "h-full min-h-0" : ""}`}
       aria-label="Chat with Malai"
     >
       {/* Header: Chat/Quiz, then the chat picker and New chat */}
@@ -823,8 +870,8 @@ export default function ChatPanel({
               ref={inputRef}
               rows={1}
               className="min-h-[2.5rem] flex-1 resize-none overflow-hidden bg-transparent py-2.5 text-sm leading-5 text-gray-900 placeholder-gray-400 outline-none"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
+              value={withInterim(input, dictation.interim)}
+              onChange={(e) => setInput(stripInterim(e.target.value, input, dictation.interim))}
               onKeyDown={handleKeyDown}
               placeholder={
                 frameLatched
@@ -838,6 +885,18 @@ export default function ChatPanel({
               aria-controls={menu ? "slash-menu" : undefined}
               aria-activedescendant={menu ? `slash-opt-${slash.active}` : undefined}
             />
+            {voiceModels && !sessionExpired && (
+              <>
+                <MicButton state={dictation.state} error={dictation.error} onClick={dictation.toggle} disabled={sending} />
+                <VoiceButton
+                  disabled={sending}
+                  onClick={() => {
+                    dictation.stop();
+                    setVoiceOpen(true);
+                  }}
+                />
+              </>
+            )}
             <button
               type="submit"
               disabled={!canSend}
@@ -861,6 +920,19 @@ export default function ChatPanel({
           )}
         </form>
       </div>
+
+      {voiceOpen && voiceModels && (
+        <div className="absolute inset-0 z-30">
+          <VoicePanel
+            models={voiceModels}
+            getStart={voiceStart}
+            getCurrentTimeMs={isVideo ? getCurrentTimeMs : undefined}
+            onExchange={voiceExchange}
+            onClose={() => setVoiceOpen(false)}
+            subtitle={`About this ${isVideo ? "video" : "material"}`}
+          />
+        </div>
+      )}
     </section>
   );
 }

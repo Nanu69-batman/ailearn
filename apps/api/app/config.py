@@ -81,6 +81,14 @@ class Settings(BaseSettings):
     # Default false keeps tests and local dev working without a login.
     auth_required: bool = False
 
+    # Live voice (docs/VOICE_PROTOCOL.md). Model ids are config so a renamed
+    # model is a settings change. The key is llm_api_key.
+    voice_live_model: str = "gemini-3.8-live"
+    voice_thinking_model: str = "gemini-3.8-live-extended-thinking"
+    voice_native_audio_model: str = "gemini-2.5-flash-native-audio-preview-12-2025"
+    voice_transcribe_model: str = "gemini-3.5-transcribe-live"
+    voice_thinking_level: str = "medium"  # low | medium | high
+
     def supabase_enabled(self) -> bool:
         """True only when both ``supabase_url`` and the service-role key are set."""
         return bool(self.supabase_url and self.supabase_service_role_key)

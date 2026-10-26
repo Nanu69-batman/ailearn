@@ -13,6 +13,7 @@ from app.ingestion.backoff import QuotaExhaustedError
 from app.ingestion.router import router as ingestion_router
 from app.middleware import RequestIDMiddleware
 from app.subjects.router import router as subjects_router
+from app.voice.router import router as voice_router
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger(__name__)
@@ -100,6 +101,9 @@ app.include_router(ingestion_router)
 # Subject organisation: POST/GET /subjects, plus per-subject resource
 # attach/detach. Additive; no existing route shape is touched.
 app.include_router(subjects_router)
+
+# Live voice: GET /voice/models, WS /voice/live, WS /voice/transcribe.
+app.include_router(voice_router)
 
 
 @app.get("/dev/trace")
