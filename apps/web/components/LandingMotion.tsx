@@ -93,7 +93,7 @@ export function ScrollGradient({ targetId }: { targetId: string }) {
           }}
         />
       ))}
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_40%,rgba(249,250,251,0.6))]" />
+      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_40%,rgba(249,250,251,0.35))]" />
     </div>
   );
 }
