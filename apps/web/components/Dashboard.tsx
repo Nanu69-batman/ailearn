@@ -54,91 +54,122 @@ function longDate(date: Date): string {
   return `${WEEKDAYS[date.getDay()]}, ${date.getDate()} ${MONTHS[date.getMonth()]} ${date.getFullYear()}`;
 }
 
-function cellTone(seconds: number | undefined, future: boolean): string {
-  if (future) return "bg-gray-50";
-  if (!seconds) return "bg-gray-100";
-  if (seconds < 15 * 60) return "bg-violet-200";
-  if (seconds < 30 * 60) return "bg-violet-300";
-  if (seconds < 60 * 60) return "bg-violet-500";
-  return "bg-violet-600";
+const TONES = ["bg-gray-100", "bg-violet-200", "bg-violet-300", "bg-violet-500", "bg-violet-700"];
+
+function cellTone(seconds: number | undefined): string {
+  if (!seconds) return TONES[0];
+  if (seconds < 15 * 60) return TONES[1];
+  if (seconds < 30 * 60) return TONES[2];
+  if (seconds < 60 * 60) return TONES[3];
+  return TONES[4];
 }
 
+// Heatmap geometry: a weekday label column, then one column per week whose
+// cells stay between CELL_MIN and CELL_MAX px, so they are always square and
+// readable. The number of weeks shown follows the width available.
+const LABEL_COL = 30;
+const GAP = 3;
+const CELL_MIN = 11;
+const CELL_MAX = 16;
+const MAX_WEEKS = 53;
+
 function Heatmap({ days, today }: { days: Record<string, number>; today: Date }) {
-  // Columns are weeks (Sunday first) covering the whole calendar year.
-  const { weeks, monthCols } = useMemo(() => {
-    const year = today.getFullYear();
-    const start = new Date(year, 0, 1);
-    start.setDate(start.getDate() - start.getDay());
-    const end = new Date(year, 11, 31);
-    const cols: Array<Array<Date | null>> = [];
-    const firsts: Array<{ month: number; col: number }> = [];
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  const [width, setWidth] = useState(0);
+
+  useEffect(() => {
+    const el = boxRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => setWidth(entry.contentRect.width));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const weekCount = Math.max(
+    8,
+    Math.min(MAX_WEEKS, Math.floor((width - LABEL_COL + GAP) / (CELL_MIN + GAP))),
+  );
+
+  // The most recent `weekCount` weeks (Sunday first), ending with this week.
+  const { weeks, monthLabels } = useMemo(() => {
+    const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    start.setDate(start.getDate() - start.getDay() - (weekCount - 1) * 7);
+    const cols: Date[][] = [];
     const cursor = new Date(start);
-    while (cursor <= end) {
-      const week: Array<Date | null> = [];
+    for (let w = 0; w < weekCount; w++) {
+      const week: Date[] = [];
       for (let d = 0; d < 7; d++) {
-        const inYear = cursor.getFullYear() === year;
-        week.push(inYear ? new Date(cursor) : null);
-        if (inYear && cursor.getDate() === 1) firsts.push({ month: cursor.getMonth(), col: cols.length });
+        week.push(new Date(cursor));
         cursor.setDate(cursor.getDate() + 1);
       }
       cols.push(week);
     }
-    return { weeks: cols, monthCols: firsts };
-  }, [today]);
+    // A month is labelled on the first week that contains its 1st; the first
+    // column gets its own month only when there is room before the next label.
+    const labels: Array<{ month: number; col: number }> = [];
+    cols.forEach((week, col) => {
+      if (week.some((d) => d.getDate() === 1)) {
+        const first = week.find((d) => d.getDate() === 1)!;
+        labels.push({ month: first.getMonth(), col });
+      }
+    });
+    if (!labels.length || labels[0].col >= 3) labels.unshift({ month: cols[0][0].getMonth(), col: 0 });
+    return { weeks: cols, monthLabels: labels };
+  }, [today, weekCount]);
 
   const todayKey = dayKey(today);
-  // One grid template for the month row and the day grid, so labels line up:
-  // a label column, then one flexible column per week.
-  const columns = `2rem repeat(${weeks.length}, minmax(7px, 1fr))`;
-
-  // On narrow screens the year scrolls; start at the recent end, not January.
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollLeft = el.scrollWidth;
-  }, []);
+  const columns = `${LABEL_COL}px repeat(${weekCount}, minmax(${CELL_MIN}px, ${CELL_MAX}px))`;
 
   return (
-    <div ref={scrollRef} className="overflow-x-auto pb-1">
-      <div className="min-w-[640px]">
-        <div className="grid h-6 text-[11px] text-gray-500" style={{ gridTemplateColumns: columns, columnGap: "3px" }} aria-hidden="true">
-          {/* Covers month names scrolling under the pinned weekday column. */}
-          <span className="sticky left-0 z-10 -mr-[3px] bg-white" style={{ gridColumnStart: 1, gridRowStart: 1 }} />
-          {monthCols.map(({ month, col }) => (
-            <span key={month} style={{ gridColumnStart: col + 2, gridRowStart: 1 }} className="whitespace-nowrap">
-              {MONTHS[month]}
-            </span>
-          ))}
+    <div ref={boxRef} className="w-full min-w-0 overflow-hidden p-1">
+      {width > 0 && (
+        <div className="w-fit max-w-full">
+          <div
+            className="grid h-5 text-[11px] text-gray-500"
+            style={{ gridTemplateColumns: columns, columnGap: GAP }}
+            aria-hidden="true"
+          >
+            {monthLabels.map(({ month, col }) => (
+              <span key={`${month}-${col}`} style={{ gridColumnStart: col + 2, gridRowStart: 1 }} className="whitespace-nowrap">
+                {MONTHS[month]}
+              </span>
+            ))}
+          </div>
+          <div
+            className="grid grid-flow-col grid-rows-7"
+            style={{ gridTemplateColumns: columns, gap: GAP }}
+            role="img"
+            aria-label={`Study activity for the last ${weekCount} weeks`}
+          >
+            {WEEKDAYS.map((d, i) => (
+              <span key={d} aria-hidden="true" className="flex items-center text-[11px] leading-none text-gray-500">
+                {i % 2 === 1 ? d : ""}
+              </span>
+            ))}
+            {weeks.flatMap((week) =>
+              week.map((date) => {
+                const key = dayKey(date);
+                if (key > todayKey) return <span key={key} />;
+                const secs = days[key];
+                return (
+                  <span
+                    key={key}
+                    title={`${date.getDate()} ${MONTHS[date.getMonth()]} ${date.getFullYear()}: ${secs ? `${formatStudyTime(secs)} studied` : "no study"}`}
+                    className={`aspect-square w-full rounded-[3px] ${cellTone(secs)} ${key === todayKey ? "ring-2 ring-violet-500 ring-offset-1" : ""}`}
+                  />
+                );
+              }),
+            )}
+          </div>
+          <div className="mt-3 flex items-center justify-end gap-1.5 text-[11px] text-gray-500" aria-hidden="true">
+            <span className="mr-1">Less</span>
+            {TONES.map((t) => (
+              <span key={t} className={`h-[11px] w-[11px] rounded-[3px] ${t}`} />
+            ))}
+            <span className="ml-1">More</span>
+          </div>
         </div>
-        <div
-          className="grid grid-flow-col grid-rows-7"
-          style={{ gridTemplateColumns: columns, gap: "3px" }}
-          role="img"
-          aria-label="Study activity for this year"
-        >
-          {/* The weekday column stays pinned while the weeks scroll under it. */}
-          {WEEKDAYS.map((d, i) => (
-            <span key={d} aria-hidden="true" className="sticky left-0 z-10 -mr-[3px] flex items-center bg-white text-[11px] leading-none text-gray-500">
-              {i % 2 === 1 ? d : ""}
-            </span>
-          ))}
-          {weeks.flatMap((week, w) =>
-            week.map((date, d) => {
-              if (!date) return <span key={`${w}-${d}`} />;
-              const key = dayKey(date);
-              const secs = days[key];
-              const future = key > todayKey;
-              return (
-                <span
-                  key={key}
-                  title={`${date.getDate()} ${MONTHS[date.getMonth()]}: ${secs ? formatStudyTime(secs) + " studied" : "no study"}`}
-                  className={`aspect-square w-full self-center rounded-[3px] ${cellTone(secs, future)} ${key === todayKey ? "ring-1 ring-violet-400" : ""}`}
-                />
-              );
-            }),
-          )}
-        </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -259,7 +290,7 @@ export default function Dashboard() {
       </div>
 
       {/* Learning activity */}
-      <section aria-labelledby="activity-title" className="grid overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm xl:grid-cols-[minmax(0,1fr)_auto_16rem]">
+      <section aria-labelledby="activity-title" className="grid grid-cols-1 overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm xl:grid-cols-[minmax(0,1fr)_auto_16rem]">
         <div className="min-w-0 p-6">
           <div className="flex items-start gap-4">
             <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-violet-100 text-violet-700">
