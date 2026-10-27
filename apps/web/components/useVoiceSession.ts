@@ -99,20 +99,14 @@ export function useVoiceSession({ model, voice, tone, getStart, getCurrentTimeMs
     let draining = false;
     let lastKind: "input" | "output" | null = null;
     let turn: VoiceTurn | null = null;
-    let turnKey = "";
-    // Turns by the server's "role:turn" number, for their written versions.
-    const turns = new Map<string, VoiceTurn>();
     // Final input segments of the current turn; an interim one is shown after them.
     let heard = "";
-    const report = (role: VoiceTurn["role"], n: unknown, text: (prev: string) => string): string => {
-      const key = typeof n === "number" ? `${role}:${n}` : "";
-      if (!turn || turn.role !== role || (key && key !== turnKey)) {
+    const report = (role: VoiceTurn["role"], text: (prev: string) => string): string => {
+      if (!turn || turn.role !== role) {
         if (role === "user") heard = "";
         turn = { id: `voice-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, role, text: "" };
-        turnKey = key;
       }
       turn = { ...turn, text: text(turn.text) };
-      if (key) turns.set(key, turn);
       if (turn.text.trim()) cb.current.onTurn?.(turn);
       return turn.text;
     };
@@ -214,13 +208,6 @@ export function useVoiceSession({ model, voice, tone, getStart, getCurrentTimeMs
             if (closed) sock.close();
             return;
           }
-          // A turn's written version (Markdown + LaTeX) replaces its caption, even after End.
-          if (msg.type === "formatted") {
-            const t = turns.get(`${String(msg.role)}:${String(msg.turn)}`);
-            const text = String(msg.text ?? "").trim();
-            if (t && text) cb.current.onTurn?.({ ...t, text });
-            return;
-          }
           if (closed) {
             if (msg.type === "closed") sock.close();
             return;
@@ -242,7 +229,7 @@ export function useVoiceSession({ model, voice, tone, getStart, getCurrentTimeMs
               }
               lastKind = "input";
               const t = String(msg.text ?? "").trim();
-              const shown = report("user", msg.turn, () => {
+              const shown = report("user", () => {
                 const full = [heard, t].filter(Boolean).join(" ");
                 if (msg.final) heard = full;
                 return full;
@@ -255,7 +242,7 @@ export function useVoiceSession({ model, voice, tone, getStart, getCurrentTimeMs
               const t = String(msg.text ?? "");
               // Accumulated text replaces; a fragment is appended.
               setOutputText((prev) => (t.startsWith(prev) ? t : prev + t));
-              report("assistant", msg.turn, (prev) => (t.startsWith(prev) ? t : prev + t));
+              report("assistant", (prev) => (t.startsWith(prev) ? t : prev + t));
               break;
             }
             case "interrupted":
