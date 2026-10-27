@@ -51,7 +51,16 @@ import { joinText, stripInterim, withInterim } from "@/lib/voice";
 import MicButton, { VoiceButton } from "@/components/MicButton";
 import VoicePanel from "@/components/VoicePanel";
 import AddContentDialog from "@/components/AddContentDialog";
-import { ImageButton, ImageChips, useChatImages, withImageNote, type PendingImage } from "@/components/ChatImages";
+import {
+  DropOverlay,
+  ImageButton,
+  ImageChips,
+  pastedImages,
+  useChatImages,
+  useImageDrop,
+  withImageNote,
+  type PendingImage,
+} from "@/components/ChatImages";
 import { useDictation, type DictationState } from "@/components/useDictation";
 import { useVoiceModels, type VoiceStartFields, type VoiceTurn } from "@/components/useVoiceSession";
 
@@ -102,7 +111,7 @@ function Composer({
   images,
 }: {
   /** Images attached in the bar (chat context, never resources). */
-  images?: { items: PendingImage[]; onFiles: (f: FileList) => void; onRemove: (key: string) => void; uploading: boolean };
+  images?: { items: PendingImage[]; onFiles: (f: FileList | File[]) => void; onRemove: (key: string) => void; uploading: boolean };
   /** Dictation and the voice conversation; absent when voice is off. */
   voice?: { state: DictationState; error: string | null; onMic: () => void; onTalk: () => void };
   value: string;
@@ -156,6 +165,13 @@ function Composer({
         value={value}
         autoFocus={autoFocus}
         onChange={(e) => onChange(e.target.value)}
+        onPaste={(e) => {
+          const pasted = pastedImages(e);
+          if (pasted.length && images) {
+            e.preventDefault();
+            images.onFiles(pasted);
+          }
+        }}
         onKeyDown={(e) => {
           if (slash.onKeyDown(e)) return;
           if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -334,6 +350,7 @@ export default function MalaiChatView() {
   });
   const clearImages = images.clear;
   const imageNames = images.readyNames;
+  const drop = useImageDrop((f) => void images.add(f));
 
   const openVoice = async (): Promise<void> => {
     stopDictation();
@@ -618,7 +635,9 @@ export default function MalaiChatView() {
       className={`relative flex min-h-[calc(100dvh-7rem)] flex-col transition-[margin] duration-300 md:min-h-[calc(100dvh-5rem)] ${
         quizOpen ? "lg:mr-[27rem]" : ""
       }`}
+      {...drop.bind}
     >
+      <DropOverlay show={drop.dragging} fixed />
       {!(empty && subject) && (
         <header className="relative z-10 md:pr-16">
           <h1 className="text-2xl font-bold tracking-tight text-gray-900">Malai</h1>

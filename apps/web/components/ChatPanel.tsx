@@ -36,7 +36,15 @@ import { detectQuizIntent } from "../lib/quizIntent";
 import { joinText, stripInterim, withInterim } from "../lib/voice";
 import MicButton, { VoiceButton } from "./MicButton";
 import VoicePanel from "./VoicePanel";
-import { ImageButton, ImageChips, useChatImages, withImageNote } from "./ChatImages";
+import {
+  DropOverlay,
+  ImageButton,
+  ImageChips,
+  pastedImages,
+  useChatImages,
+  useImageDrop,
+  withImageNote,
+} from "./ChatImages";
 import { useDictation } from "./useDictation";
 import { useVoiceModels, type VoiceStartFields, type VoiceTurn } from "./useVoiceSession";
 
@@ -235,6 +243,7 @@ export default function ChatPanel({
     sessionExpired ? null : { sessionId, sessionToken, threadId: threadId === MAIN_THREAD_ID ? undefined : threadId },
   );
   const clearImages = images.clear;
+  const drop = useImageDrop((f) => void images.add(f), !offline && !sessionExpired);
   // Another chat: its attachments are its own.
   useEffect(() => clearImages(), [threadId, clearImages]);
   const [threadError, setThreadError] = useState<string | null>(null);
@@ -679,7 +688,9 @@ export default function ChatPanel({
     <section
       className={`relative flex flex-col overflow-hidden rounded-2xl bg-white ${fill ? "h-full min-h-0" : ""}`}
       aria-label="Chat with Malai"
+      {...drop.bind}
     >
+      <DropOverlay show={drop.dragging} />
       {/* Header: Chat/Quiz, then the chat picker and New chat */}
       <div className="flex shrink-0 items-center gap-2 border-b border-gray-100 px-3 py-2.5">
         {headerLead}
@@ -910,6 +921,13 @@ export default function ChatPanel({
               value={withInterim(input, dictation.interim)}
               onChange={(e) => setInput(stripInterim(e.target.value, input, dictation.interim))}
               onKeyDown={handleKeyDown}
+              onPaste={(e) => {
+                const pasted = pastedImages(e);
+                if (pasted.length && !offline && !sessionExpired) {
+                  e.preventDefault();
+                  void images.add(pasted);
+                }
+              }}
               placeholder={
                 frameLatched
                   ? "Ask about the frame on screen…"

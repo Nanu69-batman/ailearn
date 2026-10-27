@@ -1,18 +1,19 @@
 """Images attached to one chat: ``POST /chat/attachments``, ``DELETE /chat/attachments/{id}``.
 
 An attached image is NOT a resource: it is never ingested, indexed or filed
-under a subject, and its bytes are not kept. It is transcribed once by the
-vision model (text and math verbatim, figures described) and that transcript
-joins the chat's context: every later answer in the chat sees it through the
-system prompt (``prompts.style_note``), on every answer path.
+under a subject. It is transcribed once by the vision model (text and math
+verbatim, figures described) and that transcript joins the chat's context:
+every later answer in the chat sees it through the system prompt
+(``prompts.style_note``), on every answer path.
 
 It is learner-provided context, not course evidence: it has no chunk id, so it
 can never be cited as lesson material, and the timestamp gate and citation
 validation are untouched.
 
-Storage: Supabase ``chat_attachments`` (supabase/migrations/0002_malai_chats.sql)
-when configured, else process-local, mirrored to ``data/chat_attachments.json``
-once the app lifespan enables persistence.
+Storage, when Supabase is configured: the transcript in ``chat_attachments``
+(migrations 0002 + 0003) and the image file in Storage under
+``{owner}/chat/{session}/{id}.ext``. Otherwise process-local (no image file),
+mirrored to ``data/chat_attachments.json`` once the lifespan enables persistence.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from fastapi import APIRouter, File, Form, Header, HTTPException, Request, Uploa
 from pydantic import BaseModel
 
 from app.chat.sessions import history_key
+from app.config import settings
 from app.ingestion.backoff import QuotaExhaustedError
 from app.supa.client import get_client
 
@@ -128,6 +130,7 @@ def _rows(session_id: str, thread_id: str) -> list[dict]:
                 _by_chat[key] = [
                     {
                         "id": r["id"],
+                        "path": r.get("storage_path"),
                         "name": r.get("name") or "image",
                         "text": r.get("description") or "",
                     }
@@ -163,10 +166,26 @@ def prompt_note(session_id: str, thread_id: str) -> str:
     return "\n\n".join(parts)
 
 
+_EXT = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/heic": ".heic",
+    "image/heif": ".heif",
+}
+
+
+def storage_path_for(
+    owner_id: str | None, session_id: str, attachment_id: str, mime: str
+) -> str:
+    """``{owner}/chat/{session}/{id}.ext``: the owner's prefix, apart from resources."""
+    return (
+        f"{owner_id or 'public'}/chat/{session_id}/{attachment_id}{_EXT.get(mime, '')}"
+    )
+
+
 def _describe(data: bytes, mime: str) -> str:
     from google import genai
-
-    from app.config import settings
 
     if not settings.llm_api_key:
         raise RuntimeError("no vision model configured")
@@ -238,6 +257,17 @@ async def add_attachment(
     with _lock:
         _by_chat.setdefault(key, []).append(row)
     if (client := get_client()) is not None:
+        # The image itself, in Storage beside the learner's other files; the
+        # transcript stays the only thing answers read.
+        path = storage_path_for(session.owner_id, session.id, row["id"], mime)
+        try:
+            await asyncio.to_thread(
+                client.upload, settings.supabase_storage_bucket, path, data, mime
+            )
+        except Exception as exc:  # noqa: BLE001 - the transcript still works
+            log.warning("chat image upload failed: %s", exc)
+            path = None
+        row["path"] = path
         try:
             client.upsert(
                 TABLE,
@@ -249,6 +279,7 @@ async def add_attachment(
                     "name": name,
                     "mime": mime,
                     "description": text,
+                    "storage_path": path,
                     "created_at": datetime.now(UTC).isoformat(),
                 },
                 on_conflict="id",
@@ -256,7 +287,7 @@ async def add_attachment(
         except Exception as exc:  # noqa: BLE001 - kept for this process at least
             log.warning("chat attachment write failed: %s", exc)
     _save_local()
-    return AttachmentOut(**row)
+    return AttachmentOut(id=row["id"], name=name, text=text)
 
 
 @router.delete("/chat/attachments/{attachment_id}", status_code=204)
@@ -272,10 +303,15 @@ def delete_attachment(
     session = _authed(request, session_id, x_session_token)
     tid = chat_router._resolve_thread(session.id, thread_id)
     key = history_key(session.id, tid)
-    _rows(session.id, tid)
+    gone = [r for r in _rows(session.id, tid) if r["id"] == attachment_id]
     with _lock:
         _by_chat[key] = [r for r in _by_chat.get(key, []) if r["id"] != attachment_id]
     if (client := get_client()) is not None:
+        paths = [r["path"] for r in gone if r.get("path")]
+        try:
+            client.remove(settings.supabase_storage_bucket, paths)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("chat image remove failed: %s", exc)
         try:
             client.delete(
                 TABLE, {"id": f"eq.{attachment_id}", "session_id": f"eq.{session.id}"}

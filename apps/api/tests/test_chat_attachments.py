@@ -83,3 +83,36 @@ def test_other_chats_do_not_see_it(client):
     _upload(client, s.id, token)
     other, _ = _session()
     assert attachments.prompt_note(other.id, "main") == ""
+
+
+def test_image_file_goes_to_storage(client, monkeypatch):
+    import httpx
+
+    from app.supa import client as supa
+
+    seen: list[tuple[str, str]] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append((req.method, req.url.path))
+        return httpx.Response(200, json=[])
+
+    supa.set_client(
+        supa.SupabaseClient("https://x.supabase.co", "k", transport=httpx.MockTransport(handler))
+    )
+    try:
+        s = session_store.create(
+            learner_id="u1",
+            course_id="c",
+            resource_id="r",
+            lesson_id=None,
+            resource_scope=["r"],
+            current_time_ms=0,
+        )
+        token = create_session_token(settings.lms_launch_secret, s.id, s.learner_id)
+        assert _upload(client, s.id, token).status_code == 200
+    finally:
+        supa.set_client(None)
+    uploads = [p for m, p in seen if m == "POST" and p.startswith("/storage/v1/object/")]
+    assert len(uploads) == 1
+    assert uploads[0].startswith(f"/storage/v1/object/{settings.supabase_storage_bucket}/public/chat/{s.id}/att_")
+    assert uploads[0].endswith(".png")

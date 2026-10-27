@@ -173,6 +173,68 @@ export function ImageChips({ items, onRemove }: { items: PendingImage[]; onRemov
   );
 }
 
+function hasFiles(e: React.DragEvent): boolean {
+  return Array.from(e.dataTransfer?.types ?? []).includes("Files");
+}
+
+/**
+ * Drop images anywhere on the chat. `bind` goes on the chat's container; the
+ * counter keeps the overlay up while the pointer crosses child elements.
+ */
+export function useImageDrop(onFiles: (files: FileList) => void, enabled = true) {
+  const [dragging, setDragging] = useState(false);
+  const depth = useRef(0);
+  const bind = {
+    onDragEnter: (e: React.DragEvent) => {
+      if (!enabled || !hasFiles(e)) return;
+      e.preventDefault();
+      depth.current += 1;
+      setDragging(true);
+    },
+    onDragOver: (e: React.DragEvent) => {
+      if (!enabled || !hasFiles(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    },
+    onDragLeave: (e: React.DragEvent) => {
+      if (!enabled || !hasFiles(e)) return;
+      depth.current = Math.max(0, depth.current - 1);
+      if (depth.current === 0) setDragging(false);
+    },
+    onDrop: (e: React.DragEvent) => {
+      if (!enabled || !hasFiles(e)) return;
+      e.preventDefault();
+      depth.current = 0;
+      setDragging(false);
+      if (e.dataTransfer.files.length) onFiles(e.dataTransfer.files);
+    },
+  };
+  return { dragging, bind };
+}
+
+/** Pasting a screenshot into the input attaches it. */
+export function pastedImages(e: React.ClipboardEvent): File[] {
+  return Array.from(e.clipboardData?.files ?? []).filter((f) => f.type.startsWith("image/"));
+}
+
+/** Shown over the chat while images are dragged onto it. */
+export function DropOverlay({ show, fixed = false }: { show: boolean; fixed?: boolean }) {
+  if (!show) return null;
+  return (
+    <div className={`pointer-events-none ${fixed ? "fixed" : "absolute"} inset-0 z-40 flex items-center justify-center rounded-[inherit] border-2 border-dashed border-violet-400 bg-violet-50/80 backdrop-blur-[1px]`}>
+      <div className="flex flex-col items-center gap-2 text-violet-700">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className="h-10 w-10" aria-hidden="true">
+          <rect x="3" y="3" width="18" height="18" rx="3" />
+          <circle cx="8.5" cy="8.5" r="1.5" />
+          <path d="M21 15l-5-5L5 21" />
+        </svg>
+        <p className="text-sm font-semibold">Drop images to add them to this chat</p>
+        <p className="text-xs text-violet-500">Malai reads them here; they are not added to your resources</p>
+      </div>
+    </div>
+  );
+}
+
 /** The user's bubble notes which images went with the question. */
 export function withImageNote(text: string, names: string[]): string {
   return names.length ? `${text}\n\n${names.map((n) => `📎 ${n}`).join("  ")}` : text;
