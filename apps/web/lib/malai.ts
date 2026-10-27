@@ -191,6 +191,12 @@ export function recordLessonChat(args: {
   return chat.id;
 }
 
+/** The server named a lesson chat: show that name in the sidebar. */
+export function titleLessonChat(sessionId: string, threadId: string, title: string): void {
+  const existing = load().find((c) => c.sessionId === sessionId && c.threadId === threadId);
+  if (existing) updateChat(existing.id, { title });
+}
+
 /** Short title from a first question. */
 export function titleFrom(text: string): string {
   const flat = text.replace(/\s+/g, " ").trim();

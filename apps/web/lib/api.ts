@@ -294,6 +294,8 @@ export interface ChatResponse {
   mode?: AnswerMode;
   /** True when the answer is backed by retrieved lesson passages. */
   grounded?: boolean;
+  /** Streamed answers only: the name the server gave the chat after its first question. */
+  thread_title?: string;
   /**
    * What the live-frame path did, or absent when no frame was involved.
    *

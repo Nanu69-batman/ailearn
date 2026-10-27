@@ -50,6 +50,7 @@ import {
   malaiLessonPath,
   malaiSubjectPath,
   recordLessonChat,
+  titleLessonChat,
 } from "@/lib/malai";
 
 /**
@@ -449,6 +450,12 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
       }
     },
     [sessionId, sessionToken, subjectId, resourceId, malai, openChatId],
+  );
+  const onTitled = useCallback(
+    (threadId: string, title: string): void => {
+      if (sessionId) titleLessonChat(sessionId, threadId, title);
+    },
+    [sessionId],
   );
   const openChat = openChatId ? getChatSafe(openChatId) : null;
   const openThreadId = openChat && openChat.sessionId === sessionId ? openChat.threadId : null;
@@ -912,6 +919,7 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
         onRejoin={reset}
         openThreadId={openThreadId}
         onAsk={onAsk}
+        onTitled={onTitled}
         headerLead={grip}
         isVideo={isMedia}
         // The floating window toolbar sits over the bottom-left corner; when

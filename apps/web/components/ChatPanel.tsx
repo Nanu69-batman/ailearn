@@ -74,6 +74,8 @@ interface ChatPanelProps {
   openThreadId?: string | null;
   /** A question was sent in `threadId` (before its answer arrives). */
   onAsk?: (threadId: string, question: string) => void;
+  /** The server named a chat after its first question. */
+  onTitled?: (threadId: string, title: string) => void;
   /** A video (playhead, frames) rather than a document. Changes the wording. */
   isVideo?: boolean;
   /** Extra classes for the input bar's row, e.g. room for something floating over it. */
@@ -172,6 +174,7 @@ export default function ChatPanel({
   headerActions,
   openThreadId,
   onAsk,
+  onTitled,
   isVideo = true,
   composerClassName = "",
 }: ChatPanelProps) {
@@ -546,6 +549,7 @@ export default function ChatPanel({
         kind: res.refused ? "refused" : res.mode,
       };
       setMessages((prev) => [...prev, assistantMsg]);
+      if (res.thread_title) onTitled?.(threadId, res.thread_title);
       // Titles come from a chat's first question, and the list is ordered by
       // activity, so both may have changed.
       void refreshThreads();

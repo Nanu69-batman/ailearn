@@ -464,7 +464,11 @@ export default function MalaiChatView() {
           kind: res.refused ? "refused" : res.mode,
         },
       ]);
-      updateChat(current.id, { updatedAt: Date.now(), preview: titleFrom(text) });
+      updateChat(current.id, {
+        updatedAt: Date.now(),
+        preview: titleFrom(text),
+        ...(res.thread_title ? { title: res.thread_title } : {}),
+      });
     } catch (err) {
       setError(err instanceof ApiError ? formatApiError(err) : err instanceof Error ? err.message : String(err));
     } finally {

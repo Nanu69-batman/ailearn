@@ -320,6 +320,66 @@ async def post_chat(body: ChatRequest, request: Request) -> ChatResponse:
     return await _answer(body)
 
 
+_TITLE_SYSTEM = (
+    "You name a tutoring chat from the learner's first message. Reply with the "
+    "title only: 2 to 6 words, Title Case, no quotes, no trailing punctuation. "
+    "Keep the language the learner wrote in."
+)
+#: After the answer is done, how much longer the title may take.
+TITLE_WAIT_S = 4.0
+
+
+def _needs_title(session_id: str, thread_id: str | None) -> bool:
+    """A chat's first question, in a chat nobody has named yet."""
+    tid = _resolve_thread(session_id, thread_id)
+    t = thread_store.get(session_id, tid)
+    if t is None or t.title:
+        return False
+    return not any(m.role == "user" for m in message_store.list_for_session(session_id, tid))
+
+
+async def _auto_title(session_id: str, thread_id: str | None, message: str) -> str | None:
+    """Name the chat from its first question (one short model call). Never raises."""
+    from app.chat.llm import DeterministicStubLLM
+
+    llm = getattr(get_service(), "_llm", None)
+    # No real model (tests, offline): the list keeps showing the first question.
+    if llm is None or isinstance(llm, DeterministicStubLLM):
+        return None
+    try:
+        result = await llm.complete(
+            system=_TITLE_SYSTEM,
+            user_prompt="First message:\n" + message[:1000],
+            passages=[],
+            mode="title",
+        )
+    except Exception as exc:  # noqa: BLE001 - a missing title must not fail the chat
+        log.warning("chat title failed: %s", type(exc).__name__)
+        return None
+    title = " ".join((result.text or "").split()).strip().strip("\"'*#.").strip()
+    if not title:
+        return None
+    t = thread_store.rename(session_id, _resolve_thread(session_id, thread_id), title[:60])
+    return t.title if t is not None else None
+
+
+def _start_title(body: ChatRequest) -> asyncio.Task | None:
+    if not body.message.strip() or not _needs_title(body.session_id, body.thread_id):
+        return None
+    task = asyncio.create_task(_auto_title(body.session_id, body.thread_id, body.message))
+    task.add_done_callback(lambda t: t.cancelled() or t.exception())
+    return task
+
+
+async def _title_of(task: asyncio.Task | None) -> str | None:
+    if task is None:
+        return None
+    try:
+        return await asyncio.wait_for(asyncio.shield(task), timeout=TITLE_WAIT_S)
+    except (TimeoutError, asyncio.CancelledError):
+        return None
+
+
 def _sse(event: str, data) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
@@ -337,6 +397,8 @@ async def post_chat_stream(body: ChatRequest, request: Request) -> StreamingResp
     from app.chat import streaming
 
     _authorize_chat(body, request)
+    # Named alongside the first answer, so the title costs no extra wait.
+    title_task = _start_title(body)
     sink = streaming.StreamSink()
     bound = streaming.bind(sink)
     try:
@@ -364,7 +426,11 @@ async def post_chat_stream(body: ChatRequest, request: Request) -> StreamingResp
             yield _sse(kind, {"text": value})
         exc = task.exception()
         if exc is None:
-            yield _sse("done", task.result().model_dump(mode="json"))
+            done = task.result().model_dump(mode="json")
+            title = await _title_of(title_task)
+            if title:
+                done["thread_title"] = title
+            yield _sse("done", done)
         elif isinstance(exc, HTTPException):
             yield _sse("error", {"status": exc.status_code, "detail": exc.detail})
         elif isinstance(exc, QuotaExhaustedError):
