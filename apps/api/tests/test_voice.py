@@ -425,9 +425,9 @@ def test_transcripts_and_interrupt_events(client, launch, monkeypatch):
         ws.send_bytes(b"\x00\x00")
         frames = _read_until(ws, _is("output_transcript"))
     assert {"type": "interrupted"} in frames
-    assert {"type": "input_transcript", "text": "what is", "final": False} in frames
-    assert {"type": "input_transcript", "text": "what is a tensor", "final": True} in frames
-    assert {"type": "output_transcript", "text": "A tensor "} in frames
+    assert {"type": "input_transcript", "text": "what is", "final": False, "turn": 0} in frames
+    assert {"type": "input_transcript", "text": "what is a tensor", "final": True, "turn": 0} in frames
+    assert {"type": "output_transcript", "text": "A tensor ", "turn": 0} in frames
 
 
 def test_text_turn_is_forwarded(client, launch, monkeypatch):

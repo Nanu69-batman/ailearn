@@ -58,6 +58,8 @@ DRAIN_TIMEOUT_S = 3.0
 #: once more when the conversation ends.
 RECAP_INTERVAL_S = 300.0
 RECAP_TIMEOUT_S = 30.0
+#: After End, how long the last turn's written version may take.
+FORMAT_TIMEOUT_S = 10.0
 
 UNAVAILABLE_MSG = "Voice is unavailable right now. Please try again."
 COURSE_UNAVAILABLE_MSG = "The course assistant is unavailable right now."
@@ -242,6 +244,13 @@ class _LiveSession:
         self.latest_ms = clamp_current_time_ms(start.current_time_ms)
         self.state = ""
         self.out_buf = ""
+        # Turn numbers on the captions, so a written version can replace them.
+        self.in_buf = ""
+        self.in_open = False
+        self.in_turn = 0
+        self.out_turn = 0
+        # Not cancelled at End: the last turn's written version can still arrive.
+        self.format_tasks: set[asyncio.Task] = set()
         self.tool_tasks: set[asyncio.Task] = set()
         self.reason = "ended"
         # Relay mode (thinking model): learner text awaiting its turn_complete.
@@ -319,7 +328,7 @@ class _LiveSession:
         sc = _get(msg, "server_content")
         if sc is not None:
             if _get(sc, "interrupted"):
-                self.out_buf = ""
+                self.close_output()
                 await _send_json(ws, {"type": "interrupted"})
                 await self.set_state("listening")
             turn = _get(sc, "model_turn")
@@ -331,23 +340,42 @@ class _LiveSession:
             # Captions in Roman script: spoken Hindi arrives in Devanagari.
             interim = _get(_get(sc, "interim_input_transcription"), "text")
             if interim:
+                self.in_open = True
                 await _send_json(
                     ws,
-                    {"type": "input_transcript", "text": transliterate(interim), "final": False},
+                    {
+                        "type": "input_transcript",
+                        "text": transliterate(interim),
+                        "final": False,
+                        "turn": self.in_turn,
+                    },
                 )
             final = _get(_get(sc, "input_transcription"), "text")
             if final:
                 if self.relay:
                     self.pending += final
+                self.in_open = True
+                self.in_buf = f"{self.in_buf} {final}".strip()
                 await _send_json(
                     ws,
-                    {"type": "input_transcript", "text": transliterate(final), "final": True},
+                    {
+                        "type": "input_transcript",
+                        "text": transliterate(final),
+                        "final": True,
+                        "turn": self.in_turn,
+                    },
                 )
             out = _get(_get(sc, "output_transcription"), "text")
             if out:
+                self.close_input()
                 self.out_buf += out
                 await _send_json(
-                    ws, {"type": "output_transcript", "text": transliterate(self.out_buf)}
+                    ws,
+                    {
+                        "type": "output_transcript",
+                        "text": transliterate(self.out_buf),
+                        "turn": self.out_turn,
+                    },
                 )
             status = _get(sc, "interaction_status")
             if status is not None:
@@ -357,7 +385,8 @@ class _LiveSession:
                 elif name.endswith("IDLE"):
                     await self.set_state("listening")
             if _get(sc, "turn_complete"):
-                self.out_buf = ""
+                self.close_input()
+                self.close_output()
                 if self.relay and self.pending.strip():
                     question = self.pending.strip()[:4000]
                     self.pending = ""
@@ -379,6 +408,44 @@ class _LiveSession:
             )
             self.reason = "go_away"
             raise _Stop
+
+    # written versions of the captions
+    def close_input(self) -> None:
+        """The learner's turn is over: format what they said, start a new turn."""
+        if not self.in_open:
+            return
+        if self.in_buf.strip():
+            self.spawn_format("user", self.in_turn, self.in_buf)
+        self.in_buf = ""
+        self.in_open = False
+        self.in_turn += 1
+
+    def close_output(self) -> None:
+        """Malai's turn is over (done or interrupted): format it, start a new turn."""
+        if not self.out_buf.strip():
+            self.out_buf = ""
+            return
+        self.spawn_format("assistant", self.out_turn, self.out_buf)
+        self.out_buf = ""
+        self.out_turn += 1
+
+    def spawn_format(self, role: str, turn: int, text: str) -> None:
+        task = asyncio.create_task(self.send_formatted(role, turn, transliterate(text)))
+        self.format_tasks.add(task)
+        task.add_done_callback(self.format_tasks.discard)
+
+    async def send_formatted(self, role: str, turn: int, text: str) -> None:
+        try:
+            written = await asyncio.to_thread(asyncio.run, _format_spoken(role, text))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the caption stays as it was
+            log.warning("voice formatting failed: %s", type(exc).__name__)
+            return
+        if written:
+            await _send_json(
+                self.ws, {"type": "formatted", "role": role, "turn": turn, "text": written}
+            )
 
     async def respond(self, call: Any, payload: dict) -> None:
         kwargs: dict[str, Any] = {}
@@ -514,6 +581,37 @@ class _LiveSession:
             self.relay_busy = False
 
 
+_FORMAT_SYSTEM = (
+    "You turn a live voice transcript into clean written chat text. Keep the "
+    "same meaning and content: add no facts, drop none, answer nothing. Fix "
+    "punctuation, capitalisation and obvious mis-hearings. Write every piece of "
+    "math, formula, unit or symbol in LaTeX: inline as $...$, a standalone "
+    "equation as $$...$$ (for example 'x squared plus two x' becomes $x^2 + 2x$, "
+    "'integral of sine x dx' becomes $\\int \\sin x\\,dx$). Keep the language "
+    "and script of the input; Hinglish stays in Roman script. "
+    "Output only the rewritten text, with no preamble and no quotes."
+)
+_FORMAT_ROLE = {
+    "user": "This is the learner's spoken question. Keep it a short question; no lists or bold.",
+    "assistant": (
+        "This is the tutor's spoken answer. Use Markdown where it helps it read "
+        "well: short paragraphs, a numbered or bulleted list for steps, **bold** "
+        "for key terms. No headings."
+    ),
+}
+
+
+async def _format_spoken(role: str, text: str) -> str:
+    """A spoken turn as Markdown + LaTeX; empty when the model gives nothing."""
+    result = await chat_router.get_service()._llm.complete(
+        system=_FORMAT_SYSTEM + " " + _FORMAT_ROLE[role],
+        user_prompt="Transcript:\n\n" + text[:6000],
+        passages=[],
+        mode="summarize",
+    )
+    return strip_citation_markers((result.text or "").strip())
+
+
 _RECAP_SYSTEM = (
     "You write a short recap of a voice study session between a learner and "
     "Malai, their tutor. Use ONLY the answers given below; add no facts of "
@@ -641,7 +739,12 @@ async def voice_live(ws: WebSocket) -> None:
         await asyncio.gather(*live.tool_tasks, return_exceptions=True)
         with contextlib.suppress(Exception):
             await cm.__aexit__(None, None, None)
-    # The closing recap: sent while the learner is still connected, saved either way.
+    # The last turn's written version, then the closing recap: sent while the
+    # learner is still connected, the recap saved either way.
+    live.close_input()
+    live.close_output()
+    if live.format_tasks:
+        await asyncio.wait(set(live.format_tasks), timeout=FORMAT_TIMEOUT_S)
     with contextlib.suppress(Exception):
         await asyncio.wait_for(live.recap(), timeout=RECAP_TIMEOUT_S)
     if in_time:
