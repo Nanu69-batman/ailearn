@@ -38,6 +38,25 @@ def _no_hosted_transcription(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_live_supabase(monkeypatch):
+    """Never write to the developer's real Supabase project from tests.
+
+    Without this, a .env with Supabase keys made every test that creates a
+    subject, resource or session mirror it into the live database, where the
+    app then loaded it back. Tests that need Supabase inject a
+    ``MockTransport`` client with ``set_client()`` and set these themselves.
+    """
+    from app.config import settings
+    from app.supa import client as supa_client
+
+    monkeypatch.setattr(settings, "supabase_url", "")
+    monkeypatch.setattr(settings, "supabase_service_role_key", "")
+    supa_client.set_client(None)
+    yield
+    supa_client.set_client(None)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_process_global_state():
     """Give every test a clean, consistent view of the module-level singletons."""
     from app.chat import router as chat_router
