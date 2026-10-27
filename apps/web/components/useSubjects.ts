@@ -7,6 +7,7 @@ import {
   isApiConfigured,
   type Subject,
 } from "@/lib/api";
+import { onSubjectsChanged } from "@/lib/subjectEvents";
 
 export type SubjectsState = "loading" | "ready" | "error";
 
@@ -46,6 +47,9 @@ export function useSubjects() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // New material was added somewhere on the page: its resource ids changed.
+  useEffect(() => onSubjectsChanged(() => void load()), [load]);
 
   const added = useCallback((created: Subject): void => {
     setSubjects((prev) => [created, ...prev.filter((s) => s.id !== created.id)]);

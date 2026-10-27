@@ -50,6 +50,7 @@ import { useSubjects } from "@/components/useSubjects";
 import { joinText, stripInterim, withInterim } from "@/lib/voice";
 import MicButton, { VoiceButton } from "@/components/MicButton";
 import VoicePanel from "@/components/VoicePanel";
+import AddContentDialog from "@/components/AddContentDialog";
 import { useDictation, type DictationState } from "@/components/useDictation";
 import { useVoiceModels, type VoiceStartFields, type VoiceTurn } from "@/components/useVoiceSession";
 
@@ -769,6 +770,9 @@ function SubjectHome({
   notes: React.ReactNode;
 }) {
   const { resources, state, error } = useSubjectResources(subjectId);
+  const [adding, setAdding] = useState(false);
+  const [ingesting, setIngesting] = useState(false);
+  const closeAdd = useCallback(() => setAdding(false), []);
   const card = "rounded-2xl border border-gray-200 bg-white shadow-sm";
   const row =
     "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition hover:bg-violet-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300";
@@ -821,9 +825,26 @@ function SubjectHome({
         </section>
 
         <section className={card} aria-labelledby="subject-resources">
-          <h2 id="subject-resources" className="border-b border-gray-100 px-5 py-3.5 text-sm font-semibold text-gray-900">
-            Resources
-          </h2>
+          <div className="flex items-center gap-3 border-b border-gray-100 py-2.5 pl-5 pr-3">
+            <h2 id="subject-resources" className="flex-1 text-sm font-semibold text-gray-900">
+              Resources
+            </h2>
+            <button
+              type="button"
+              onClick={() => setAdding(true)}
+              title={`Add content to ${name}`}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300"
+            >
+              <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+              Add
+              {ingesting && (
+                <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" aria-label="Processing" />
+              )}
+            </button>
+          </div>
+          <AddContentDialog subjectId={subjectId} open={adding} onClose={closeAdd} onBusyChange={setIngesting} />
           {state === "loading" || state === "idle" ? (
             <p role="status" className="px-5 py-6 text-sm text-gray-500">Loading resources…</p>
           ) : state === "error" ? (

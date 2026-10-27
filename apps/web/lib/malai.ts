@@ -24,6 +24,7 @@ import {
   type Subject,
 } from "@/lib/api";
 import { readCompletion } from "@/lib/learn";
+import { onSubjectsChanged } from "@/lib/subjectEvents";
 
 export const MALAI_PATH = "/malai";
 
@@ -320,6 +321,14 @@ export function useSubjectResources(subjectId: string | null): {
   const [state, setState] = useState<"idle" | "loading" | "ready" | "error">(cached ? "ready" : "idle");
   const [resources, setResources] = useState<CourseResource[]>(cached ?? []);
   const [error, setError] = useState<string | null>(null);
+  const [version, setVersion] = useState(0);
+
+  useEffect(
+    () => onSubjectsChanged((id) => {
+      if (id === subjectId) setVersion((v) => v + 1);
+    }),
+    [subjectId],
+  );
 
   useEffect(() => {
     if (!subjectId) return;
@@ -344,7 +353,7 @@ export function useSubjectResources(subjectId: string | null): {
     return () => {
       cancelled = true;
     };
-  }, [subjectId]);
+  }, [subjectId, version]);
 
   return { resources, state, error };
 }
