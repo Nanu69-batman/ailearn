@@ -30,6 +30,13 @@ export interface VoiceStartFields {
 export type VoiceStatus = "connecting" | "live" | "ended" | "error";
 export type VoiceActivity = "listening" | "thinking" | "speaking";
 
+/** One spoken turn, as it is transcribed; the same id is reported again as the text grows. */
+export interface VoiceTurn {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+}
+
 interface Options {
   model: string;
   /** Prebuilt voice name and speaking tone (GET /voice/models lists both). */
@@ -40,6 +47,8 @@ interface Options {
   getCurrentTimeMs?: () => number;
   /** A recap of the conversation so far (every 5 minutes and at the end); already saved to the chat. */
   onRecap: (response: ChatResponse) => void;
+  /** Each spoken turn, so the chat can show the conversation as messages. */
+  onTurn?: (turn: VoiceTurn) => void;
 }
 
 const MAX_PENDING = 30;
@@ -66,7 +75,7 @@ export function useVoiceModels(active: boolean): VoiceModels | null {
 }
 
 /** One live conversation over WS /voice/live; connects on mount and on model change, cleans up on unmount. */
-export function useVoiceSession({ model, voice, tone, getStart, getCurrentTimeMs, onRecap }: Options) {
+export function useVoiceSession({ model, voice, tone, getStart, getCurrentTimeMs, onRecap, onTurn }: Options) {
   const [status, setStatus] = useState<VoiceStatus>("connecting");
   const [activity, setActivity] = useState<VoiceActivity>("listening");
   const [inputText, setInputText] = useState("");
@@ -75,8 +84,8 @@ export function useVoiceSession({ model, voice, tone, getStart, getCurrentTimeMs
   const [attempt, setAttempt] = useState(0);
   const wsRef = useRef<WebSocket | null>(null);
   const stopRef = useRef<() => void>(() => {});
-  const cb = useRef({ getStart, getCurrentTimeMs, onRecap });
-  cb.current = { getStart, getCurrentTimeMs, onRecap };
+  const cb = useRef({ getStart, getCurrentTimeMs, onRecap, onTurn });
+  cb.current = { getStart, getCurrentTimeMs, onRecap, onTurn };
 
   useEffect(() => {
     const url = voiceWsUrl("live");
@@ -89,6 +98,18 @@ export function useVoiceSession({ model, voice, tone, getStart, getCurrentTimeMs
     // After End: the mic and audio are off, the socket waits for the recap.
     let draining = false;
     let lastKind: "input" | "output" | null = null;
+    let turn: VoiceTurn | null = null;
+    // Final input segments of the current turn; an interim one is shown after them.
+    let heard = "";
+    const report = (role: VoiceTurn["role"], text: (prev: string) => string): string => {
+      if (!turn || turn.role !== role) {
+        if (role === "user") heard = "";
+        turn = { id: `voice-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, role, text: "" };
+      }
+      turn = { ...turn, text: text(turn.text) };
+      if (turn.text.trim()) cb.current.onTurn?.(turn);
+      return turn.text;
+    };
     const pending: ArrayBuffer[] = [];
 
     setStatus("connecting");
@@ -207,7 +228,13 @@ export function useVoiceSession({ model, voice, tone, getStart, getCurrentTimeMs
                 setInputText("");
               }
               lastKind = "input";
-              setInputText(String(msg.text ?? ""));
+              const t = String(msg.text ?? "").trim();
+              const shown = report("user", () => {
+                const full = [heard, t].filter(Boolean).join(" ");
+                if (msg.final) heard = full;
+                return full;
+              });
+              setInputText(shown);
               break;
             }
             case "output_transcript": {
@@ -215,6 +242,7 @@ export function useVoiceSession({ model, voice, tone, getStart, getCurrentTimeMs
               const t = String(msg.text ?? "");
               // Accumulated text replaces; a fragment is appended.
               setOutputText((prev) => (t.startsWith(prev) ? t : prev + t));
+              report("assistant", (prev) => (t.startsWith(prev) ? t : prev + t));
               break;
             }
             case "interrupted":

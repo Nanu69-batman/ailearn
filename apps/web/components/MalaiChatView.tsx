@@ -51,7 +51,7 @@ import { joinText, stripInterim, withInterim } from "@/lib/voice";
 import MicButton, { VoiceButton } from "@/components/MicButton";
 import VoicePanel from "@/components/VoicePanel";
 import { useDictation, type DictationState } from "@/components/useDictation";
-import { useVoiceModels, type VoiceStartFields } from "@/components/useVoiceSession";
+import { useVoiceModels, type VoiceStartFields, type VoiceTurn } from "@/components/useVoiceSession";
 
 /**
  * /malai: chat with the tutor outside any one lesson.
@@ -274,7 +274,7 @@ export default function MalaiChatView() {
   useEffect(() => {
     if (messages.length === 0) return;
     window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" });
-  }, [messages.length, preview?.text]);
+  }, [messages.length, messages[messages.length - 1]?.content, preview?.text]);
 
   // ---- Voice -------------------------------------------------------------
   // Dictation needs a session, so the first use in a new chat creates the chat
@@ -333,7 +333,19 @@ export default function MalaiChatView() {
     };
   };
 
-  /** A voice recap: the conversation itself stays out of the chat, the recap is saved to it. */
+  /** A spoken turn: shown in the chat like a typed message, updated in place as it is transcribed. */
+  const voiceTurn = (turn: VoiceTurn): void => {
+    setMessages((prev) => {
+      const i = prev.findIndex((m) => m.id === turn.id);
+      if (i >= 0) return prev.map((m, j) => (j === i ? { ...m, content: turn.text } : m));
+      return [
+        ...prev,
+        { id: turn.id, role: turn.role, content: turn.text, citations: [], created_at: new Date().toISOString(), ...(turn.role === "assistant" ? { kind: "conversational" as const } : {}) },
+      ];
+    });
+  };
+
+  /** A voice recap: saved to the chat, after the spoken turns. */
   const voiceRecap = (res: ChatResponse): void => {
     setMessages((prev) => [
       ...prev,
@@ -530,7 +542,16 @@ export default function MalaiChatView() {
   };
 
   const notReady = subjectsState !== "ready";
-  const composer = (
+  const composer = voiceChat && voiceModels ? (
+    <VoicePanel
+      models={voiceModels}
+      getStart={voiceStart}
+      onRecap={voiceRecap}
+      onTurn={voiceTurn}
+      onClose={() => setVoiceChat(null)}
+      subtitle={subject ? subject.name : "General"}
+    />
+  ) : (
     <Composer
       value={withInterim(draft, dictation.interim)}
       onChange={(v) => setDraft(stripInterim(v, draft, dictation.interim))}
@@ -560,7 +581,7 @@ export default function MalaiChatView() {
   );
 
   const missing = mounted && chatId !== null && chat === null && chatId !== createdHere.current;
-  const empty = chatId === null && messages.length === 0 && !loading;
+  const empty = chatId === null && messages.length === 0 && !loading && !voiceChat;
 
   return (
     <div
@@ -679,20 +700,6 @@ export default function MalaiChatView() {
             </div>
           )}
         </>
-      )}
-
-      {voiceChat && voiceModels && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-gray-900/30 p-4">
-          <div className="h-[34rem] max-h-full w-full max-w-lg overflow-hidden rounded-3xl shadow-2xl shadow-gray-900/20">
-            <VoicePanel
-              models={voiceModels}
-              getStart={voiceStart}
-              onRecap={voiceRecap}
-              onClose={() => setVoiceChat(null)}
-              subtitle={subject ? subject.name : "General"}
-            />
-          </div>
-        </div>
       )}
 
       {quizChat && quizScope && (

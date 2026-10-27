@@ -37,7 +37,7 @@ import { joinText, stripInterim, withInterim } from "../lib/voice";
 import MicButton, { VoiceButton } from "./MicButton";
 import VoicePanel from "./VoicePanel";
 import { useDictation } from "./useDictation";
-import { useVoiceModels, type VoiceStartFields } from "./useVoiceSession";
+import { useVoiceModels, type VoiceStartFields, type VoiceTurn } from "./useVoiceSession";
 
 interface ChatPanelProps {
   sessionId: string;
@@ -359,8 +359,19 @@ export default function ChatPanel({
     el.style.overflowY = el.scrollHeight > max ? "auto" : "hidden";
   }, [input, dictation.interim]);
 
-  /** The voice conversation answered: show the exchange like a typed one. */
-  /** A voice recap: the conversation itself stays out of the chat, the recap is saved to it. */
+  /** A spoken turn: shown in the chat like a typed message, updated in place as it is transcribed. */
+  function voiceTurn(turn: VoiceTurn): void {
+    setMessages((prev) => {
+      const i = prev.findIndex((m) => m.id === turn.id);
+      if (i >= 0) return prev.map((m, j) => (j === i ? { ...m, content: turn.text } : m));
+      return [
+        ...prev,
+        { id: turn.id, role: turn.role, content: turn.text, citations: [], created_at: new Date().toISOString(), ...(turn.role === "assistant" ? { kind: "conversational" as const } : {}) },
+      ];
+    });
+  }
+
+  /** A voice recap: saved to the chat, after the spoken turns. */
   function voiceRecap(res: ChatResponse): void {
     setMessages((prev) => [
       ...prev,
@@ -823,7 +834,20 @@ export default function ChatPanel({
           <div ref={bottomRef} />
         </div>
 
-        {/* Composer: the same pill as the Malai page */}
+        {/* Composer: the same pill as the Malai page; the voice bar takes its place during a conversation */}
+        {voiceOpen && voiceModels ? (
+          <div className={`shrink-0 px-4 pb-4 ${composerClassName}`}>
+            <VoicePanel
+              models={voiceModels}
+              getStart={voiceStart}
+              getCurrentTimeMs={isVideo ? getCurrentTimeMs : undefined}
+              onRecap={voiceRecap}
+              onTurn={voiceTurn}
+              onClose={() => setVoiceOpen(false)}
+              subtitle={`About this ${isVideo ? "video" : "material"}`}
+            />
+          </div>
+        ) : (
         <form className={`shrink-0 px-4 pb-4 transition-[padding] ${composerClassName}`} onSubmit={handleSubmit}>
           <div className="relative">
           {menu && (
@@ -917,20 +941,8 @@ export default function ChatPanel({
             </p>
           )}
         </form>
+        )}
       </div>
-
-      {voiceOpen && voiceModels && (
-        <div className="absolute inset-0 z-30">
-          <VoicePanel
-            models={voiceModels}
-            getStart={voiceStart}
-            getCurrentTimeMs={isVideo ? getCurrentTimeMs : undefined}
-            onRecap={voiceRecap}
-            onClose={() => setVoiceOpen(false)}
-            subtitle={`About this ${isVideo ? "video" : "material"}`}
-          />
-        </div>
-      )}
     </section>
   );
 }
