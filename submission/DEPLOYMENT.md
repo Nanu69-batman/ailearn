@@ -7,14 +7,17 @@ This is how the live demo is deployed:
 | Web (Next.js 15) | Vercel, root dir `apps/web` | https://ailearn-theta.vercel.app |
 | API (FastAPI) | Render web service, Docker, free tier | https://malai-pioneer-api.onrender.com |
 | Vectors | Pinecone serverless index `ailearn-llama` (1024-d, cosine), embedded by Pinecone Inference `llama-text-embed-v2` | — |
-| Models | OpenRouter Nemotron (agentic tutor), Gemini (quiz writing, fallback answers, vision), Pinecone Inference (embeddings), Groq (speech to text) | — |
+| Models | OpenRouter Nemotron (agentic tutor), Gemini (quiz writing, fallback answers, vision), Gemini Live (voice), Pinecone Inference (embeddings), Groq (speech to text) | — |
+| Accounts, database, files (optional) | Supabase: Auth, Postgres with row-level security, private Storage bucket `media` | — |
 
 The API can't run on Vercel. Its Python function bundle limit is 250 MB, which
 faster-whisper, PyAV and chromadb exceed, and ingest runs as background jobs for
 minutes. Render's free disk is wiped on every restart, which is why the vector
 index lives in Pinecone. Files stay on the container disk: the demo video and
 the UNIT-1 PDF notes are baked into the image with their chapters, and files
-uploaded on the hosted site last until the next restart.
+uploaded on the hosted site last until the next restart, unless Supabase is
+configured (section 1b): then they are copied to Storage and downloaded back
+when needed, and subjects, sessions and chats are kept in Postgres.
 
 Everything below has been done once for the live demo. Follow it in order to
 reproduce it.
@@ -23,7 +26,9 @@ reproduce it.
 
 - A GitHub repository with this code. Render and Vercel build from it.
 - Accounts: Render, Vercel, Pinecone, Google AI Studio (Gemini key), Groq,
-  OpenRouter (optional; without it every question uses the Gemini pipeline).
+  OpenRouter (optional; without it every question uses the Gemini pipeline),
+  Supabase (optional; without it there is no sign-in and state stays on the
+  container disk).
 - A launch secret shared by the web app and the API:
   `python -c "import secrets; print(secrets.token_hex(32))"`.
 - Local checks pass: `cd apps/api && python -m pytest -q && python -m ruff check .`
@@ -50,6 +55,49 @@ reproduce it.
    instead: copy each chunk's text and metadata and re-embed the text with
    `llama-text-embed-v2` (passage mode); no Gemini call is needed. Re-running it replaces that resource's chunks, deleting them by
    exact `resource_id` equality.
+
+## 1b. Supabase (optional): accounts, database, Storage
+
+Everything Supabase does is off until both `SUPABASE_URL` and
+`SUPABASE_SERVICE_ROLE_KEY` are set on the API.
+
+1. Create a project. In **SQL Editor**, run these files from the repo, in order:
+
+   | File | Creates |
+   |---|---|
+   | `supabase/migrations/0001_init.sql` | `profiles`, `subjects`, `resources`, `chat_sessions`, `chat_threads`, `chat_messages`, `study_activity`, `lesson_progress`, `quiz_attempts`, row-level security on each, the streak functions, and the buckets `media` (private) and `avatars` (public) |
+   | `supabase/migrations/0002_malai_chats.sql` | `malai_chats` (the Malai chat list per user) and `chat_attachments` (images attached to a chat) |
+   | `supabase/migrations/0003_grants.sql` | Table privileges for `service_role`, `authenticated` and `anon`, default privileges for future tables, and `chat_attachments.storage_path` |
+
+   **Do not skip 0003.** On a project that does not grant new tables to the API
+   roles, every table call fails with `42501 permission denied`, even with the
+   secret key. The API logs only a warning, so it looks healthy but saves
+   nothing. Storage is unaffected, so files still upload.
+2. **Authentication -> Providers:** enable Email, and Google if wanted. Add
+   `https://<vercel-domain>/auth/callback` to the redirect URLs.
+3. On Render (**Environment**, these are not in `render.yaml`):
+
+   | Name | Value |
+   |---|---|
+   | `SUPABASE_URL` | `https://<project>.supabase.co` |
+   | `SUPABASE_SERVICE_ROLE_KEY` | The secret (service role) key. Server only |
+   | `SUPABASE_JWT_SECRET` | Only for a legacy HS256 project; newer projects are verified through their JWKS |
+   | `SUPABASE_STORAGE_BUCKET` | `media` (the default) |
+   | `AUTH_REQUIRED` | `true` to reject anonymous uploads, deletes and subject changes; the demo course stays open |
+
+4. On Vercel: `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+   (the public anon or publishable key, never the secret key).
+
+On startup the API loads subjects and chat sessions from Postgres, and adds
+the demo subject as public (`owner_id` null) if it is missing. Uploads go to
+`media/{owner_id or public}/{resource_id}/{filename}`, and chat images to
+`media/{owner_id or public}/chat/{session_id}/{attachment_id}.{ext}`.
+
+To wipe every chat (not users, subjects, files or progress), run
+`supabase/maintenance/clear_chats.sql` in the SQL Editor. It shows the row
+counts and deletes in one transaction. It is not a migration; run it only when
+you mean to. Chat image files are then removed by hand under
+Storage -> `media` -> each user folder -> `chat`.
 
 ## 2. Render: the API
 
@@ -78,7 +126,7 @@ context to exactly those files plus `apps/api`.
    | `OPENROUTER_MODEL` | `nvidia/nemotron-3.5-super-vl:free` (any model with tool calling) |
    | `AGENT_TIMEOUT_S` / `AGENT_TOTAL_TIMEOUT_S` | Optional. Unset (the default) means no time limit of our own on the agent: a slow free-tier reply is waited for instead of being cut off |
    | `LMS_LAUNCH_SECRET` | The secret from section 0. It must match Vercel's |
-   | `CORS_ORIGIN` | The exact Vercel origin, e.g. `https://ailearn-theta.vercel.app` (no trailing slash) |
+   | `CORS_ORIGIN` | The exact Vercel origin, e.g. `https://ailearn-theta.vercel.app` (no trailing slash). The voice WebSockets check their `Origin` header against it too |
 
    `render.yaml` already sets the rest:
 
@@ -131,6 +179,7 @@ requests: `ruff check .` for the API and `npm run build` for the web app.
    |---|---|
    | `NEXT_PUBLIC_API_URL` | `https://malai-pioneer-api.onrender.com` (no trailing slash) |
    | `LMS_LAUNCH_SECRET` | Same value as on Render. **Server-only**: never prefix it with `NEXT_PUBLIC_` |
+   | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Optional, see section 1b. Without them there is no sign-in and every page is open |
 
 3. Deploy. `app/api/launch/route.ts` signs each LMS launch with the secret on the
    server (HMAC-SHA256 over the same canonical payload as
@@ -210,7 +259,15 @@ Then use the web app:
   is opened (one model call; the chapters route answers `pending` meanwhile). The
   demo chapters are baked into the image.
 - **YouTube ingest** is often blocked from datacenter IPs. Upload files instead.
-- **Subjects reset on restart.** The image seeds `data/subjects.json` from
+- **Voice** uses the same Gemini key as text answers. Gemini Live sessions
+  are capped at 10 minutes, and the API relays audio for each open voice
+  session, so a free 512 MB instance should not be expected to serve many at
+  once. `GET /voice/models` reports `enabled: false` when there is no key, and
+  the web app then hides the voice buttons.
+- **Supabase writes are best effort.** A failed write is logged and the request
+  still succeeds. After deploying, check the logs for `permission denied` and
+  confirm that a new chat appears in `chat_sessions`.
+- **Subjects reset on restart (without Supabase).** The image seeds `data/subjects.json` from
   `apps/api/deploy/seed/subjects.json`, so a restart restores the
   **Engineering Mathematics** demo subject (`sub_06dea46b30bf4ee7`) even if it
   was deleted, and drops subjects created on the hosted site since. To get the

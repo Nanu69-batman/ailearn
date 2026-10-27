@@ -94,5 +94,39 @@ Chapters are stored as one JSON file per resource on the API's disk
 so chapters of files uploaded on the hosted site are rebuilt, at the cost of
 one model call each, the first time the resource is opened afterwards. Only the
 demo video's and PDF's chapters are baked into the image. **Fix:** keep the
-chapter records in a persistent store (the database, or object storage next to
-the media files) instead of the container disk.
+chapter records in Supabase (a table, or a JSON object in Storage next to the
+media file), which now holds the rest of the persistent state.
+
+## 7. Supabase writes fail quietly
+
+Writes to Postgres are best effort: a failure is logged as a warning and the
+request still succeeds, so a learner's chat is never lost to a database
+hiccup. The cost is that a misconfigured project, for example one missing the
+`0003_grants.sql` privileges, looks healthy while saving nothing. **Fix:** a
+`GET /health/supabase` that writes and deletes a probe row with the service
+key, and a counter of failed writes in the Developer view.
+
+## 8. Chat images after a reload
+
+An attached image stays in the chat's context after a reload (its transcript
+is stored), and the file is kept in Storage, but the chat does not show the
+thumbnail again: the user bubble only names the file. **Fix:** list a chat's
+attachments with short-lived signed Storage URLs and render them in the
+message they were sent with.
+
+## 9. Old chats whose session is gone
+
+The Malai sidebar keeps a local list of chats in the browser. A chat whose
+server session no longer exists (from before Supabase persistence, or after a
+wipe with `supabase/maintenance/clear_chats.sql`) still shows in that list and
+opens empty. **Fix:** drop list entries whose session answers `404` on the
+first history load.
+
+## 10. Voice sessions on one small instance
+
+Each open voice session holds a Gemini Live connection relayed through the
+API, for up to 10 minutes. On the free 512 MB Render instance this limits how
+many learners can talk at once (not yet measured). **Fix:** measure it, then
+cap concurrent voice sessions with a readable "voice is busy" close, or
+issue short-lived Gemini Live tokens so browsers connect directly while the
+server still answers every course question through `ask_course`.

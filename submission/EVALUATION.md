@@ -174,12 +174,23 @@ python -m app.eval.end_to_end ... --rescore <results.json>
 
 ## (b) Testing details
 
-Commands run on 2026-10-22 from `apps/api` with Python 3.14:
+Commands run on 2026-10-28 from `apps/api` with Python 3.14 on Windows:
 
 ```text
-$ python -m pytest -q
-531 passed, 221 warnings in 137.87s (0:02:17)
+$ python -m pytest --co -q
+660 tests collected
+$ python -m pytest -q -p no:warnings
+19 failed, 630 passed, 11 errors in 277.25s (0:04:37)
+$ python -m pytest -q -p no:warnings --lf
+2 failed, 28 passed
 ```
+
+The first run's errors and most of its failures are `OSError: [Errno 24] Too
+many open files`, Windows' open-file limit across the large local suite. Those
+tests pass when rerun. Two failures remain on rerun, both in
+`test_subjects.py` (`test_create_and_list_subjects`,
+`test_subjects_survive_reload`): they see more subjects than they created,
+which points to subject state leaking between tests. They are open.
 
 The suite **collects with no errors**. This is checked separately because a
 collection error once hid 19 tests behind a count that looked plausible. The
@@ -207,6 +218,11 @@ directory. They need no network and no keys.
 | **Developer-view trace** (a chat answer emits every step in order as one run; the reported gate kept only passages with `end_ms <= T`; the feed returns only events after a cursor; recording outside a run does nothing; an ingest job is one run from request to respond; both parallel video lanes report into the job's run) | `test_devtrace.py`, `test_progressive_ingest.py` |
 | **Stream head start** (stream mode processes exactly the first 2-minute window at upload) | `test_progressive_ingest.py` |
 | **Evaluation tooling** (the exported real course loads with both materials; every answerable question resolves to real pieces and every spoiler answer really is after the pause; the embedding cache embeds each text once; the real course has zero leakage offline; the end-to-end verdicts, the withheld-fact check and the scoreboard) | `test_eval_real_course.py`, `test_eval_harness.py` |
+| **Accounts (Supabase JWT)** (a valid HS256 token passes; an expired, wrong-audience, wrong-secret or garbage token is 401 whatever `AUTH_REQUIRED` says; `AUTH_REQUIRED` gates ingest but leaves read routes open; a launch binds `learner_id` to the signed-in user; the demo course stays open to anonymous launches; a token is ignored when Supabase is off) | `test_auth_supabase.py` |
+| **Supabase persistence and Storage** (subjects, sessions, threads and messages written through and loaded back on startup; the demo subject re-seeded as public; subjects and sessions isolated between users; a failed write never fails the request; no calls when Supabase is off; uploads mirrored to the owner's prefix or `public/`, restored when the local file is gone, purged with their row on delete, and a delete by a non-owner is 404) | `test_supabase_persistence.py`, `test_supabase_storage.py` |
+| **Malai chat list** (signed-in only, lists are per user and newest first, a session owned by someone else cannot be filed, listing mints the session token, delete) | `test_malai_chats.py` |
+| **Images in a chat** (type, size and per-chat limits; the transcript reaches later answers and is never citable; delete takes it out of the chat; the file lands in Storage at `{owner}/chat/{session}/{id}.ext`) | `test_chat_attachments.py` |
+| **Voice** (the first frame must be `start`; a bad token, unknown or someone else's session, foreign origin or unknown model is closed with its code; the `ask_course` tool runs the `/chat` path with the latest clamped playhead; the extended-thinking model declares no tools and has the course answer, refusal or failure injected; a failure never leaks exception text; audio relayed both ways; dictation interim and final; voices, tones and personalization reach the live config; Devanagari to Hinglish; a recap is saved on stop, and none without exchanges) | `test_voice.py` |
 | **Health** | `test_health.py` |
 
 Gap, stated plainly: the `POST /lms/session` HMAC **signature** check has no
@@ -215,12 +231,12 @@ through `test_live_frame.py`.
 
 ### Frontend checks
 
-Run from `apps/web` on 2026-10-22:
+Run from `apps/web` on 2026-10-28:
 
 | Command | Result | What it checks |
 |---|---|---|
 | `npx tsc --noEmit` | **pass** (exit 0) | Types across the Next.js app |
-| `npm run contract-check` | **PASS** | That `lib/api.ts` matches the API response shapes, that KaTeX CSS is loaded, that no message path bypasses the Markdown renderer, and that `rehype-raw` is not imported anywhere (model HTML stays inert) |
+| `npm run contract-check` | **86 ok, 6 failures** | That `lib/api.ts` matches the API response shapes, that KaTeX CSS is loaded, that no message path bypasses the Markdown renderer, and that `rehype-raw` is not imported anywhere (model HTML stays inert). All the rendering-safety checks pass. The 6 failures are structural assertions written for the earlier UI (the landing page must have exactly one link, `SubjectList` calls `getSubjects()`, the content page's frame-capture routine and the "about this frame" button); the script has not been updated for the new landing page and layout |
 
 `npm run build` passed on 2026-10-22, including the Developer view (`/dev`).
 
@@ -274,7 +290,13 @@ stack, chat latency under load, and concurrent users.
 - Ingest throughput is bound by free tiers: Pinecone Inference's 5M embedding
   tokens a month, and Gemini's quota for frame descriptions. A spent quota
   stops ingest with a `503` until it resets.
-- Job state, the in-flight guard, sessions and subjects live in process memory
-  (sessions and subjects are mirrored to local files). A restart loses running
-  jobs.
+- Job state and the in-flight guard live in process memory, so a restart
+  loses running jobs. Sessions, subjects and chats are kept in Supabase when it
+  is configured, and mirrored to local files otherwise.
+- The Supabase tests run against a mocked HTTP transport, not a live project.
+  A live project missing the `0003_grants.sql` privileges fails every table
+  write with `42501`, which the tests cannot catch.
+- Voice is tested with a fake Gemini Live session. The three real voice models
+  were each checked by hand with two questions on 2026-10-26; there is no
+  automated test against the live models.
 - The LMS launch signature check has no dedicated test.

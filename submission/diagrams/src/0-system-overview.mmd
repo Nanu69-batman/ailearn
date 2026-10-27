@@ -1,22 +1,27 @@
 %%{init: {"theme": "base", "fontFamily": "Arial, Helvetica, sans-serif", "themeVariables": {"fontSize": "16px", "fontFamily": "Arial, Helvetica, sans-serif", "lineColor": "#64748b", "primaryTextColor": "#0f172a"}, "flowchart": {"curve": "basis", "padding": 14, "wrappingWidth": 340}}}%%
 flowchart LR
-  U["Learner<br/>watches a lesson, asks questions,<br/>takes quizzes"]:::person
-  W["Website<br/>video player, PDF viewer,<br/>AI tutor chat, quiz"]:::person
+  U["Learner<br/>watches a lesson, asks questions<br/>by typing or talking, takes quizzes"]:::person
+  W["Website<br/>video player, PDF viewer,<br/>AI tutor chat, voice, quiz"]:::person
   A["Our server<br/>decides what the learner may see,<br/>checks every answer's sources"]:::server
   subgraph AI["Outside AI services"]
     Q["Groq<br/>turns speech into text"]:::ai
-    G["Gemini<br/>describes what is on screen,<br/>writes quizzes"]:::ai
+    G["Gemini<br/>describes what is on screen<br/>and in attached images,<br/>writes quizzes"]:::ai
+    GL["Gemini Live<br/>talks with the learner,<br/>speaks checked answers"]:::ai
     O["Nemotron (OpenRouter)<br/>the AI tutor"]:::ai
   end
   P[("Search index (Pinecone)<br/>lesson pieces, findable by meaning")]:::store
   F[("File storage<br/>videos and PDFs")]:::store
+  SB[("Supabase<br/>accounts, saved chats and subjects,<br/>copies of uploaded files")]:::store
   U --> W
-  W -->|"questions, quizzes, uploads"| A
+  W -->|"questions, quizzes, uploads, voice"| A
+  W -->|"sign-in"| SB
   A --> Q
   A --> G
+  A --> GL
   A --> O
   A --> P
   A --> F
+  A --> SB
 
   classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
   classDef server fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:1.5px

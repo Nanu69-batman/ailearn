@@ -15,4 +15,6 @@ below with the file that covers it.
 | Demo video | [My Video-2.mp4](My%20Video-2.mp4) |
 | Deployment instructions | [DEPLOYMENT.md](DEPLOYMENT.md) |
 | Live pipeline view (Developer view) | The floating **Developer view** button (in the top bar on small screens); described in [ARCHITECTURE.md](ARCHITECTURE.md#f-developer-view-the-live-pipeline-trace) |
+| Accounts, saved chats and file storage (Supabase) | [ARCHITECTURE.md (g)](ARCHITECTURE.md#g-accounts-saved-state-and-file-storage); setup in [DEPLOYMENT.md 1b](DEPLOYMENT.md#1b-supabase-optional-accounts-database-storage); migrations in [../supabase/migrations/](../supabase/migrations/) |
+| Voice conversations | [ARCHITECTURE.md (h)](ARCHITECTURE.md#h-voice-conversations); protocol in [API.md](API.md#voice) |
 | Future scope (known gaps and planned fixes) | [FUTURE_SCOPE.md](FUTURE_SCOPE.md) |

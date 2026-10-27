@@ -35,11 +35,18 @@ calls and "API quota" when the provider is not identified. A background ingest j
 reports the same text in its `error` field with `status: "failed"`, and
 `/position` returns `status: "failed"` with that `error` until the reset time.
 
-**Auth summary:** chat, history, chats (threads) and quiz routes need a session
-token minted by a signed `POST /lms/session`. Ingest, resource, subject and media routes are
-currently unauthenticated (a planned follow-up). Hosted deployments
-protect the model quota with `MAX_UPLOAD_MB`, `MAX_VIDEO_MINUTES` and
-`MAX_UPLOADS_PER_HOUR` instead.
+**Auth summary:** chat, history, chats (threads), quiz, chat image and voice
+routes need a session token minted by a signed `POST /lms/session`. When
+Supabase is configured, the browser also sends `Authorization: Bearer
+<access_token>` (the Supabase JWT). The API verifies it through the project's
+JWKS (or `SUPABASE_JWT_SECRET` for HS256), binds new sessions to that user,
+and answers `404 session not found` when a session belongs to someone else.
+A bad or expired token is always `401`. Sessions with no owner (anonymous, the
+demo) stay open to the token holder. `/malai/chats` needs a signed-in user.
+Ingest, delete and subject write routes take the user when present and need
+one only when `AUTH_REQUIRED=true` (`401` otherwise); media, listing and
+`position` routes are open. Hosted deployments also protect the model quota
+with `MAX_UPLOAD_MB`, `MAX_VIDEO_MINUTES` and `MAX_UPLOADS_PER_HOUR`.
 
 ## Route table
 
@@ -59,12 +66,20 @@ protect the model quota with `MAX_UPLOAD_MB`, `MAX_VIDEO_MINUTES` and
 | POST | `/quiz` | session token | Practice quiz (MCQ, numerical, written) on what was covered |
 | POST | `/quiz/grade` | session token | Grade one written quiz answer |
 | POST | `/quiz/note` | session token | Record a quiz start or score in the chat it was asked from |
-| POST | `/courses/{course_id}/ingest` | — | Ingest an uploaded file (multipart) |
-| POST | `/courses/{course_id}/ingest-youtube` | — | Ingest a YouTube URL (JSON) |
+| POST | `/chat/attachments` | session token | Attach an image to one chat (multipart); returns its vision transcript |
+| DELETE | `/chat/attachments/{attachment_id}` | session token | Take an attached image back out of the chat |
+| GET | `/malai/chats` | Supabase user | The signed-in learner's Malai chat list |
+| PUT | `/malai/chats/{chat_id}` | Supabase user | Create or update one Malai chat entry |
+| DELETE | `/malai/chats/{chat_id}` | Supabase user | Remove one Malai chat entry (`204`) |
+| GET | `/voice/models` | — | Whether voice is on, the dialog models, voices and the dictation model |
+| WS | `/voice/live` | session token in the first frame | Live voice conversation, answered through the course pipeline |
+| WS | `/voice/transcribe` | session token in the first frame | Dictation: speech streamed into the chat input |
+| POST | `/courses/{course_id}/ingest` | user if `AUTH_REQUIRED` | Ingest an uploaded file (multipart) |
+| POST | `/courses/{course_id}/ingest-youtube` | user if `AUTH_REQUIRED` | Ingest a YouTube URL (JSON) |
 | GET | `/ingestion/jobs/{job_id}` | — | Ingest job status |
 | GET | `/courses/{course_id}/resources` | — | List a course's indexed resources |
 | POST | `/courses/{course_id}/resources/{resource_id}/position` | — | Playhead heartbeat; queues the next stream-mode windows |
-| DELETE | `/courses/{course_id}/resources/{resource_id}` | — | Delete a resource: detach from subjects, purge chunks and file |
+| DELETE | `/courses/{course_id}/resources/{resource_id}` | user if `AUTH_REQUIRED` | Delete a resource: detach from subjects, purge chunks, the file and its Storage copy |
 | GET | `/resources/{resource_id}/media` | — | Stream a resource's asset (Range-capable) |
 | GET | `/resources/{resource_id}/media/{filename}` | — | Same asset under a URL ending in a file name (for Office Online slide embeds) |
 | GET | `/resources/{resource_id}/chapters` | — | Automatic chapters of a video, PDF or slide deck |
@@ -195,7 +210,11 @@ the stream starts, so they fail as ordinary HTTP errors (`429` · `404` ·
 | `done` | The validated `ChatResponse`, exactly as `POST /chat` returns it. It replaces the preview, and a refusal replaces it entirely |
 | `error` | `{"status": 502, "detail": "upstream provider error"}`; `503` with the quota message; `500 "internal error"` |
 
-Exactly one `done` or `error` ends the stream. Gemini streams token by token;
+Exactly one `done` or `error` ends the stream. On a chat's first question,
+`done` also carries `thread_title`: a short title written alongside the answer
+(a separate small model call, started before the answer and given at most 4 s;
+skipped with the offline stub model). The chat is renamed on the server, and
+the client shows the new title. Gemini streams token by token;
 the agent path sends `status` lines until its answer is ready. The preview is
 written from the same time-gated passages as the final answer, so it never
 shows anything after the playhead, and citation validation still runs on the
@@ -239,9 +258,97 @@ original chat has the id `main`. All four routes take the token as the
   "thread_id": "…", "emptied": bool}`. Deleting `main` empties it instead of
   removing it.
 
-`ThreadOut`: `id`, `title` (the learner's name for it, else the first question,
-else `null`), `renamed` (bool), `created_at`, `updated_at` (time of the last
+`ThreadOut`: `id`, `title` (the learner's name for it, else the automatic
+title, else the first question, else `null`), `renamed` (bool), `created_at`, `updated_at` (time of the last
 message), `message_count`. Unknown chat → `404 {"detail": "chat not found"}`.
+
+## Images in a chat
+
+`POST /chat/attachments` (multipart): `session_id`, `image` (JPEG, PNG, WebP or
+HEIC, at most 8 MB), optional `thread_id` and `session_token` (form field) →
+`{"id": "att_…", "name": "…", "text": "…"}`. Gemini vision reads the image once:
+it copies every piece of text (math as LaTeX) and describes any figure. From
+then on, every answer in that chat (`/chat`, `/chat/stream` and voice)
+gets the transcripts of the newest 5 images (4,000 characters each) in its
+system prompt. They are marked as the learner's own material, so they never
+get a `[chunk_id=…]`. An image is never indexed, never added to a subject and
+never cited, and the playhead gate and citation validation are unchanged.
+
+With Supabase, the transcript is stored in `chat_attachments`, and the file in
+Storage at `media/{owner_id or public}/chat/{session_id}/{id}.{ext}`.
+
+`DELETE /chat/attachments/{id}?session_id=…&thread_id=…` (token in
+`X-Session-Token`) → `204`. It removes the image from the chat and deletes its
+Storage object.
+
+Errors: `401` · `404` · `409` (a chat keeps at most 10 images) · `413` (over
+8 MB) · `422` (not an image type, empty, or nothing readable) · `429` · `502`
+(vision failure) · `503` (quota).
+
+## Malai chat list
+
+The Malai sidebar's chats, stored per signed-in user so they follow the learner
+to other devices. All three routes need `Authorization: Bearer <access_token>`
+(`401 authentication required` otherwise).
+
+- `GET /malai/chats` → `{"chats": [MalaiChatOut]}`.
+- `PUT /malai/chats/{chat_id}` with `MalaiChatIn` → `MalaiChatOut`. The session
+  must belong to the caller (`404` otherwise); `409` past 500 chats per user.
+- `DELETE /malai/chats/{chat_id}` → `204`.
+
+`MalaiChatIn`: `session_id`, `thread_id`, `title` (≤200), `subject_id?`,
+`resource_id?`, `preview` (≤300), `created_ms`, `updated_ms`. `MalaiChatOut`
+adds `id` and `session_token`, which is minted only for sessions the caller
+owns. The browser merges the server list with its local one by `updated_ms`
+(at most every 15 s, and when the window regains focus), and uploads chats
+that exist only locally.
+
+## Voice
+
+The Gemini key never reaches the browser: the API opens the Gemini Live
+session and relays audio both ways. Audio frames are binary: PCM16 mono,
+16 kHz from the client, 24 kHz from the server.
+
+`GET /voice/models` → `{"enabled": bool, "dialog": [{"key", "label", "model",
+"thinking"}], "transcribe": {"model"}, "voices": [{"name", "description"}],
+"default_voice"}`. `enabled` is `false` with no Gemini key, and the web app then
+hides voice.
+
+| Key | Model | Course questions |
+|---|---|---|
+| `live` (default) | `gemini-3.8-live` | The model calls the `ask_course` tool |
+| `live-thinking` | `gemini-3.8-live-extended-thinking` | No tools (the model emits none): the server answers the transcribed question and injects the answer for it to speak |
+| `native-audio` | `gemini-2.5-flash-native-audio-preview-12-2025` | The model calls the `ask_course` tool |
+
+**`WS /voice/live`.** The first frame, within 10 s, is JSON `{"type": "start",
+"model", "session_id", "session_token", "access_token?", "video_id?",
+"current_time_ms", "thread_id?", "completed_resource_ids?",
+"scope_resource_ids?", "general?", "mode?", "voice?", "tone?",
+"personalization?"}`. After that the client sends `{"type": "time",
+"current_time_ms"}` about once a second while a video plays, `{"type": "text"}`
+for a typed turn, and `{"type": "stop"}`. The server sends `ready`, `state`
+(`listening` / `thinking` / `speaking`), `input_transcript`, `output_transcript`,
+`interrupted`, `question`, `answer` (the validated `ChatResponse`), `error` and
+`closed`.
+
+Every course question goes through the same path as `POST /chat`, using the
+latest playhead (clamped like `/chat`). So the `end_ms <= T` gate, citation
+validation and refusals are unchanged. The model is told to speak that answer
+faithfully and add nothing. Voice answers use the classic pipeline (no agent)
+and are kept short for speech. A recap of the validated answers is saved to the
+chat every 5 minutes and when the session ends.
+
+**`WS /voice/transcribe`.** `{"type": "start", "session_id", "session_token",
+"access_token?", "language?"}`, then audio, then `{"type": "stop"}`. The server
+sends `ready`, `interim` (replaces the previous one), `final` (append to the
+input), `error` and `closed`. Devanagari is romanized.
+
+Both sockets run the same checks as `/chat`: rate limit by IP, session exists,
+owner check through `access_token` (browsers cannot set headers on a
+WebSocket), and the HMAC token. The `Origin` header, when present, must equal
+`CORS_ORIGIN`. Close codes: `4401` (no or bad start frame, or a bad token) ·
+`4403` (wrong origin) · `4404` (unknown session) · `4408` (the 10-minute cap) ·
+`4503` (voice disabled).
 
 ## POST /quiz
 
@@ -521,9 +628,17 @@ Where it is read differs per route — the usual source of a confusing `401`:
 | `POST /chat/live-frame` | the `session_token` form field **or** the `X-Session-Token` header |
 | `POST /quiz`, `POST /quiz/grade`, `POST /quiz/note` | the body field `session_token` **or** the `X-Session-Token` header |
 | `/sessions/{session_id}/threads…` | the `?session_token=…` query parameter **or** the `X-Session-Token` header |
+| `POST /chat/attachments` | the `session_token` form field **or** the `X-Session-Token` header |
+| `DELETE /chat/attachments/{id}` | the `X-Session-Token` header |
+| `WS /voice/live`, `WS /voice/transcribe` | the `session_token` field of the `start` frame |
 
 Sending both the body field and the header on `POST /chat` is harmless, and is
 what the web client does.
+
+**Accounts (Supabase).** When Supabase is configured, `POST /lms/session`
+binds the session's `learner_id` to the signed-in user. With
+`AUTH_REQUIRED=true`, an anonymous launch is refused except for the demo
+course.
 
 ## Error codes
 

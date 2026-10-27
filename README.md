@@ -20,7 +20,11 @@ A Quiz tab writes practice quizzes (multiple choice, numerical, written) on what
 has been watched. Answers stream in as they are written, and every video, PDF
 and slide deck gets automatic chapters. Outside a lesson, the Malai page is a
 standalone tutor chat: chats filed under a subject read only that subject's
-materials, and chats in no subject answer from general knowledge.
+materials, and chats in no subject answer from general knowledge. Learners can
+also talk to the tutor out loud (Gemini Live). Spoken questions go through the
+same checked pipeline, and the spoken turns appear in the chat. With Supabase
+configured, learners sign in, and their subjects, chats, study activity and
+uploaded files are saved to their account.
 
 ## Live demo
 
@@ -43,7 +47,8 @@ a citation to see its span on the scrub bar. Then open the **Quiz** tab, or
 open the PDF and click a page citation to see the cited text highlighted. The
 lesson panel's **Chapters** tab lists the video's chapters (3) and the PDF's (8).
 Type `/` in the chat box for slash commands, or open **Malai** in the sidebar for
-the standalone tutor chat.
+the standalone tutor chat. In any chat, drop or paste a screenshot of a problem
+to ask about it, or press the microphone to talk to the tutor.
 
 The API runs on Render's free tier, so the first request after about 15 idle
 minutes takes up to a minute while it wakes.
@@ -157,6 +162,47 @@ minutes takes up to a minute while it wakes.
   and key equations are larger. Raw HTML from the model is never rendered.
 - **Replies in the learner's language and tone.** The tutor answers in the
   language the learner writes in and matches their register.
+- **Voice conversations.** A microphone button in every chat starts a live
+  voice session (`WS /voice/live`, Gemini 3.8 Live, 3.8 Live with extended
+  thinking, or 2.5 Flash Native Audio). The voice bar replaces the input box
+  while you talk, and each spoken question and answer appears in the chat as
+  a normal message. The voice model does not answer course questions itself:
+  it calls one tool, `ask_course`, which runs the same pipeline as `POST /chat`
+  (playhead gate, citation validation, refusals) with the live playhead, and
+  it reads out that checked answer. The extended-thinking model emits no tool
+  calls, so the server answers the transcribed question and passes the result
+  for the model to speak. A recap of the conversation is saved to the chat every
+  5 minutes and when the session ends. You can pick from several voices and
+  speaking tones. Separately, a dictation button streams speech into the input
+  box (`WS /voice/transcribe`). The Gemini key stays on the server, which
+  relays the audio.
+- **Images in the chat.** Attach images with the image button, by dragging
+  them onto the chat, or by pasting a screenshot. Each image is read once by
+  Gemini vision: its text and math are copied as LaTeX and its figures are
+  described. Every later answer in that chat sees the transcript. Images belong
+  to the chat, not the subject: they are never indexed and never cited as
+  course material, and the gate and citation checks are unchanged. With
+  Supabase, the file is kept in Storage under the learner's folder.
+- **Chats name themselves.** The first question's title is written alongside
+  the first answer (a separate small model call, given at most 4 s) and sent
+  in the final event of the stream.
+- **Accounts and cloud sync (Supabase).** Email and password or Google sign-in.
+  The API verifies the Supabase JWT and binds each session to its user.
+  Subjects, chat sessions, threads, messages, the Malai chat list, chat images,
+  study activity, lesson progress and quiz attempts are written to Postgres
+  under row-level security, so they survive restarts and follow the learner to
+  other devices. Uploaded videos, PDFs, slides and images are copied to the
+  private `media` bucket and downloaded back if the server's local copy is gone.
+  The demo lesson stays public. With no Supabase settings, all of this is off
+  and the app behaves as it did before (local files).
+- **Add content from anywhere.** The subject resources list in the Malai
+  sidebar and the Malai subject page each have an **Add** button. It opens the
+  same upload and YouTube ingest as the dashboard's Add content.
+- **Personalization and Hinglish.** A personalization panel at the bottom of the
+  Malai sidebar saves your name, what you study, preferred traits, language,
+  answer length and extra instructions. They apply to text and voice answers as
+  style only, so they never change what the tutor may read. Questions in Hindi
+  or Hinglish get Hinglish answers in Roman script.
 - **Says when it did less than asked.** Every ingest reports `visual_status`,
   `visual_coverage_pct` and warnings. A spent daily model quota returns a
   readable `503` and does not keep retrying.
@@ -168,14 +214,18 @@ flowchart LR
   U["Learner's browser"] --> W["Next.js 15 web app<br/>Vercel"]
   W -->|"signed LMS launch (HMAC)"| A
   U -->|"REST: chat, ingest, media"| A["FastAPI API<br/>Docker on Render"]
+  U -->|"WebSocket: voice audio"| A
+  W -->|"sign-in"| SB
   A --> V[("Pinecone<br/>vector index + embeddings")]
   A --> S[("Container disk<br/>videos, PDFs, PPTX, images")]
+  A --> SB[("Supabase<br/>Auth, Postgres, Storage")]
   A --> O["OpenRouter Nemotron<br/>agentic tutor (tool calls)"]
-  A --> G["Gemini<br/>fallback answers, frame descriptions"]
+  A --> G["Gemini<br/>fallback answers, frame and image descriptions"]
+  A --> GL["Gemini Live<br/>voice conversation, dictation"]
   A --> Q["Groq Whisper<br/>speech to text"]
 ```
 
-More diagrams (hosting, ingest pipeline, question flow, practice quizzes, lesson page) and the safety
+More diagrams (hosting, ingest pipeline, question flow, practice quizzes, lesson page, accounts, voice) and the safety
 invariants are in [submission/ARCHITECTURE.md](submission/ARCHITECTURE.md).
 
 ## Tech stack
@@ -188,10 +238,12 @@ invariants are in [submission/ARCHITECTURE.md](submission/ARCHITECTURE.md).
 | Tutor agent | `nvidia/nemotron-3.5-super-vl:free` via OpenRouter, OpenAI-format tool calling |
 | LLM (quizzes, fallback pipeline) | Gemini `gemini-3.5-flash-lite` |
 | Embeddings | Hosted: Pinecone Inference `llama-text-embed-v2` (1024-d), 96 texts per call, repeated queries cached. Local default: Gemini `gemini-embedding-2` (3072-d) |
-| Vision | Gemini (frame and image descriptions, live frames) |
+| Vision | Gemini (frame and image descriptions, live frames, chat images) |
+| Voice | Gemini Live (`gemini-3.8-live`, `gemini-3.8-live-extended-thinking`, `gemini-2.5-flash-native-audio-preview-12-2025`), dictation with `gemini-3.5-transcribe-live`, relayed by the API over WebSockets |
+| Accounts, database, storage | Supabase Auth (email and password, Google), Postgres with row-level security, Storage (`media` bucket, private), all optional; `@supabase/ssr` on the web, a small httpx client in the API |
 | Speech to text | Groq `whisper-large-v3-turbo`, with local faster-whisper as fallback |
 | Media | PyAV (decode, duration, frame sampling), pypdf, python-pptx |
-| File storage | Local disk (the demo video, PDF and their chapters are baked into the hosted image) |
+| File storage | Local disk (the demo video, PDF and their chapters are baked into the hosted image), mirrored to Supabase Storage when configured |
 | Hosting | Vercel (web), Render Docker free tier (API: `render.yaml` for production, `render.dev.yaml` for the dev API) |
 | Tests | pytest (backend), `tsc --noEmit` and a contract check (frontend) |
 
@@ -235,6 +287,8 @@ To load the sample lecture, see [submission/DATASET.md](submission/DATASET.md).
 
 | Route | What it is |
 |---|---|
+| `/` | Landing page: what the tutor does, with Try demo, Log in and Sign up (or Dashboard when signed in) |
+| `/login` | Sign in or sign up (`/login?mode=signup`), email and password or Google; `/auth/callback` finishes the sign-in |
 | `/dashboard` | Study activity, Malai entry card, continue learning, next practice quiz, recent subjects |
 | `/ai-tutor/subjects` | My subjects: search, Ongoing/Completed/Archived filters, sort, grid or list |
 | `/ai-tutor/subjects/<subject>/content/<resource>` | A resource without the chat, with an "Open with Malai" button |
@@ -243,7 +297,8 @@ To load the sample lecture, see [submission/DATASET.md](submission/DATASET.md).
 | `/dev` | Developer view, the live pipeline trace (a floating button opens it on desktop) |
 
 The sidebar links Dashboard, My Subjects and Malai (Profile is a placeholder,
-not implemented yet). In any chat, type
+not implemented yet). With Supabase configured, `/dashboard`, `/ai-tutor/*` and
+`/malai/*` need a signed-in user, except the demo lesson. In any chat, type
 `/` for slash commands, or ask "quiz me on..." to open the quiz form.
 
 ### API endpoints added in this release
@@ -253,9 +308,14 @@ not implemented yet). In any chat, type
 | `POST /chat/stream` | Same request as `POST /chat`; Server-Sent Events with status lines, the answer so far, then the validated `ChatResponse` |
 | `POST /quiz/note` | Writes a quiz start or score into the chat history |
 | `GET /resources/{resource_id}/chapters` | Automatic chapters for a video, PDF or slide deck |
+| `GET /voice/models`, `WS /voice/live`, `WS /voice/transcribe` | Voice: available models and voices, live conversation, dictation into the input box |
+| `POST /chat/attachments`, `DELETE /chat/attachments/{id}` | Attach an image to one chat (read by Gemini vision) or take it back |
+| `GET /malai/chats`, `PUT /malai/chats/{id}`, `DELETE /malai/chats/{id}` | The signed-in learner's Malai chat list, synced across devices |
 
 `ChatRequest` also takes `scope_resource_ids` (narrows the session grant,
-intersection only) and `general` (a chat in no subject). The full reference is
+intersection only), `general` (a chat in no subject) and `personalization`
+(style only). The stream's final `done` event carries `thread_title` when the
+chat was just named. The full reference is
 [submission/API.md](submission/API.md) and the live `/docs`.
 
 ## Environment variables
@@ -288,6 +348,12 @@ intersection only) and `general` (a chat in no subject). The full reference is
 | `LOCAL_WHISPER_FALLBACK` | `true` | `false` on the hosted 512 MB instance: if Groq fails, the window fails visibly instead of loading a local model |
 | `OCR_BACKEND` | off | `unlimited-ocr` enables OCR for scanned PDFs (needs an operator-installed GPU stack) |
 | `CHAPTERS_DIR` | `data/chapters` | Where automatic chapter files are stored, one JSON file per resource |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | empty | Turn on Supabase persistence, Storage mirroring and JWT checks. Both must be set; with either empty, Supabase is off |
+| `SUPABASE_JWT_SECRET` | empty | Only for legacy HS256 projects. Newer projects are verified through their JWKS |
+| `SUPABASE_STORAGE_BUCKET` | `media` | Private bucket for uploads and chat images |
+| `AUTH_REQUIRED` | `false` | `true` rejects anonymous uploads, deletes and subject changes with 401 (the demo course stays open) |
+| `VOICE_LIVE_MODEL`, `VOICE_THINKING_MODEL`, `VOICE_NATIVE_AUDIO_MODEL`, `VOICE_TRANSCRIBE_MODEL` | see Tech stack | Gemini Live model ids, so a renamed model is a config change. Voice uses `LLM_API_KEY` |
+| `VOICE_THINKING_LEVEL` | `medium` | `low`, `medium` or `high` for the extended-thinking voice model |
 
 **Web** (`apps/web/.env.local` locally, Vercel project settings when hosted):
 
@@ -295,6 +361,15 @@ intersection only) and `general` (a chat in no subject). The full reference is
 |---|---|
 | `NEXT_PUBLIC_API_URL` | API base URL (`http://localhost:8123` locally, `https://malai-pioneer-api.onrender.com` when hosted) |
 | `LMS_LAUNCH_SECRET` | **Server-only.** A Next.js server route signs the LMS launch with it, so the hosted API can run with `ALLOW_UNSIGNED_LAUNCH=false` |
+| `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase project URL and public (anon or publishable) key. Without them there is no sign-in and every page is open |
+
+**Supabase setup (optional).** Create a project, then paste
+`supabase/migrations/0001_init.sql`, `0002_malai_chats.sql` and
+`0003_grants.sql`, in that order, into the SQL Editor. 0003 matters: without
+its grants, every table call fails with `42501 permission denied`, even with
+the service key, and the API only logs a warning, so nothing is saved.
+`supabase/maintenance/clear_chats.sql` is a one-off script that wipes every
+chat; it is not a migration.
 
 Never commit `apps/api/.env`. It holds the API keys and the launch secret.
 
@@ -302,7 +377,7 @@ Never commit `apps/api/.env`. It holds the API keys and the launch secret.
 
 ```bash
 cd apps/api
-python -m pytest -q -p no:warnings        # backend suite (579 tests)
+python -m pytest -q -p no:warnings        # backend suite (660 tests collected)
 python -m pytest --co -q | tail -1        # confirm it collects with no errors
 # RAG evaluation on the lecture + PDF (needs keys; see submission/EVALUATION.md):
 python -m app.eval.harness --golden ../../submission/eval/golden-partial-derivatives.jsonl --chunks ../../submission/eval/partial-derivatives-chunks.jsonl --embedder pinecone
@@ -361,22 +436,33 @@ All deliverables are in [submission/](submission/), and its
   still use Gemini's quota; when a daily quota runs out, ingest stops with a
   readable `503` until it resets. Hosted uploads are capped by size, length and
   rate.
-- **Job, session and subject state lives in process memory.** Sessions and
-  subjects are mirrored to local files. Ingest job status and the in-flight
-  window guard are lost on restart. Render's free disk is wiped on every
-  restart and wake-up, so files uploaded on the hosted site disappear then
-  (their index entries stay in Pinecone). The demo video and PDF survive
-  because they are baked into the image. Chapters for other uploads also live
-  on that disk and are rebuilt the first time the resource is opened after a
-  restart. Moving this state out of the process (Redis or
-  Postgres) is the first step toward concurrent users.
-- **Study activity, progress and archiving live in the browser.** The dashboard
-  and My subjects read them from local storage, so they do not follow a learner
-  to another browser or device.
+- **Ingest job state lives in process memory.** Job status and the in-flight
+  window guard are lost on restart. With Supabase configured, subjects,
+  sessions, chats and chat images are written through to Postgres and loaded
+  on startup, and uploaded files come back from Storage when the local copy is
+  gone. Without Supabase they are mirrored to local files only, and Render's
+  free disk is wiped on every restart and wake-up, so files uploaded on the
+  hosted site disappear then (their index entries stay in Pinecone). The demo
+  video and PDF survive either way because they are baked into the image.
+  Chapters for other uploads live on that disk and are rebuilt the first time
+  the resource is opened after a restart.
+- **Supabase writes fail quietly.** Writes to Postgres are best effort: a
+  failure is logged as a warning and the request still succeeds, so a project
+  missing the `0003_grants.sql` privileges looks healthy but saves nothing.
+- **Some browser state stays local.** Archiving and the dock layout live in
+  the browser. Study activity, lesson progress and quiz attempts are synced to
+  the account only when the learner is signed in.
+- **Voice is capped at 10 minutes per session.** The voice model ids are
+  previews and may be renamed, which is why they are settings. Voice answers
+  take the faster classic pipeline (no agent) and are kept short for speech.
+- **Chat images are read once.** Answers use the transcript, not the pixels.
+  A chat keeps at most 10 images (8 MB each), and an answer sees the newest 5.
 - **The Transcript tab is UI only.** It is not wired to the transcript yet.
-- **State-changing routes (upload, delete, subjects, position) have no auth.**
-  Only chat, history, chats and quizzes are bound to a signed session. Adding auth there is a
-  planned follow-up.
+- **Write routes are open unless `AUTH_REQUIRED=true`.** Upload, delete and
+  subject routes take the Supabase user when one is signed in and can be
+  switched to require one. The playhead `position` route is never gated. Chat,
+  history, chats, quizzes, images and voice are always bound to a signed
+  session.
 - **The free tutor model is rate-limited.** OpenRouter's free tier allows 50
   requests a day (1,000 with $10 of credit). Each question now uses 1, or 2 when
   a citation repair is needed. Agent answers take about 5-20 s. When the limit

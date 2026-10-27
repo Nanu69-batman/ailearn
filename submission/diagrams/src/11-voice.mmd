@@ -1,0 +1,20 @@
+%%{init: {"theme": "base", "fontFamily": "Arial, Helvetica, sans-serif", "themeVariables": {"fontSize": "16px", "fontFamily": "Arial, Helvetica, sans-serif", "lineColor": "#64748b", "primaryTextColor": "#0f172a"}, "flowchart": {"curve": "basis", "padding": 14, "wrappingWidth": 340}}}%%
+flowchart TD
+  M["Learner presses the microphone<br/>and asks out loud"]:::person --> RL["Our server relays the audio<br/>(the Gemini key stays on the server)"]:::server
+  RL --> GL["Gemini Live hears<br/>the question"]:::ai
+  GL --> K{"A question about<br/>the course?"}:::server
+  K -->|"just chatting"| HI["Short spoken reply"]:::good
+  K -->|"yes"| AC["Same answer path as a typed question,<br/>at the current playhead"]:::server
+  AC --> GATE["Only what has already played,<br/>only the learner's own materials"]:::check
+  GATE --> VAL{"Every source was<br/>really given to it?"}:::check
+  VAL -->|"no, or nothing covers it"| REF["Refusal, spoken<br/>as a refusal"]:::stop
+  VAL -->|"yes"| SP["Gemini Live reads out<br/>that checked answer, adding nothing"]:::ai
+  SP --> CH["Question and answer appear<br/>in the chat; a recap is saved<br/>every 5 minutes"]:::good
+
+  classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
+  classDef server fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:1.5px
+  classDef ai fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px
+  classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:1.5px
+  classDef check fill:#ffffff,stroke:#dc2626,color:#7f1d1d,stroke-width:2px
+  classDef good fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:2px
+  classDef stop fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:1.5px

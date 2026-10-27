@@ -23,6 +23,8 @@ their Mermaid sources are in [diagrams/src/](diagrams/src/):
 | (d) Practice quizzes | [6-practice-quiz.png](diagrams/6-practice-quiz.png) |
 | (e) Lesson page: viewers, cited passages, chats | [7-lesson-page.png](diagrams/7-lesson-page.png) |
 | (f) Developer view: the live pipeline trace | [8-developer-view.png](diagrams/8-developer-view.png) |
+| (g) Accounts, saved state and file storage | [10-accounts-storage.mmd](diagrams/src/10-accounts-storage.mmd) (Mermaid source; renders on GitHub below) |
+| (h) Voice conversations | [11-voice.mmd](diagrams/src/11-voice.mmd) (Mermaid source; renders on GitHub below) |
 
 **How to read the diagrams.** Every diagram uses the same colours:
 
@@ -30,8 +32,8 @@ their Mermaid sources are in [diagrams/src/](diagrams/src/):
 |---|---|
 | Blue | The learner or teacher, and what they see in the browser |
 | Purple | Our server doing the work |
-| Amber | An outside AI service (Groq, Gemini, Nemotron, embeddings) |
-| Green cylinder | Where something is stored (search index, files) |
+| Amber | An outside AI service (Groq, Gemini, Gemini Live, Nemotron, embeddings) |
+| Green cylinder | Where something is stored (search index, files, database) |
 | Red outline | A safety check: a decision that can stop or reject something |
 | Green box | A good outcome the learner receives |
 | Red box | A refusal or a rejected item |
@@ -44,23 +46,28 @@ the technical detail.
 ```mermaid
 %%{init: {"theme": "base", "fontFamily": "Arial, Helvetica, sans-serif", "themeVariables": {"fontSize": "16px", "fontFamily": "Arial, Helvetica, sans-serif", "lineColor": "#64748b", "primaryTextColor": "#0f172a"}, "flowchart": {"curve": "basis", "padding": 14, "wrappingWidth": 340}}}%%
 flowchart LR
-  U["Learner<br/>watches a lesson, asks questions,<br/>takes quizzes"]:::person
-  W["Website<br/>video player, PDF viewer,<br/>AI tutor chat, quiz"]:::person
+  U["Learner<br/>watches a lesson, asks questions<br/>by typing or talking, takes quizzes"]:::person
+  W["Website<br/>video player, PDF viewer,<br/>AI tutor chat, voice, quiz"]:::person
   A["Our server<br/>decides what the learner may see,<br/>checks every answer's sources"]:::server
   subgraph AI["Outside AI services"]
     Q["Groq<br/>turns speech into text"]:::ai
-    G["Gemini<br/>describes what is on screen,<br/>writes quizzes"]:::ai
+    G["Gemini<br/>describes what is on screen<br/>and in attached images,<br/>writes quizzes"]:::ai
+    GL["Gemini Live<br/>talks with the learner,<br/>speaks checked answers"]:::ai
     O["Nemotron (OpenRouter)<br/>the AI tutor"]:::ai
   end
   P[("Search index (Pinecone)<br/>lesson pieces, findable by meaning")]:::store
   F[("File storage<br/>videos and PDFs")]:::store
+  SB[("Supabase<br/>accounts, saved chats and subjects,<br/>copies of uploaded files")]:::store
   U --> W
-  W -->|"questions, quizzes, uploads"| A
+  W -->|"questions, quizzes, uploads, voice"| A
+  W -->|"sign-in"| SB
   A --> Q
   A --> G
+  A --> GL
   A --> O
   A --> P
   A --> F
+  A --> SB
 
   classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
   classDef server fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:1.5px
@@ -71,7 +78,8 @@ flowchart LR
   classDef stop fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:1.5px
 ```
 
-The learner only ever talks to our server, through the website. The server
+The learner only ever talks to our server, through the website (sign-in goes
+to Supabase directly, and the token it returns is checked by our server). The server
 decides what the learner may see at the moment they paused, calls the AI
 services, and checks every answer's sources before showing it. The AI services
 never decide what is allowed; they only write text from what the server gives
@@ -161,13 +169,22 @@ flowchart LR
     direction TB
     Q["Groq<br/>speech to text"]:::ai
     G["Gemini<br/>screen descriptions,<br/>quizzes, backup answers"]:::ai
+    GL["Gemini Live<br/>voice conversations"]:::ai
     O["OpenRouter<br/>AI tutor (Nemotron)"]:::ai
     P[("Pinecone<br/>search index")]:::store
   end
+  subgraph SUP["Supabase (optional)"]
+    direction TB
+    AU["Accounts<br/>email or Google sign-in"]:::check
+    DB[("Database<br/>subjects, chats, progress")]:::store
+    ST[("File storage<br/>uploads, chat images")]:::store
+  end
   B -->|"opens a lesson"| VER
+  B -->|"signs in"| AU
   VER -->|"starts a signed session"| RN
-  B -->|"questions, quizzes, uploads,<br/>video streaming"| RN
+  B -->|"questions, quizzes, uploads,<br/>video streaming, voice"| RN
   RN -->|"calls when needed"| CLOUD
+  RN -->|"saves and restores"| SUP
 
   classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
   classDef server fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:1.5px
@@ -180,10 +197,12 @@ flowchart LR
 
 | Component | Where | Why there |
 |---|---|---|
-| Web (Next.js 15) | Vercel, root dir `apps/web` | Static and edge-friendly. The only server-side code is the launch-signing route, which keeps `LMS_LAUNCH_SECRET` out of the browser |
-| API (FastAPI) | Render web service, Docker, free tier (`render.yaml`, `apps/api/deploy/render/Dockerfile`) | Vercel cannot host it: the function bundle limit is 250 MB, while faster-whisper, PyAV and chromadb are larger, and ingest jobs run in the background for minutes. One process, because jobs and sessions live in memory |
+| Web (Next.js 15) | Vercel, root dir `apps/web` | Static and edge-friendly. The server-side code is the launch-signing route, which keeps `LMS_LAUNCH_SECRET` out of the browser, plus the Supabase sign-in callback and the middleware that sends signed-out visitors to `/login` |
+| API (FastAPI) | Render web service, Docker, free tier (`render.yaml`, `apps/api/deploy/render/Dockerfile`) | Vercel cannot host it: the function bundle limit is 250 MB, while faster-whisper, PyAV and chromadb are larger, and ingest jobs run in the background for minutes. One process, because ingest jobs live in memory and voice sessions are relayed through it |
 | Vectors | Pinecone serverless (`VECTOR_STORE=pinecone`) | Render's free disk is wiped on restart, so the index lives outside the container. The same `build_where` scope + strict-T filter runs in Pinecone, and every match is re-checked against it in Python. Local dev uses Chroma on disk (`VECTOR_STORE=chroma`) |
-| Files | Container disk | A hackathon trade-off. The demo video and the UNIT-1 PDF notes are baked into the image, so they are always there, together with their chapters (`apps/api/deploy/seed/chapters/` → `data/chapters/`) and the demo subject. Files uploaded on the hosted site, and their chapters, last until the next restart. The media route serves them with HTTP Range |
+| Files | Container disk | A hackathon trade-off. The demo video and the UNIT-1 PDF notes are baked into the image, so they are always there, together with their chapters (`apps/api/deploy/seed/chapters/` → `data/chapters/`) and the demo subject. Without Supabase, files uploaded on the hosted site, and their chapters, last until the next restart. With it, each upload is also copied to Storage and downloaded back when the local copy is missing. The media route serves them with HTTP Range |
+| Accounts, database, Storage | Supabase (optional: on when `SUPABASE_URL` and the service key are set) | Sign-in, and state that must outlive Render's ephemeral disk: subjects, sessions, chats, the Malai chat list, chat images, study activity, progress and quiz attempts. Row-level security on every table; the API uses the service key, the browser only the public key. Migrations in `supabase/migrations/` |
+| Voice | Gemini Live, relayed by the API over WebSockets | The Gemini key stays on the server, and the API can route every spoken course question through the checked pipeline |
 | Tutor agent | OpenRouter, `nvidia/nemotron-3.5-super-vl:free` | Free, reliable tool calling with a 1M context. Optional: with no `OPENROUTER_API_KEY`, the classic pipeline answers every question |
 | LLM / vision | Gemini `gemini-3.5-flash-lite` | Quiz writing (about 15 s for a whole quiz), fallback answers and frame descriptions. Blocking SDK calls run on a worker thread, so a slow answer never stalls other requests |
 | Embeddings | Pinecone Inference `llama-text-embed-v2` (1024-d) hosted; Gemini `gemini-embedding-2` (3072-d) locally | Pinecone's free plan meters 5M tokens a month, not Gemini's ~1,000 texts a day. The store refuses to start if the index width and the embedder disagree |
@@ -600,8 +619,31 @@ flowchart TD
   collapses to a rail. A subject's page (`/malai?s=<id>`) lists its chats and
   resources and starts a chat filed under it. A resource opens beside Malai at
   `/malai/lesson/<subject>/<resource>` in the same dockable layout.
-- Activity, progress and archiving are recorded in the browser
-  (`lib/activity.ts`), not on the server.
+- Activity and progress are recorded in the browser (`lib/activity.ts`) and,
+  for a signed-in learner, synced to Supabase (`study_activity`,
+  `lesson_progress`, `quiz_attempts`, and the streak from `get_streak()`).
+  Archiving stays in the browser.
+- **Landing and sign-in.** `/` describes the tutor, with Try demo, Log in and
+  Sign up (or Dashboard when signed in). `/login` handles email and password
+  and Google. With Supabase configured, the middleware sends signed-out
+  visitors from `/dashboard`, `/ai-tutor/*` and `/malai/*` to `/login`; the demo
+  lesson stays public.
+- **Add content from anywhere.** The subject resources flyout in the Malai
+  sidebar and the Malai subject page each have an **Add** button that opens
+  the same upload and YouTube ingest dialog as the dashboard. A finished
+  ingest refreshes every subject list on the page.
+- **Chat names.** A chat's first answer comes back with a short title, written
+  in parallel with it, which replaces "New chat" in the sidebar and chat list.
+- **Images in a chat.** The image button, drag and drop onto the chat, or a
+  pasted screenshot attaches an image. It uploads as soon as it is picked
+  (`POST /chat/attachments`) and is read once by Gemini vision (text and math
+  copied as LaTeX, figures described). The transcript joins the system prompt
+  of every later answer in that chat, marked as the learner's own material, so
+  it can never be cited as lesson evidence. Images are never indexed or added to
+  a subject.
+- **Personalization.** Name, field of study, traits, language, answer length
+  and extra instructions, saved in the browser and to the account. They are
+  applied to text and voice answers as a style note only.
 
 ## (f) Developer view: the live pipeline trace
 
@@ -657,6 +699,123 @@ flowchart LR
   clears it. `DEV_TRACE=false` turns recording off. See
   [FUTURE_SCOPE.md](FUTURE_SCOPE.md).
 
+## (g) Accounts, saved state and file storage
+
+```mermaid
+%%{init: {"theme": "base", "fontFamily": "Arial, Helvetica, sans-serif", "themeVariables": {"fontSize": "16px", "fontFamily": "Arial, Helvetica, sans-serif", "lineColor": "#64748b", "primaryTextColor": "#0f172a"}, "flowchart": {"curve": "basis", "padding": 14, "wrappingWidth": 340}}}%%
+flowchart TD
+  L["Learner signs in<br/>(email or Google)"]:::person --> T["The website gets a<br/>sign-in token from Supabase"]:::person
+  T --> R["Every request carries<br/>the token"]:::person
+  R --> V{"Is the token real<br/>and unexpired?"}:::check
+  V -->|"no"| X["Rejected"]:::stop
+  V -->|"yes"| O{"Is this session<br/>the learner's own?"}:::check
+  O -->|"someone else's"| NF["Answered as<br/>'not found'"]:::stop
+  O -->|"own, or the public demo"| S["Our server does the work"]:::server
+  S --> DB[("Database<br/>subjects, chats, messages,<br/>Malai chat list, image notes,<br/>study time, progress, quiz scores")]:::store
+  S --> ST[("File storage<br/>uploaded videos, PDFs and slides,<br/>chat images, each under<br/>the learner's own folder")]:::store
+  S --> K["Answer shown to the learner"]:::good
+  ST -.->|"local copy gone after a restart:<br/>downloaded back"| S
+  DB -.->|"on startup: subjects and<br/>chats loaded back"| S
+
+  classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
+  classDef server fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:1.5px
+  classDef ai fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px
+  classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:1.5px
+  classDef check fill:#ffffff,stroke:#dc2626,color:#7f1d1d,stroke-width:2px
+  classDef good fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:2px
+  classDef stop fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:1.5px
+```
+
+- **Off by default.** Supabase is used only when `SUPABASE_URL` and
+  `SUPABASE_SERVICE_ROLE_KEY` are both set (`settings.supabase_enabled()`).
+  Otherwise the app runs as before on local files, and a Bearer token is
+  ignored.
+- **Who you are.** The browser sends `Authorization: Bearer <access_token>`.
+  `app/auth/supabase.py` verifies it through the project's JWKS (ES256/RS256)
+  or with `SUPABASE_JWT_SECRET` (legacy HS256). `POST /lms/session` then uses
+  the user's id as `learner_id` and stores it as the session's `owner_id`, and
+  every chat route answers `404` for a session owned by someone else. Sessions
+  with no owner (anonymous, the demo) stay open to the HMAC token holder, as
+  before.
+- **What is saved.** `app/supa/client.py` is a thin httpx client for PostgREST
+  and Storage. Subjects and resources, chat sessions, threads and messages,
+  the Malai chat list (`malai_chats`) and chat images (`chat_attachments`) are
+  written through as they change, and subjects and sessions are loaded back on
+  startup. The demo subject is re-added as public if it is missing. Writes are
+  best effort: a failed write is logged and the request still succeeds.
+- **Files.** Uploads are copied in the background to the private `media`
+  bucket at `{owner_id or public}/{resource_id}/{filename}`
+  (`app/ingestion/remote_assets.py`), and downloaded back the first time the
+  media route needs a file the container no longer has. Deleting a resource
+  removes the object and the row. Chat images go to
+  `{owner_id or public}/chat/{session_id}/{attachment_id}.{ext}`, and taking
+  one back deletes it. YouTube resources have no file, only a row.
+- **Row-level security.** Every table has RLS limiting a signed-in user to
+  their own rows (`0001_init.sql`, `0002_malai_chats.sql`). The browser uses
+  only the public key; the service key stays on the API. `0003_grants.sql`
+  grants the table privileges the API roles need. Without it every table call
+  fails with `42501`.
+- **Malai chat list across devices.** `GET/PUT/DELETE /malai/chats` keep the
+  sidebar's chats per user. The browser merges the server list with its own by
+  `updated_ms` (at most every 15 s, and on window focus), uploads chats that
+  only exist locally, and remembers deletions so they do not come back. The
+  list hands back a session token only for sessions the caller owns.
+
+## (h) Voice conversations
+
+```mermaid
+%%{init: {"theme": "base", "fontFamily": "Arial, Helvetica, sans-serif", "themeVariables": {"fontSize": "16px", "fontFamily": "Arial, Helvetica, sans-serif", "lineColor": "#64748b", "primaryTextColor": "#0f172a"}, "flowchart": {"curve": "basis", "padding": 14, "wrappingWidth": 340}}}%%
+flowchart TD
+  M["Learner presses the microphone<br/>and asks out loud"]:::person --> RL["Our server relays the audio<br/>(the Gemini key stays on the server)"]:::server
+  RL --> GL["Gemini Live hears<br/>the question"]:::ai
+  GL --> K{"A question about<br/>the course?"}:::server
+  K -->|"just chatting"| HI["Short spoken reply"]:::good
+  K -->|"yes"| AC["Same answer path as a typed question,<br/>at the current playhead"]:::server
+  AC --> GATE["Only what has already played,<br/>only the learner's own materials"]:::check
+  GATE --> VAL{"Every source was<br/>really given to it?"}:::check
+  VAL -->|"no, or nothing covers it"| REF["Refusal, spoken<br/>as a refusal"]:::stop
+  VAL -->|"yes"| SP["Gemini Live reads out<br/>that checked answer, adding nothing"]:::ai
+  SP --> CH["Question and answer appear<br/>in the chat; a recap is saved<br/>every 5 minutes"]:::good
+
+  classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
+  classDef server fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:1.5px
+  classDef ai fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px
+  classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:1.5px
+  classDef check fill:#ffffff,stroke:#dc2626,color:#7f1d1d,stroke-width:2px
+  classDef good fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:2px
+  classDef stop fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:1.5px
+```
+
+- **Two sockets.** `WS /voice/live` is the conversation and
+  `WS /voice/transcribe` is dictation into the input box
+  (`gemini-3.5-transcribe-live`). The API opens the Gemini Live session with
+  its own key and relays PCM audio both ways (16 kHz up, 24 kHz down), so the
+  key never reaches the browser.
+- **The voice model never answers course questions itself.** `gemini-3.8-live`
+  and the 2.5 native-audio model have one tool, `ask_course(question)`, which
+  calls the same `_answer` path as `POST /chat` with the latest playhead (sent
+  about once a second), the chat's thread, scope and materials marked done. So
+  the strict `end_ms <= T` gate, citation validation and refusals apply. The
+  tool returns the answer without citation markers, and the model is told to
+  speak it faithfully and add no facts. The extended-thinking model emits no
+  tool calls, so for it the server answers each transcribed question itself
+  and injects `COURSE ANSWER: …` (or `REFUSED` / `UNAVAILABLE`) for the model
+  to read out.
+- **Fast and short.** Voice questions use the classic pipeline (no agent),
+  with a short answer written for speech.
+- **In the chat.** While a session runs, a compact voice bar replaces the input
+  box. Each spoken question and its validated answer appear in the chat as
+  ordinary messages. A recap of the validated answers (no
+  new facts) is saved to the thread every 5 minutes and when the session ends.
+- **Same checks as `/chat`.** The first frame must be a `start` within 10 s
+  with the HMAC session token, plus the Supabase `access_token` for an owned
+  session (browsers cannot set headers on a WebSocket). The rate limit applies,
+  the `Origin` must equal `CORS_ORIGIN`, and a session lasts at most 10
+  minutes.
+- **Voices and language.** The learner picks a prebuilt voice and a speaking
+  tone. Hindi or Hinglish speech gets Hinglish replies in Roman script, and
+  Devanagari transcripts are romanized for captions and dictation.
+
 ## Safety invariants
 
 These are product properties, and the tests pin them. They are not tuning
@@ -672,3 +831,6 @@ knobs.
 | 6 | **Signed launches in production.** `LMS_LAUNCH_SECRET=dev-secret` with `ALLOW_UNSIGNED_LAUNCH=true` is for a localhost demo only. Hosted, the Vercel server route signs launches and the API runs with `ALLOW_UNSIGNED_LAUNCH=false`. | The launch carries the learner, the course and the allowed resources. Unsigned, anyone could grant themselves any scope. |
 | 7 | **Secrets stay out of the repo and the browser.** `apps/api/.env` is git-ignored. The web app's launch secret is server-only (no `NEXT_PUBLIC_` prefix). | |
 | 8 | **Model HTML stays inert.** No `rehype-raw`, and KaTeX runs with `trust: false`. `npm run contract-check` fails if either is broken. | Answers are model output rendered in the learner's browser. |
+| 9 | **Learner images are context, not evidence.** A chat image's transcript has no chunk id, is marked as the learner's own material in the prompt, and is never indexed or attached to a subject. | Otherwise a learner could upload "lecture notes" that the tutor would cite as the course. |
+| 10 | **Voice speaks only validated answers.** Course questions asked by voice go through the same gate and citation check as typed ones; the voice model only reads the result. | A voice model answering from its own knowledge would bypass every check above. |
+| 11 | **A session belongs to its owner.** A signed-in learner's session answers `404` to anyone else, even with a valid HMAC token, and the Supabase service key never leaves the API. | Session ids appear in URLs and the chat list; the token alone should not be enough to read another learner's chats. |

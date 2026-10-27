@@ -17,13 +17,22 @@ flowchart LR
     direction TB
     Q["Groq<br/>speech to text"]:::ai
     G["Gemini<br/>screen descriptions,<br/>quizzes, backup answers"]:::ai
+    GL["Gemini Live<br/>voice conversations"]:::ai
     O["OpenRouter<br/>AI tutor (Nemotron)"]:::ai
     P[("Pinecone<br/>search index")]:::store
   end
+  subgraph SUP["Supabase (optional)"]
+    direction TB
+    AU["Accounts<br/>email or Google sign-in"]:::check
+    DB[("Database<br/>subjects, chats, progress")]:::store
+    ST[("File storage<br/>uploads, chat images")]:::store
+  end
   B -->|"opens a lesson"| VER
+  B -->|"signs in"| AU
   VER -->|"starts a signed session"| RN
-  B -->|"questions, quizzes, uploads,<br/>video streaming"| RN
+  B -->|"questions, quizzes, uploads,<br/>video streaming, voice"| RN
   RN -->|"calls when needed"| CLOUD
+  RN -->|"saves and restores"| SUP
 
   classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
   classDef server fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:1.5px

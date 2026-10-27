@@ -1,0 +1,22 @@
+%%{init: {"theme": "base", "fontFamily": "Arial, Helvetica, sans-serif", "themeVariables": {"fontSize": "16px", "fontFamily": "Arial, Helvetica, sans-serif", "lineColor": "#64748b", "primaryTextColor": "#0f172a"}, "flowchart": {"curve": "basis", "padding": 14, "wrappingWidth": 340}}}%%
+flowchart TD
+  L["Learner signs in<br/>(email or Google)"]:::person --> T["The website gets a<br/>sign-in token from Supabase"]:::person
+  T --> R["Every request carries<br/>the token"]:::person
+  R --> V{"Is the token real<br/>and unexpired?"}:::check
+  V -->|"no"| X["Rejected"]:::stop
+  V -->|"yes"| O{"Is this session<br/>the learner's own?"}:::check
+  O -->|"someone else's"| NF["Answered as<br/>'not found'"]:::stop
+  O -->|"own, or the public demo"| S["Our server does the work"]:::server
+  S --> DB[("Database<br/>subjects, chats, messages,<br/>Malai chat list, image notes,<br/>study time, progress, quiz scores")]:::store
+  S --> ST[("File storage<br/>uploaded videos, PDFs and slides,<br/>chat images, each under<br/>the learner's own folder")]:::store
+  S --> K["Answer shown to the learner"]:::good
+  ST -.->|"local copy gone after a restart:<br/>downloaded back"| S
+  DB -.->|"on startup: subjects and<br/>chats loaded back"| S
+
+  classDef person fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:1.5px
+  classDef server fill:#ede9fe,stroke:#7c3aed,color:#2e1065,stroke-width:1.5px
+  classDef ai fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px
+  classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:1.5px
+  classDef check fill:#ffffff,stroke:#dc2626,color:#7f1d1d,stroke-width:2px
+  classDef good fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:2px
+  classDef stop fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:1.5px
