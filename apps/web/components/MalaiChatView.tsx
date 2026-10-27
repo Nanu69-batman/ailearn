@@ -51,6 +51,7 @@ import { joinText, stripInterim, withInterim } from "@/lib/voice";
 import MicButton, { VoiceButton } from "@/components/MicButton";
 import VoicePanel from "@/components/VoicePanel";
 import AddContentDialog from "@/components/AddContentDialog";
+import { ImageButton, ImageChips, useChatImages, withImageNote, type PendingImage } from "@/components/ChatImages";
 import { useDictation, type DictationState } from "@/components/useDictation";
 import { useVoiceModels, type VoiceStartFields, type VoiceTurn } from "@/components/useVoiceSession";
 
@@ -98,7 +99,10 @@ function Composer({
   inputRef,
   slashContext,
   voice,
+  images,
 }: {
+  /** Images attached in the bar (chat context, never resources). */
+  images?: { items: PendingImage[]; onFiles: (f: FileList) => void; onRemove: (key: string) => void; uploading: boolean };
   /** Dictation and the voice conversation; absent when voice is off. */
   voice?: { state: DictationState; error: string | null; onMic: () => void; onTalk: () => void };
   value: string;
@@ -121,9 +125,11 @@ function Composer({
     el.style.height = `${Math.min(el.scrollHeight, 180)}px`;
   }, [value, inputRef]);
 
-  const canSend = !disabled && !busy && value.trim().length > 0;
+  const canSend = !disabled && !busy && !images?.uploading && value.trim().length > 0;
 
   return (
+    <div>
+    {images && <ImageChips items={images.items} onRemove={images.onRemove} />}
     <form
       onSubmit={(e) => {
         e.preventDefault();
@@ -165,6 +171,7 @@ function Composer({
         aria-activedescendant={slash.menu ? `slash-opt-${slash.active}` : undefined}
         className="max-h-[180px] min-h-[2.75rem] flex-1 resize-none bg-transparent py-2.5 text-[15px] text-gray-900 placeholder-gray-400 outline-none"
       />
+      {images && <ImageButton size="lg" onFiles={images.onFiles} disabled={disabled || busy} />}
       {voice && (
         <>
           <MicButton size="lg" state={voice.state} error={voice.error} onClick={voice.onMic} disabled={disabled || busy} />
@@ -186,6 +193,7 @@ function Composer({
         )}
       </button>
     </form>
+    </div>
   );
 }
 
@@ -312,6 +320,21 @@ export default function MalaiChatView() {
   });
   const stopDictation = dictation.stop;
 
+  // Attaching an image, like dictating, needs the chat to exist first.
+  // The chat an image went to, so the question goes to the same one even
+  // before the address has caught up.
+  const imageChat = useRef<MalaiChat | null>(null);
+  useEffect(() => {
+    if (imageChat.current && imageChat.current.id !== chatId) imageChat.current = null;
+  }, [chatId]);
+  const images = useChatImages(async () => {
+    const c = await ensureChat();
+    imageChat.current = c;
+    return { sessionId: c.sessionId, sessionToken: c.sessionToken, threadId: c.threadId === MAIN_THREAD_ID ? undefined : c.threadId };
+  });
+  const clearImages = images.clear;
+  const imageNames = images.readyNames;
+
   const openVoice = async (): Promise<void> => {
     stopDictation();
     try {
@@ -389,11 +412,12 @@ export default function MalaiChatView() {
     }
     setMessages((prev) => [
       ...prev,
-      { id: newMessageId(), role: "user", content: text, citations: [], created_at: new Date().toISOString() },
+      { id: newMessageId(), role: "user", content: withImageNote(text, imageNames), citations: [], created_at: new Date().toISOString() },
     ]);
+    clearImages();
 
     const scope = allResourceIds(subjects);
-    let current = chat;
+    let current = chat ?? imageChat.current;
     try {
       if (!current) {
         const thread = await openThread(scope);
@@ -475,7 +499,7 @@ export default function MalaiChatView() {
       setLoading(false);
       setPreview(null);
     }
-  }, [draft, loading, subject, subjects, chat, slashContext, stopDictation]);
+  }, [draft, loading, subject, subjects, chat, slashContext, stopDictation, imageNames, clearImages]);
 
   /** What a quiz from this chat may draw from: the chat's own reach. */
   const quizScope: QuizScope | null = quizChat
@@ -566,6 +590,7 @@ export default function MalaiChatView() {
           : undefined
       }
       onSend={() => void send()}
+      images={{ items: images.items, onFiles: (f) => void images.add(f), onRemove: images.remove, uploading: images.uploading }}
       disabled={notReady}
       busy={loading}
       placeholder={subject ? `Ask about ${subject.name}, or type / for commands…` : "Ask anything, or type / for commands…"}

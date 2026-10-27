@@ -273,10 +273,14 @@ async def _answer(body: ChatRequest, *, voice: bool = False) -> ChatResponse:
     ``voice`` asks for a short spoken-style answer on the fast (non-agent)
     pipeline; the gate, citation validation and refusals are the same.
     """
+    from app.chat.attachments import prompt_note
     from app.chat.prompts import style_for, style_note
 
     service = get_service()
-    note = style_note.set(style_for(body.personalization, voice=voice))
+    # Images attached to this chat are context for every answer in it.
+    images = prompt_note(body.session_id, _resolve_thread(body.session_id, body.thread_id))
+    style = "\n\n".join(p for p in (style_for(body.personalization, voice=voice), images) if p)
+    note = style_note.set(style)
     try:
         return await service.chat(
             session_id=body.session_id,

@@ -6,6 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.chat.attachments import router as chat_attachments_router
 from app.chat.chats import router as malai_chats_router
 from app.chat.router import describe_active_providers
 from app.chat.router import router as chat_router
@@ -56,6 +57,11 @@ async def lifespan(_: FastAPI):
             malai_chats.set_persistence_enabled(True)
             malai_chats.load_local_state()
 
+            from app.chat import attachments as chat_attachments
+
+            chat_attachments.set_persistence_enabled(True)
+            chat_attachments.load_local_state()
+
         # No snapshot restore: the Chroma PersistentClient under data/chroma is
         # the durable store, so there is no `store_snapshot.pkl` to load and
         # ingest state needs no rehydration -- indexed chunks outlive restarts.
@@ -98,6 +104,9 @@ app.include_router(chat_router)
 
 # The Malai sidebar's chat list, per signed-in user: /malai/chats.
 app.include_router(malai_chats_router)
+
+# Images attached to one chat (context only, never resources): /chat/attachments.
+app.include_router(chat_attachments_router)
 
 # The library-based ingestion pipeline replaces the deleted hand-built router.
 # Route shapes are unchanged because `apps/web/lib/api.ts` still calls them:

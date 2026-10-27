@@ -36,6 +36,7 @@ import { detectQuizIntent } from "../lib/quizIntent";
 import { joinText, stripInterim, withInterim } from "../lib/voice";
 import MicButton, { VoiceButton } from "./MicButton";
 import VoicePanel from "./VoicePanel";
+import { ImageButton, ImageChips, useChatImages, withImageNote } from "./ChatImages";
 import { useDictation } from "./useDictation";
 import { useVoiceModels, type VoiceStartFields, type VoiceTurn } from "./useVoiceSession";
 
@@ -228,6 +229,14 @@ export default function ChatPanel({
   const [threads, setThreads] = useState<ChatThread[]>([]);
   const [threadId, setThreadId] = useState<string>(MAIN_THREAD_ID);
   const [threadBusy, setThreadBusy] = useState(false);
+
+  // Images attached in the bar: context for this chat, never resources.
+  const images = useChatImages(async () =>
+    sessionExpired ? null : { sessionId, sessionToken, threadId: threadId === MAIN_THREAD_ID ? undefined : threadId },
+  );
+  const clearImages = images.clear;
+  // Another chat: its attachments are its own.
+  useEffect(() => clearImages(), [threadId, clearImages]);
   const [threadError, setThreadError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -428,7 +437,7 @@ export default function ChatPanel({
 
   async function send(raw: string): Promise<void> {
     const typed = raw.trim();
-    if (!typed || sending) return;
+    if (!typed || sending || images.uploading) return;
     dictation.stop();
     // A slash command sets the answer style, or opens a quiz; so does a
     // message that asks for a quiz in so many words ("quiz me on this").
@@ -455,11 +464,12 @@ export default function ChatPanel({
     const userMsg: ChatMessage = {
       id: newId(),
       role: "user",
-      content: text,
+      content: withImageNote(text, images.readyNames),
       citations: [],
       created_at: new Date().toISOString(),
     };
     setMessages((prev) => [...prev, userMsg]);
+    clearImages();
     setInput("");
     setSending(true);
     if (!offline) onAsk?.(threadId, text);
@@ -662,7 +672,7 @@ export default function ChatPanel({
   const starters = isVideo ? VIDEO_STARTERS : DOCUMENT_STARTERS;
   const showGreeting =
     tab === "chat" && historyState === "ready" && messages.length === 0 && !sending && !sessionExpired;
-  const canSend = !sending && input.trim().length > 0;
+  const canSend = !sending && !images.uploading && input.trim().length > 0;
   const notice = "rounded-xl border px-3 py-2.5 text-sm";
 
   return (
@@ -857,6 +867,7 @@ export default function ChatPanel({
           {menu && (
             <SlashMenuList menu={menu} active={slash.active} onPick={pickFromMenu} onHover={slash.setActive} />
           )}
+          <ImageChips items={images.items} onRemove={images.remove} />
           <div className="flex items-end gap-2 rounded-[1.5rem] border border-gray-200 bg-white py-1.5 pl-2 pr-1.5 shadow-lg shadow-violet-900/5 transition focus-within:border-violet-300 focus-within:ring-4 focus-within:ring-violet-100">
             {/* Trigger #1 of the live frame: the explicit button. It LATCHES (it
                 does not send by itself) so the learner can still type the
@@ -911,6 +922,9 @@ export default function ChatPanel({
               aria-controls={menu ? "slash-menu" : undefined}
               aria-activedescendant={menu ? `slash-opt-${slash.active}` : undefined}
             />
+            {!offline && !sessionExpired && (
+              <ImageButton onFiles={(f) => void images.add(f)} disabled={sending} />
+            )}
             {voiceModels && !sessionExpired && (
               <>
                 <MicButton state={dictation.state} error={dictation.error} onClick={dictation.toggle} disabled={sending} />

@@ -24,3 +24,26 @@ create policy malai_chats_owner_all on public.malai_chats
   for all to authenticated
   using (auth.uid() = owner_id)
   with check (auth.uid() = owner_id);
+
+-- Images attached to one chat: only the vision transcript is kept (never the
+-- image, never a resource). Read by the API to give later answers the context.
+create table if not exists public.chat_attachments (
+  id           text primary key,
+  owner_id     uuid references auth.users(id) on delete cascade,
+  session_id   text not null references public.chat_sessions(id) on delete cascade,
+  thread_id    text not null,
+  name         text not null default 'image',
+  mime         text,
+  description  text not null,
+  created_at   timestamptz not null default now()
+);
+create index if not exists chat_attachments_chat_idx
+  on public.chat_attachments (session_id, thread_id, created_at);
+
+alter table public.chat_attachments enable row level security;
+
+drop policy if exists chat_attachments_owner_all on public.chat_attachments;
+create policy chat_attachments_owner_all on public.chat_attachments
+  for all to authenticated
+  using (auth.uid() = owner_id)
+  with check (auth.uid() = owner_id);

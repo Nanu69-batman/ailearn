@@ -84,7 +84,9 @@ def load_local_state() -> None:
             _local.clear()
             for owner, rows in data.items():
                 if isinstance(rows, dict):
-                    _local[str(owner)] = {str(k): v for k, v in rows.items() if isinstance(v, dict)}
+                    _local[str(owner)] = {
+                        str(k): v for k, v in rows.items() if isinstance(v, dict)
+                    }
 
 
 def _save_local() -> None:
@@ -112,7 +114,11 @@ def _user(user: Annotated[AuthUser | None, Depends(get_current_user)]) -> AuthUs
 
 
 def _valid_id(chat_id: str) -> str:
-    if not chat_id or len(chat_id) > 64 or not all(c.isalnum() or c in "-_" for c in chat_id):
+    if (
+        not chat_id
+        or len(chat_id) > 64
+        or not all(c.isalnum() or c in "-_" for c in chat_id)
+    ):
         raise HTTPException(status_code=422, detail="invalid chat id")
     return chat_id
 
@@ -125,7 +131,11 @@ def _rows(owner: str) -> list[dict]:
     try:
         return client.select(
             TABLE,
-            {"owner_id": f"eq.{owner}", "order": "updated_ms.desc", "limit": str(MAX_CHATS_PER_USER)},
+            {
+                "owner_id": f"eq.{owner}",
+                "order": "updated_ms.desc",
+                "limit": str(MAX_CHATS_PER_USER),
+            },
         )
     except Exception as exc:
         log.warning("chat list read failed: %s", exc)
@@ -136,7 +146,9 @@ def _out(row: dict, owner: str) -> MalaiChatOut:
     session = session_store.get(str(row.get("session_id")))
     token = ""
     if session is not None and session.owner_id == owner:
-        token = create_session_token(settings.lms_launch_secret, session.id, session.learner_id)
+        token = create_session_token(
+            settings.lms_launch_secret, session.id, session.learner_id
+        )
     return MalaiChatOut(
         id=str(row["id"]),
         session_id=str(row.get("session_id") or ""),
@@ -153,7 +165,9 @@ def _out(row: dict, owner: str) -> MalaiChatOut:
 
 @router.get("/malai/chats", response_model=MalaiChatList)
 def list_chats(user: Annotated[AuthUser, Depends(_user)]) -> MalaiChatList:
-    rows = sorted(_rows(user.id), key=lambda r: int(r.get("updated_ms") or 0), reverse=True)
+    rows = sorted(
+        _rows(user.id), key=lambda r: int(r.get("updated_ms") or 0), reverse=True
+    )
     return MalaiChatList(chats=[_out(r, user.id) for r in rows[:MAX_CHATS_PER_USER]])
 
 
@@ -174,7 +188,9 @@ def put_chat(
         with _lock:
             mine = _local.setdefault(user.id, {})
             if chat_id not in mine and len(mine) >= MAX_CHATS_PER_USER:
-                raise HTTPException(status_code=409, detail="too many chats; delete some first")
+                raise HTTPException(
+                    status_code=409, detail="too many chats; delete some first"
+                )
             mine[chat_id] = row
         _save_local()
     else:
@@ -182,7 +198,9 @@ def put_chat(
             client.upsert(TABLE, row, on_conflict="owner_id,id")
         except Exception as exc:
             log.warning("chat list write failed: %s", exc)
-            raise HTTPException(status_code=503, detail="chat list unavailable") from exc
+            raise HTTPException(
+                status_code=503, detail="chat list unavailable"
+            ) from exc
     return _out(row, user.id)
 
 

@@ -717,6 +717,60 @@ export async function deleteMalaiChat(id: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Images attached to one chat (POST/DELETE /chat/attachments). Context for
+// the chat's answers only: never a resource, never ingested.
+// ---------------------------------------------------------------------------
+
+export interface ChatImage {
+  id: string;
+  name: string;
+  /** What the vision model read from it. */
+  text: string;
+}
+
+export async function uploadChatImage(
+  target: { sessionId: string; sessionToken: string; threadId?: string },
+  file: File,
+): Promise<ChatImage> {
+  const base = baseUrl();
+  if (!base) throw new ApiError(0, "NEXT_PUBLIC_API_URL is not configured", "n/a");
+  const requestId = newRequestId();
+  const form = new FormData();
+  form.append("image", file, file.name || "image");
+  form.append("session_id", target.sessionId);
+  form.append("session_token", target.sessionToken);
+  if (target.threadId) form.append("thread_id", target.threadId);
+  let res: Response;
+  try {
+    res = await fetch(`${base}/chat/attachments`, {
+      method: "POST",
+      body: form,
+      headers: { "x-request-id": requestId, ...(await authHeaders()) },
+    });
+  } catch (err) {
+    throw new ApiError(0, err instanceof Error ? `Network error: ${err.message}` : "Network error", requestId);
+  }
+  if (!res.ok) throw await apiErrorFromResponse(res, requestId);
+  return (await res.json()) as ChatImage;
+}
+
+export async function deleteChatImage(
+  target: { sessionId: string; sessionToken: string; threadId?: string },
+  id: string,
+): Promise<void> {
+  const base = baseUrl();
+  if (!base) return;
+  const requestId = newRequestId();
+  const q = new URLSearchParams({ session_id: target.sessionId });
+  if (target.threadId) q.set("thread_id", target.threadId);
+  const res = await fetch(`${base}/chat/attachments/${encodeURIComponent(id)}?${q}`, {
+    method: "DELETE",
+    headers: { "x-request-id": requestId, "x-session-token": target.sessionToken, ...(await authHeaders()) },
+  });
+  if (!res.ok) throw await apiErrorFromResponse(res, requestId);
+}
+
+// ---------------------------------------------------------------------------
 // Live frame capture.
 //
 //   POST /chat/live-frame (multipart/form-data)
