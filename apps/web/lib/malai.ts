@@ -17,7 +17,12 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import {
   createLmsSession,
   createThread,
+  deleteMalaiChat,
   formatApiError,
+  isSignedIn,
+  listMalaiChats,
+  putMalaiChat,
+  type MalaiChatRow,
   getSubjectResources,
   sameResourceIdSet,
   type CourseResource,
@@ -116,8 +121,105 @@ function save(next: MalaiChat[]): void {
   listeners.forEach((l) => l());
 }
 
+// ---------------------------------------------------------------------------
+// Server copy: signed in, the list lives in the database (GET/PUT/DELETE
+// /malai/chats) so it survives a cleared browser and follows the learner to
+// another device. Local storage stays the instant, offline copy.
+// ---------------------------------------------------------------------------
+
+function toRow(c: MalaiChat): Omit<MalaiChatRow, "session_token"> {
+  return {
+    id: c.id,
+    session_id: c.sessionId,
+    thread_id: c.threadId,
+    title: c.title,
+    subject_id: c.subjectId,
+    resource_id: c.resourceId ?? null,
+    preview: c.preview,
+    created_ms: c.createdAt,
+    updated_ms: c.updatedAt,
+  };
+}
+
+function fromRow(r: MalaiChatRow, local: MalaiChat | undefined): MalaiChat {
+  return {
+    id: r.id,
+    sessionId: r.session_id,
+    // The server mints a token only for a live session it can vouch for.
+    sessionToken: r.session_token || local?.sessionToken || "",
+    threadId: r.thread_id,
+    title: r.title,
+    subjectId: r.subject_id,
+    resourceId: r.resource_id,
+    preview: r.preview,
+    createdAt: r.created_ms,
+    updatedAt: r.updated_ms,
+  };
+}
+
+function push(c: MalaiChat): void {
+  void isSignedIn()
+    .then((yes) => (yes ? putMalaiChat(toRow(c)) : undefined))
+    // A session this login does not own (made signed out) stays local only.
+    .catch(() => {});
+}
+
+function pushDelete(id: string): void {
+  void isSignedIn()
+    .then((yes) => (yes ? deleteMalaiChat(id) : undefined))
+    .catch(() => {});
+}
+
+let syncing: Promise<void> | null = null;
+let lastSync = 0;
+const SYNC_EVERY_MS = 15_000;
+// Deleted here while a sync was in flight: not brought back by it.
+const removedIds = new Set<string>();
+
+/** Merge the server's list into this browser's; upload chats only this browser has. */
+export function syncMalaiChats(force = false): Promise<void> {
+  if (typeof window === "undefined") return Promise.resolve();
+  if (syncing) return syncing;
+  if (!force && Date.now() - lastSync < SYNC_EVERY_MS) return Promise.resolve();
+  syncing = (async () => {
+    try {
+      if (!(await isSignedIn())) return;
+      const rows = await listMalaiChats();
+      lastSync = Date.now();
+      const local = new Map(load().map((c) => [c.id, c]));
+      const merged = new Map<string, MalaiChat>();
+      for (const r of rows) {
+        if (removedIds.has(r.id)) continue;
+        const mine = local.get(r.id);
+        const theirs = fromRow(r, mine);
+        merged.set(r.id, mine && mine.updatedAt > theirs.updatedAt ? { ...mine, sessionToken: theirs.sessionToken || mine.sessionToken } : theirs);
+        if (mine && mine.updatedAt > theirs.updatedAt) push(mine);
+      }
+      for (const c of local.values()) {
+        if (!merged.has(c.id)) {
+          merged.set(c.id, c);
+          push(c);
+        }
+      }
+      cache = [...merged.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+      try {
+        window.localStorage.setItem(CHATS_KEY, JSON.stringify(cache));
+      } catch {
+        // Storage unavailable -> in-memory only.
+      }
+      listeners.forEach((l) => l());
+    } catch {
+      // Offline or the list is unavailable: keep the local copy.
+    } finally {
+      syncing = null;
+    }
+  })();
+  return syncing;
+}
+
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
+  void syncMalaiChats();
   // Another tab changed the index.
   const onStorage = (e: StorageEvent) => {
     if (e.key === CHATS_KEY) {
@@ -125,10 +227,14 @@ function subscribe(listener: () => void): () => void {
       listener();
     }
   };
+  // Back to this tab: pick up chats made on another device.
+  const onFocus = () => void syncMalaiChats();
   window.addEventListener("storage", onStorage);
+  window.addEventListener("focus", onFocus);
   return () => {
     listeners.delete(listener);
     window.removeEventListener("storage", onStorage);
+    window.removeEventListener("focus", onFocus);
   };
 }
 
@@ -143,6 +249,7 @@ export function getChat(id: string): MalaiChat | null {
 
 export function addChat(chat: MalaiChat): void {
   save([chat, ...load().filter((c) => c.id !== chat.id)]);
+  push(chat);
 }
 
 export function updateChat(id: string, patch: Partial<Omit<MalaiChat, "id">>): void {
@@ -151,10 +258,14 @@ export function updateChat(id: string, patch: Partial<Omit<MalaiChat, "id">>): v
       .map((c) => (c.id === id ? { ...c, ...patch } : c))
       .sort((a, b) => b.updatedAt - a.updatedAt),
   );
+  const next = load().find((c) => c.id === id);
+  if (next) push(next);
 }
 
 export function removeChat(id: string): void {
+  removedIds.add(id);
   save(load().filter((c) => c.id !== id));
+  pushDelete(id);
 }
 
 /**

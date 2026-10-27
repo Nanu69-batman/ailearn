@@ -672,6 +672,51 @@ export async function deleteThread(
 }
 
 // ---------------------------------------------------------------------------
+// The Malai chat list, per signed-in user (GET/PUT/DELETE /malai/chats).
+// ---------------------------------------------------------------------------
+
+export interface MalaiChatRow {
+  id: string;
+  session_id: string;
+  thread_id: string;
+  title: string;
+  subject_id: string | null;
+  resource_id: string | null;
+  preview: string;
+  created_ms: number;
+  updated_ms: number;
+  /** Minted for the caller's live session; empty when the session is gone. */
+  session_token?: string;
+}
+
+/** True when a Supabase login exists, so the chat list can live on the server. */
+export async function isSignedIn(): Promise<boolean> {
+  return Boolean(await getAccessToken());
+}
+
+export async function listMalaiChats(): Promise<MalaiChatRow[]> {
+  const res = await apiFetch<{ chats: MalaiChatRow[] }>("/malai/chats");
+  return Array.isArray(res.chats) ? res.chats : [];
+}
+
+export async function putMalaiChat(row: Omit<MalaiChatRow, "session_token">): Promise<void> {
+  const { id, ...body } = row;
+  await apiFetch<unknown>(`/malai/chats/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) });
+}
+
+export async function deleteMalaiChat(id: string): Promise<void> {
+  const base = baseUrl();
+  if (!base) return;
+  const requestId = newRequestId();
+  // 204, no body: not through apiFetch, which parses JSON.
+  const res = await fetch(`${base}/malai/chats/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: { "x-request-id": requestId, ...(await authHeaders()) },
+  });
+  if (!res.ok) throw await apiErrorFromResponse(res, requestId);
+}
+
+// ---------------------------------------------------------------------------
 // Live frame capture.
 //
 //   POST /chat/live-frame (multipart/form-data)
