@@ -182,6 +182,7 @@ class ChatService:
         sessions: InMemorySessionStore | None = None,
         messages: InMemoryMessageStore | None = None,
         agent=None,
+        intent_router=None,
     ) -> None:
         from app.chat.sessions import message_store, session_store
 
@@ -197,6 +198,14 @@ class ChatService:
         # Optional :class:`app.chat.agent.LessonAgent`. ``None`` (the default,
         # and every test that does not opt in) means the classic pipeline only.
         self._agent = agent
+        # Optional :class:`app.chat.intent_model.ModelIntentRouter`. ``None``
+        # (the default) means the intent regex alone.
+        self._intent_router = intent_router
+
+    async def _route_intent(self, message: str) -> str | None:
+        if self._intent_router is None:
+            return classify_intent(message)
+        return await self._intent_router.route(message)
 
     def _retrieval(self):
         """Bind the awaitable retrieval seam.
@@ -435,6 +444,7 @@ class ChatService:
             },
         )
 
+        intent = await self._route_intent(message) if live_frame is None else None
         use_agent = (
             not fast
             and self._agent is not None
@@ -456,6 +466,7 @@ class ChatService:
                 focus_resource_id=focus_resource_id,
                 live_frame=live_frame,
                 no_frame_note=no_frame_note,
+                intent=intent,
             )
             if resp is not None:
                 return resp
@@ -464,7 +475,6 @@ class ChatService:
                 data={"path": "classic", "reason": "agent unavailable or answer not grounded"},
             )
 
-        intent = classify_intent(message) if live_frame is None else None
         if intent == SMALLTALK:
             history = self._user_history(session_id)
             return await self._conversational_answer(session_id, message, history)
@@ -812,6 +822,7 @@ class ChatService:
         live_frame,
         no_frame_note: str | None,
         done: Sequence[str] = (),
+        intent: str | None = None,
     ) -> ChatResponse | None:
         """One agentic turn, or ``None`` to fall back to the classic pipeline.
 
@@ -845,6 +856,7 @@ class ChatService:
                     retrieval=self._retrieval(),
                     history=history,
                     live_passage=live_passage,
+                    intent=intent,
                 ),
                 timeout=settings.agent_total_timeout_s,
             )

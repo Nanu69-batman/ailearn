@@ -59,6 +59,9 @@ from app.retrieval.store import TIME_GATED_SOURCE_TYPES
 
 log = logging.getLogger(__name__)
 
+#: ``run(intent=...)`` not given: classify the message with the regex here.
+_UNSET = object()
+
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 #: The label a general-knowledge section must carry. Same wording the classic
@@ -380,6 +383,7 @@ class LessonAgent:
         done: Sequence[str] = (),
         history: Sequence[str] = (),
         live_passage=None,
+        intent: str | None | object = _UNSET,
     ) -> AgentOutcome:
         """Run the tool loop and return a VALIDATED outcome.
 
@@ -509,7 +513,8 @@ class LessonAgent:
         repaired = False
         # A subject question answered from the model's priors is ungrounded.
         # Rather than give up on it, ask once more with a tool call required.
-        intent = classify_intent(message)
+        if intent is _UNSET:
+            intent = classify_intent(message)
         needs_lesson = intent != SMALLTALK and has_subject_content(message)
 
         # Prefetch: run the lesson read the model would have asked for first,
@@ -644,7 +649,7 @@ class LessonAgent:
             "validate", title="Validate citations",
             data={"retrieved_ids": list(seen)[:20], "retrieved": len(seen)},
         ) as out:
-            outcome = self._validate(text, seen, message, mode, tool_calls_made)
+            outcome = self._validate(text, seen, message, mode, tool_calls_made, intent)
             out["cited_ids"] = [p.chunk_id for p in outcome.cited][:10]
             out["unknown_ids"] = []
             out["verdict"] = outcome.kind
@@ -671,7 +676,9 @@ class LessonAgent:
         return text
 
     @staticmethod
-    def _validate(text: str, seen: dict, message: str, mode: str, tool_calls: int) -> AgentOutcome:
+    def _validate(
+        text: str, seen: dict, message: str, mode: str, tool_calls: int, intent: str | None
+    ) -> AgentOutcome:
         if text == REFUSAL_TEXT:
             return AgentOutcome(kind="refused", text=text, tool_calls=tool_calls)
         text = LessonAgent._expand_short_ids(text, seen)
@@ -688,14 +695,14 @@ class LessonAgent:
                 cited=[seen[c] for c in cited_ids],
                 tool_calls=tool_calls,
             )
-        if classify_intent(message) == SMALLTALK:
+        if intent == SMALLTALK:
             # Never tagged general knowledge: there is no concept in it.
             return AgentOutcome(kind="conversational", text=text, tool_calls=tool_calls)
         labelled = re.search(re.escape(GENERAL_KNOWLEDGE_LABEL), text, re.IGNORECASE)
         if labelled and mode not in NO_GENERAL_KNOWLEDGE_MODES:
             return AgentOutcome(kind="supplemental", text=text, tool_calls=tool_calls)
         if tool_calls == 0 and (
-            classify_intent(message) == SMALLTALK or not has_subject_content(message)
+            intent == SMALLTALK or not has_subject_content(message)
         ):
             return AgentOutcome(kind="conversational", text=text, tool_calls=tool_calls)
         # An uncited, unlabelled answer to a subject question is ungrounded

@@ -146,6 +146,7 @@ def get_service() -> ChatService:
     if _service_override is not None:
         return _service_override
     from app.chat.agent import get_agent
+    from app.chat.intent_model import get_intent_router
     from app.chat.llm import get_llm_provider
     from app.ingestion.embedder import get_embedder
 
@@ -156,6 +157,7 @@ def get_service() -> ChatService:
         sessions=session_store,
         messages=message_store,
         agent=get_agent(),
+        intent_router=get_intent_router(),
     )
 
 

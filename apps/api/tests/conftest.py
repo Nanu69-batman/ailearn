@@ -32,6 +32,8 @@ def _no_hosted_transcription(monkeypatch):
     from app.ingestion.backoff import clear_quota_block
 
     monkeypatch.setattr(settings, "groq_api_key", "")
+    # Nor the Gemini intent router (app/chat/intent_model.py).
+    monkeypatch.setattr(settings, "intent_router_enabled", False)
     clear_quota_block()
     yield
     clear_quota_block()

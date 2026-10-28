@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     # Which models answer is the learner's mode (auto/fast/balanced/powerful)
     # or their own provider key and model, per request: app/chat/models.py.
     openrouter_api_key: str = ""
+    # A message the intent regex cannot place, and that talks to the assistant
+    # or names no concept, is labelled by this small Gemini model (key:
+    # llm_api_key). A timeout or error falls back to the regex: app/chat/intent_model.py.
+    intent_router_enabled: bool = True
+    intent_router_model: str = "gemini-3.5-flash-lite"
+    intent_router_timeout_s: float = 2.5
     # Model calls per answer. The lesson read is prefetched, so 2 = answer
     # (or one extra tool call) + the final reply.
     agent_max_steps: int = 2
