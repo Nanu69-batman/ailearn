@@ -242,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
         "golden_path": args.golden, "chunks_path": args.chunks,
         "embedder": embedder_label(args.embedder),
         "llm": settings.llm_model,
-        "agent": settings.openrouter_model if args.agent else None,
+        "agent": "openrouter (auto mode)" if args.agent else None,
         "pipeline": "agent first, classic fallback" if args.agent else "classic (no agent)",
         "items": results,
     })

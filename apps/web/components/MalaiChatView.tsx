@@ -50,6 +50,7 @@ import { useSubjects } from "@/components/useSubjects";
 import { joinText, stripInterim, withInterim } from "@/lib/voice";
 import MicButton, { VoiceButton } from "@/components/MicButton";
 import VoicePanel from "@/components/VoicePanel";
+import ModelModePicker from "@/components/ModelModePicker";
 import AddContentDialog from "@/components/AddContentDialog";
 import {
   DropOverlay,
@@ -135,6 +136,9 @@ function Composer({
   }, [value, inputRef]);
 
   const canSend = !disabled && !busy && !images?.uploading && value.trim().length > 0;
+  // Empty input: the voice conversation sits where Send goes. Typing swaps it
+  // for Send, which is never greyed out (an empty send just does nothing).
+  const showSend = busy || value.trim().length > 0 || !voice;
 
   return (
     <div>
@@ -189,16 +193,13 @@ function Composer({
       />
       {images && <ImageButton size="lg" onFiles={images.onFiles} disabled={disabled || busy} />}
       {voice && (
-        <>
-          <MicButton size="lg" state={voice.state} error={voice.error} onClick={voice.onMic} disabled={disabled || busy} />
-          <VoiceButton size="lg" onClick={voice.onTalk} disabled={disabled || busy} />
-        </>
+        <MicButton size="lg" state={voice.state} error={voice.error} onClick={voice.onMic} disabled={disabled || busy} />
       )}
+      {showSend ? (
       <button
         type="submit"
-        disabled={!canSend}
         aria-label="Send"
-        className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-violet-600 text-white shadow-md shadow-violet-600/30 transition hover:bg-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:bg-violet-300 disabled:shadow-none"
+        className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-violet-600 text-white shadow-md shadow-violet-600/30 transition hover:bg-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-2"
       >
         {busy ? (
           <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" aria-hidden="true" />
@@ -208,7 +209,11 @@ function Composer({
           </svg>
         )}
       </button>
+      ) : (
+        voice && <VoiceButton size="lg" primary onClick={voice.onTalk} disabled={disabled} />
+      )}
     </form>
+    <ModelModePicker className="mt-1.5 pl-3" />
     </div>
   );
 }

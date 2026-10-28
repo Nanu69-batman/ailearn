@@ -54,8 +54,22 @@ export default function MicButton({ state, onClick, error, disabled, size = "md"
 }
 
 /** The composer's voice-conversation button (opens the voice panel). */
-export function VoiceButton({ onClick, disabled, size = "md" }: { onClick: () => void; disabled?: boolean; size?: "md" | "lg" }) {
+export function VoiceButton({
+  onClick,
+  disabled,
+  size = "md",
+  primary = false,
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  size?: "md" | "lg";
+  /** Filled, in the Send button's place while the input is empty. */
+  primary?: boolean;
+}) {
   const dim = size === "lg" ? "h-12 w-12" : "h-10 w-10";
+  const look = primary
+    ? "bg-violet-600 text-white shadow-md shadow-violet-600/30 hover:bg-violet-700 focus-visible:ring-offset-2"
+    : "text-violet-600 hover:bg-violet-50";
   return (
     <button
       type="button"
@@ -63,7 +77,7 @@ export function VoiceButton({ onClick, disabled, size = "md" }: { onClick: () =>
       disabled={disabled}
       aria-label="Talk with Malai"
       title="Talk with Malai"
-      className={`flex ${dim} shrink-0 items-center justify-center rounded-full text-violet-600 transition hover:bg-violet-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 disabled:opacity-40`}
+      className={`flex ${dim} shrink-0 items-center justify-center rounded-full transition focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 disabled:opacity-40 ${look}`}
     >
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5" aria-hidden="true">
         <path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4" />

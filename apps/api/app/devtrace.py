@@ -98,7 +98,11 @@ def where(component: str) -> str:
         if component == "llm":
             return f"Gemini · {settings.llm_model}" if settings.llm_api_key else "API · offline stub LLM"
         if component == "agent":
-            return f"OpenRouter · {settings.openrouter_model}"
+            from app.chat.models import current_choice
+
+            choice = current_choice()
+            key = " · own key" if choice.byok_key else ""
+            return f"OpenRouter · {choice.mode}{key}"
         if component == "asr":
             if settings.groq_api_key:
                 return f"Groq · {settings.groq_transcribe_model}"

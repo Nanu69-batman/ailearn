@@ -13,6 +13,7 @@ from app.chat.router import router as chat_router
 from app.config import settings
 from app.ingestion.backoff import QuotaExhaustedError
 from app.ingestion.router import router as ingestion_router
+from app.chat.models import ModelChoiceMiddleware
 from app.middleware import RequestIDMiddleware
 from app.subjects.router import router as subjects_router
 from app.voice.router import router as voice_router
@@ -92,6 +93,7 @@ async def _quota_exhausted(_request: Request, exc: QuotaExhaustedError) -> JSONR
 
 
 app.add_middleware(RequestIDMiddleware)
+app.add_middleware(ModelChoiceMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.cors_origin],

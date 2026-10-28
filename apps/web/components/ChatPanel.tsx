@@ -36,6 +36,7 @@ import { detectQuizIntent } from "../lib/quizIntent";
 import { joinText, stripInterim, withInterim } from "../lib/voice";
 import MicButton, { VoiceButton } from "./MicButton";
 import VoicePanel from "./VoicePanel";
+import ModelModePicker from "./ModelModePicker";
 import {
   DropOverlay,
   ImageButton,
@@ -422,7 +423,8 @@ export default function ChatPanel({
 
   function handleSubmit(e: React.FormEvent): void {
     e.preventDefault();
-    void send(input);
+    // Send is never greyed out; an empty or not-yet-ready send does nothing.
+    if (canSend) void send(input);
   }
 
   const slashContext = isVideo ? "video" : "document";
@@ -944,22 +946,22 @@ export default function ChatPanel({
               <ImageButton onFiles={(f) => void images.add(f)} disabled={sending} />
             )}
             {voiceModels && !sessionExpired && (
-              <>
-                <MicButton state={dictation.state} error={dictation.error} onClick={dictation.toggle} disabled={sending} />
-                <VoiceButton
-                  disabled={sending}
-                  onClick={() => {
-                    dictation.stop();
-                    setVoiceOpen(true);
-                  }}
-                />
-              </>
+              <MicButton state={dictation.state} error={dictation.error} onClick={dictation.toggle} disabled={sending} />
             )}
+            {/* Empty input: the voice conversation sits where Send goes. */}
+            {voiceModels && !sessionExpired && !sending && !input.trim() ? (
+              <VoiceButton
+                primary
+                onClick={() => {
+                  dictation.stop();
+                  setVoiceOpen(true);
+                }}
+              />
+            ) : (
             <button
               type="submit"
-              disabled={!canSend}
               aria-label="Send"
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-violet-600 text-white shadow-md shadow-violet-600/30 transition hover:bg-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:bg-violet-300 disabled:shadow-none"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-violet-600 text-white shadow-md shadow-violet-600/30 transition hover:bg-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-2"
             >
               {sending ? (
                 <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" aria-hidden="true" />
@@ -969,8 +971,10 @@ export default function ChatPanel({
                 </svg>
               )}
             </button>
+            )}
           </div>
           </div>
+          <ModelModePicker className="mt-1 px-1" />
           {frameLatched && (
             <p className="mt-1.5 px-3 text-[11px] text-violet-700">
               Your next question will be answered from the frame on screen.

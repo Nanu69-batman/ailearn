@@ -13,6 +13,7 @@
 
 import { personalizationForRequest } from "@/lib/personalization";
 import { getAccessToken } from "@/lib/supabase/client";
+import { modelHeaders } from "@/lib/modelMode";
 
 export type ChatMode =
   | "qa"
@@ -403,7 +404,8 @@ async function apiErrorFromResponse(
  */
 async function authHeaders(): Promise<Record<string, string>> {
   const token = await getAccessToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  // The learner's model mode and own key ride along (lib/modelMode).
+  return token ? { Authorization: `Bearer ${token}`, ...modelHeaders() } : modelHeaders();
 }
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {

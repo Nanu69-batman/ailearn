@@ -134,7 +134,7 @@ def describe_active_providers() -> dict[str, str]:
 
     llm = "gemini" if settings.llm_api_key else "stub"
     if settings.openrouter_api_key:
-        llm = f"agent:{settings.openrouter_model} (fallback {llm})"
+        llm = f"agent:openrouter by mode (fallback {llm})"
     store = "chroma"
     sessions = (
         "in-memory" if settings.use_in_memory else "in-memory (postgres-backed planned)"

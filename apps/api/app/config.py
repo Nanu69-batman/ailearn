@@ -57,8 +57,9 @@ class Settings(BaseSettings):
     # Agentic chat: an OpenRouter model answers by calling time-gated tools
     # (search_lesson / get_lesson_content). Empty key = the classic pipeline.
     # Any agent failure (quota, timeout, bad tool call) falls back to it too.
+    # Which models answer is the learner's mode (auto/fast/balanced/powerful)
+    # and optional own key, per request: see app/chat/models.py.
     openrouter_api_key: str = ""
-    openrouter_model: str = "nvidia/nemotron-3.5-super-vl:free"
     # Model calls per answer. The lesson read is prefetched, so 2 = answer
     # (or one extra tool call) + the final reply.
     agent_max_steps: int = 2
