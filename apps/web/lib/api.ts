@@ -438,6 +438,19 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+export interface ProviderModel {
+  id: string;
+  name: string;
+}
+
+/** The chat models a learner's own key can use (GET /llm/models). */
+export async function listProviderModels(provider: string, key: string): Promise<ProviderModel[]> {
+  const res = await apiFetch<{ models: ProviderModel[] }>("/llm/models", {
+    headers: { "X-LLM-Provider": provider, "X-LLM-Key": key },
+  });
+  return res.models;
+}
+
 /**
  * Ask this app's own server (app/api/launch/route.ts, the demo LMS stand-in)
  * to sign the launch. 404 means no secret is configured (local dev): send the

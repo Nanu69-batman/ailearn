@@ -101,8 +101,9 @@ def where(component: str) -> str:
             from app.chat.models import current_choice
 
             choice = current_choice()
-            key = " · own key" if choice.byok_key else ""
-            return f"OpenRouter · {choice.mode}{key}"
+            if choice.custom:
+                return f"{choice.provider} · {choice.model} (own key)"
+            return f"OpenRouter · {choice.mode}"
         if component == "asr":
             if settings.groq_api_key:
                 return f"Groq · {settings.groq_transcribe_model}"

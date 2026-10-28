@@ -14,6 +14,7 @@ from app.config import settings
 from app.ingestion.backoff import QuotaExhaustedError
 from app.ingestion.router import router as ingestion_router
 from app.chat.models import ModelChoiceMiddleware
+from app.chat.models import router as llm_models_router
 from app.middleware import RequestIDMiddleware
 from app.subjects.router import router as subjects_router
 from app.voice.router import router as voice_router
@@ -103,6 +104,7 @@ app.add_middleware(
 )
 
 app.include_router(chat_router)
+app.include_router(llm_models_router)
 
 # The Malai sidebar's chat list, per signed-in user: /malai/chats.
 app.include_router(malai_chats_router)

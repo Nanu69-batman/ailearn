@@ -246,22 +246,23 @@ class LessonAgent:
     def __init__(
         self,
         *,
-        api_key: str,
-        model: str | Sequence[str],
+        api_key: str = "",
+        model: str | Sequence[str] = (),
+        targets: Sequence = (),
         max_steps: int = 2,
         timeout_s: float | None = None,
         transport=None,
         http_transport=None,
     ) -> None:
-        if not api_key:
-            raise ValueError("OPENROUTER_API_KEY not set; LessonAgent unavailable")
-        self._api_key = api_key
-        # An ordered fallback list (app.chat.models). The first model that
-        # answers stays in use for the rest of the turn.
-        self._models = [model] if isinstance(model, str) else list(model)
-        if not self._models:
-            raise ValueError("LessonAgent needs at least one model")
-        self._model = self._models[0]
+        from app.chat.models import Target
+
+        # An ordered fallback list of (provider, key, model), app.chat.models.
+        # ``api_key`` + ``model`` is shorthand for OpenRouter models on one key.
+        names = [model] if isinstance(model, str) else list(model)
+        self._targets = list(targets) or [Target("openrouter", api_key, m) for m in names]
+        if not self._targets or not all(t.api_key for t in self._targets):
+            raise ValueError("no model key set; LessonAgent unavailable")
+        self._target = self._targets[0]
         self._max_steps = max(1, int(max_steps))
         self._timeout_s = timeout_s
         # Injectable for tests: an async callable(payload) -> response dict,
@@ -272,45 +273,42 @@ class LessonAgent:
     @property
     def model(self) -> str:
         """The model answering now (the last one that replied)."""
-        return self._model
+        return self._target.model
 
     async def _post(self, payload: dict, timeout_s: float | None = None) -> dict:
-        """POST to OpenRouter, moving down the model list on failure.
+        """POST the chat request, moving down the target list on failure.
 
-        A quota (429/402), an outage, an unavailable model or a malformed
-        reply tries the next model; only a rejected key (401/403) stops at
-        once, since no other model would accept it either.
+        A quota (429/402), an outage, an unavailable model, a rejected request
+        or a malformed reply tries the next target. The first one that answers
+        stays in use for the rest of the turn.
         """
         import httpx
 
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "HTTP-Referer": "https://ailearn-theta.vercel.app",
-            "X-Title": "Malai Pioneer",
-        }
-        order = self._models[self._models.index(self._model):]
+        from app.chat.models import adapt_payload, request_headers
+
+        order = self._targets[self._targets.index(self._target):]
         last = "no model answered"
         async with httpx.AsyncClient(
             timeout=timeout_s or self._timeout_s, transport=self._http_transport
         ) as client:
-            for model in order:
-                body = {**payload, "model": model}
+            for target in order:
+                body = adapt_payload(payload, target)
+                headers = request_headers(target)
+                where = f"{target.provider}:{target.model}"
                 try:
-                    resp = await client.post(OPENROUTER_URL, json=body, headers=headers)
-                    # Free-tier upstreams blip; one retry on a transient
-                    # gateway error is cheaper than switching models.
+                    resp = await client.post(target.url, json=body, headers=headers)
+                    # Upstreams blip; one retry on a transient gateway error is
+                    # cheaper than switching models.
                     if resp.status_code in (502, 503, 504):
-                        log.info("openrouter %s on %s; retrying once", resp.status_code, model)
-                        resp = await client.post(OPENROUTER_URL, json=body, headers=headers)
+                        log.info("model %s on %s; retrying once", resp.status_code, where)
+                        resp = await client.post(target.url, json=body, headers=headers)
                 except httpx.HTTPError as exc:
                     last = f"transport {type(exc).__name__}"
-                    log.info("openrouter %s on %s; trying the next model", last, model)
+                    log.info("model %s on %s; trying the next one", last, where)
                     continue
-                if resp.status_code in (401, 403):
-                    raise AgentUnavailableError(f"openrouter http {resp.status_code}")
                 if resp.status_code != 200:
                     last = f"http {resp.status_code}"
-                    log.info("openrouter %s on %s; trying the next model", last, model)
+                    log.info("model %s on %s; trying the next one", last, where)
                     continue
                 try:
                     data = resp.json()
@@ -319,11 +317,11 @@ class LessonAgent:
                     continue
                 if not isinstance(data, dict) or data.get("error") or not data.get("choices"):
                     last = "error reply"
-                    log.info("openrouter error body on %s; trying the next model", model)
+                    log.info("model error body on %s; trying the next one", where)
                     continue
-                self._model = model
+                self._target = target
                 return data
-        raise AgentUnavailableError(f"openrouter {last} (tried {len(order)} models)")
+        raise AgentUnavailableError(f"model {last} (tried {len(order)} models)")
 
     async def complete_text(
         self,
@@ -336,7 +334,7 @@ class LessonAgent:
     ) -> str:
         """One plain completion on the agent's model: no tools, no history."""
         payload = {
-            "model": self._model,
+            "model": self.model,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user_prompt},
@@ -548,7 +546,7 @@ class LessonAgent:
                 tool_choice = "none"
             force_tool = False
             payload = {
-                "model": self._model,
+                "model": self.model,
                 "messages": messages,
                 "tools": TOOLS,
                 "tool_choice": tool_choice,
@@ -704,20 +702,19 @@ class LessonAgent:
 
 
 def get_agent() -> LessonAgent | None:
-    """The agent for this request's model mode and key (app.chat.models).
+    """The agent for this request's model choice (app.chat.models).
 
-    ``None`` when neither the learner nor the server has an OpenRouter key.
+    The learner's own key and model first when they chose one, then the
+    server's free OpenRouter models. ``None`` when there is neither.
     """
-    from app.chat.models import current_choice, models_for
+    from app.chat.models import current_choice, targets_for
     from app.config import settings
 
-    choice = current_choice()
-    key = choice.byok_key or settings.openrouter_api_key
-    if not key:
+    targets = targets_for(current_choice(), settings.openrouter_api_key)
+    if not targets:
         return None
     return LessonAgent(
-        api_key=key,
-        model=models_for(choice.mode, byok=bool(choice.byok_key)),
+        targets=targets,
         max_steps=settings.agent_max_steps,
         timeout_s=settings.agent_timeout_s,
     )

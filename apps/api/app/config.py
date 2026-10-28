@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     # (search_lesson / get_lesson_content). Empty key = the classic pipeline.
     # Any agent failure (quota, timeout, bad tool call) falls back to it too.
     # Which models answer is the learner's mode (auto/fast/balanced/powerful)
-    # and optional own key, per request: see app/chat/models.py.
+    # or their own provider key and model, per request: app/chat/models.py.
     openrouter_api_key: str = ""
     # Model calls per answer. The lesson read is prefetched, so 2 = answer
     # (or one extra tool call) + the final reply.

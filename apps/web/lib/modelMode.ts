@@ -3,61 +3,81 @@
 import { useEffect, useState } from "react";
 
 /**
- * Which models answer the learner (picked under the chat input) and their own
- * OpenRouter key, if they brought one. Both stay in this browser and go to the
- * API as request headers (see apps/api/app/chat/models.py); the key is never
- * stored on the server.
+ * Which models answer the learner, picked under the chat input. The four
+ * modes are free models on the app's key; under Advanced the learner can
+ * instead use their own key for any provider and one of its models
+ * ("custom"). Everything stays in this browser and goes to the API as
+ * request headers (apps/api/app/chat/models.py); the key is never stored on
+ * the server.
  */
-export type ModelMode = "auto" | "fast" | "balanced" | "powerful";
+export type ModelMode = "auto" | "fast" | "balanced" | "powerful" | "custom";
 
-export const MODEL_MODES: { id: ModelMode; label: string; hint: string }[] = [
+export const MODEL_MODES: { id: Exclude<ModelMode, "custom">; label: string; hint: string }[] = [
   { id: "auto", label: "Auto", hint: "Picks a free model for you" },
   { id: "fast", label: "Fast", hint: "Quick answers from lighter models" },
   { id: "balanced", label: "Balanced", hint: "Good answers at a good speed" },
-  { id: "powerful", label: "Powerful", hint: "The strongest models, slower" },
+  { id: "powerful", label: "Powerful", hint: "The strongest free models, slower" },
+];
+
+/** Same ids as PROVIDERS in apps/api/app/chat/models.py. */
+export const PROVIDERS: { id: string; label: string; placeholder: string }[] = [
+  { id: "openrouter", label: "OpenRouter", placeholder: "sk-or-v1-…" },
+  { id: "openai", label: "OpenAI", placeholder: "sk-…" },
+  { id: "anthropic", label: "Anthropic", placeholder: "sk-ant-…" },
+  { id: "google", label: "Google Gemini", placeholder: "AIza…" },
+  { id: "groq", label: "Groq", placeholder: "gsk_…" },
+  { id: "mistral", label: "Mistral", placeholder: "Your Mistral key" },
+  { id: "deepseek", label: "DeepSeek", placeholder: "sk-…" },
+  { id: "xai", label: "xAI", placeholder: "xai-…" },
 ];
 
 export interface ModelSettings {
   mode: ModelMode;
-  /** The learner's OpenRouter key, or "" to use the app's. */
+  /** The learner's own provider, key and chosen model ("custom" mode). */
+  provider: string;
   key: string;
+  model: string;
+  modelName: string;
 }
 
-const MODE_KEY = "malai:model-mode";
-const BYOK_KEY = "malai:openrouter-key";
+const STORE_KEY = "malai:model-settings";
+const DEFAULTS: ModelSettings = { mode: "auto", provider: "openrouter", key: "", model: "", modelName: "" };
 
 let cache: ModelSettings | null = null;
 const listeners = new Set<(s: ModelSettings) => void>();
 
-function isMode(v: unknown): v is ModelMode {
-  return MODEL_MODES.some((m) => m.id === v);
+function clean(raw: unknown): ModelSettings {
+  const r = (raw && typeof raw === "object" ? raw : {}) as Partial<ModelSettings>;
+  const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+  const modes: ModelMode[] = ["auto", "fast", "balanced", "powerful", "custom"];
+  const s: ModelSettings = {
+    mode: modes.includes(r.mode as ModelMode) ? (r.mode as ModelMode) : "auto",
+    provider: PROVIDERS.some((p) => p.id === r.provider) ? (r.provider as string) : "openrouter",
+    key: str(r.key),
+    model: str(r.model),
+    modelName: str(r.modelName),
+  };
+  // Custom needs a key and a model; without them it is Auto.
+  if (s.mode === "custom" && !(s.key && s.model)) s.mode = "auto";
+  return s;
 }
 
 export function loadModelSettings(): ModelSettings {
   if (cache) return cache;
-  let mode: ModelMode = "auto";
-  let key = "";
   try {
-    if (typeof window !== "undefined") {
-      const m = window.localStorage.getItem(MODE_KEY);
-      if (isMode(m)) mode = m;
-      key = window.localStorage.getItem(BYOK_KEY) ?? "";
-    }
+    const raw = typeof window !== "undefined" ? window.localStorage.getItem(STORE_KEY) : null;
+    cache = raw ? clean(JSON.parse(raw)) : { ...DEFAULTS };
   } catch {
-    // Storage unavailable: defaults for this page.
+    cache = { ...DEFAULTS };
   }
-  cache = { mode, key };
   return cache;
 }
 
 export function saveModelSettings(patch: Partial<ModelSettings>): void {
-  const next = { ...loadModelSettings(), ...patch };
-  next.key = next.key.trim();
+  const next = clean({ ...loadModelSettings(), ...patch });
   cache = next;
   try {
-    window.localStorage.setItem(MODE_KEY, next.mode);
-    if (next.key) window.localStorage.setItem(BYOK_KEY, next.key);
-    else window.localStorage.removeItem(BYOK_KEY);
+    window.localStorage.setItem(STORE_KEY, JSON.stringify(next));
   } catch {
     // The choice lasts for this page only.
   }
@@ -67,13 +87,14 @@ export function saveModelSettings(patch: Partial<ModelSettings>): void {
 /** Headers that tell the API which models to use. */
 export function modelHeaders(): Record<string, string> {
   if (typeof window === "undefined") return {};
-  const { mode, key } = loadModelSettings();
-  return key ? { "X-Model-Mode": mode, "X-OpenRouter-Key": key } : { "X-Model-Mode": mode };
+  const s = loadModelSettings();
+  if (s.mode !== "custom") return { "X-Model-Mode": s.mode };
+  return { "X-Model-Mode": "custom", "X-LLM-Provider": s.provider, "X-LLM-Key": s.key, "X-LLM-Model": s.model };
 }
 
 export function useModelSettings(): ModelSettings {
   // Defaults on the server render; the stored choice after mount.
-  const [s, setS] = useState<ModelSettings>({ mode: "auto", key: "" });
+  const [s, setS] = useState<ModelSettings>(DEFAULTS);
   useEffect(() => {
     setS(loadModelSettings());
     listeners.add(setS);
