@@ -544,6 +544,10 @@ class LessonAgent:
                 # trip AND makes the answer slower to write (it took 42 s to
                 # write from a whole-lecture read), so answer from what is here.
                 tool_choice = "none"
+            if intent == SMALLTALK:
+                # "hi" / "what can you do" has no lesson answer; a search for
+                # it only costs an embedding and a vector query.
+                tool_choice = "none"
             force_tool = False
             payload = {
                 "model": self.model,
@@ -684,6 +688,9 @@ class LessonAgent:
                 cited=[seen[c] for c in cited_ids],
                 tool_calls=tool_calls,
             )
+        if classify_intent(message) == SMALLTALK:
+            # Never tagged general knowledge: there is no concept in it.
+            return AgentOutcome(kind="conversational", text=text, tool_calls=tool_calls)
         labelled = re.search(re.escape(GENERAL_KNOWLEDGE_LABEL), text, re.IGNORECASE)
         if labelled and mode not in NO_GENERAL_KNOWLEDGE_MODES:
             return AgentOutcome(kind="supplemental", text=text, tool_calls=tool_calls)

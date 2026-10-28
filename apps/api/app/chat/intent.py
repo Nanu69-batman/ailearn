@@ -38,6 +38,11 @@ _SELF_INTRO = (
     r"(?:i am|i'?m|im|this is|my name is|myself)\s+[^?]{1,80}"
 )
 _PUNCT = r"[\s,.!:;~)(\-]*"
+#: Interjections that may open a question about the assistant.
+_LEADIN = (
+    r"(?:(?:really|wow|oh|ok(?:ay)?|so|and|but|cool|nice|hmm+|great|then|well|"
+    r"interesting)[\s,.!?:;~\-]*)*"
+)
 
 #: Greetings and self-introductions. A self-introduction is open-ended text
 #: ("i am an engineering student"), so these only count as smalltalk when the
@@ -68,13 +73,26 @@ SMALLTALK_PATTERNS: tuple[str, ...] = (
         rf"thanks?|thank you))*{_PUNCT}$"
     ),
     r"^(?:bye|goodbye|see you|see ya|good night|gn)" + _ADDRESS + _PUNCT + r"$",
-    # Questions about the assistant itself.
-    r"^(?:who|what) (?:are|r) (?:you|u)" + _PUNCT + r"\??$",
-    r"^(?:who|what) is (?:this|malai)" + _PUNCT + r"\??$",
-    r"^(?:what|how) (?:can|do|could) (?:you|u) (?:do|help(?: me)?(?: with)?)" + _PUNCT + r"\??$",
-    r"^(?:how can you help(?: me)?|help|help me|what should i ask(?: you)?|"
-    r"how does this work|how do i use (?:this|you))" + _PUNCT + r"\??$",
-    r"^(?:are you (?:an? )?(?:ai|bot|robot|human|real|chatgpt|gemini))" + _PUNCT + r"\??$",
+    # Questions about the assistant itself, optionally after an interjection
+    # ("really?? what are your capabilities", "ok so what can you do").
+    rf"^{_LEADIN}(?:who|what) (?:are|r) (?:you|u)(?: exactly| really)?{_PUNCT}\??$",
+    rf"^{_LEADIN}(?:who|what) is (?:this|malai){_PUNCT}\??$",
+    (
+        rf"^{_LEADIN}(?:what|how) (?:else )?(?:can|do|could) (?:you|u) "
+        rf"(?:do|help(?: me)?(?: with)?)(?: for me)?{_PUNCT}\??$"
+    ),
+    (
+        rf"^{_LEADIN}(?:what (?:are|r) (?:your|ur) (?:capabilities|abilities|features|"
+        r"skills|powers|limitations|limits)|what (?:are )?(?:you|u) (?:capable of|able to do|"
+        r"good at)|tell me (?:about|more about) (?:yourself|you)|introduce yourself|"
+        r"who (?:made|built|created|trained) (?:you|u)|what model are (?:you|u)(?: using)?|"
+        rf"which model are (?:you|u)(?: using)?){_PUNCT}\??$"
+    ),
+    (
+        rf"^{_LEADIN}(?:how can you help(?: me)?|help|help me|what should i ask(?: you)?|"
+        rf"how does this work|how do i use (?:this|you)){_PUNCT}\??$"
+    ),
+    rf"^{_LEADIN}(?:are you (?:an? )?(?:ai|bot|robot|human|real|chatgpt|gemini)){_PUNCT}\??$",
     r"^(?:how are you|how r u|how's it going|how is it going)" + _PUNCT + r"\??$",
 )
 
