@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useId, useRef, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 /**
  * Minimal accessible modal used by the subject dialogs.
@@ -102,8 +103,10 @@ export default function SubjectModal({
       ? "bg-red-50 text-red-600 ring-red-100"
       : "bg-violet-50 text-violet-600 ring-violet-100";
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center p-4 sm:items-center">
+  // Portalled to <body>: opened from the Malai sidebar, it would otherwise sit
+  // in the sidebar's layer, under the page beside it.
+  return createPortal(
+    <div className="fixed inset-0 z-[80] flex items-end justify-center p-4 sm:items-center">
       <div
         aria-hidden="true"
         className="subject-modal-fade absolute inset-0 bg-gray-900/40 backdrop-blur-[2px]"
@@ -174,6 +177,7 @@ export default function SubjectModal({
           .subject-modal-fade, .subject-modal-pop { animation: none }
         }
       `}</style>
-    </div>
+    </div>,
+    document.body,
   );
 }
