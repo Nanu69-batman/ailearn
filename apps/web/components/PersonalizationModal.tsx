@@ -96,7 +96,7 @@ export default function PersonalizationModal({ onClose }: { onClose: () => void 
         role="dialog"
         aria-modal="true"
         aria-labelledby="personalize-title"
-        className="flex max-h-full w-full max-w-xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl shadow-gray-900/20"
+        className="flex max-h-[min(32rem,80dvh)] w-full max-w-xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl shadow-gray-900/20"
       >
         <div className="flex items-start justify-between gap-4 border-b border-gray-100 px-6 py-4">
           <div>
