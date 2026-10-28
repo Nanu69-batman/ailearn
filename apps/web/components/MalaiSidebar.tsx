@@ -21,13 +21,17 @@ import PersonalizationModal from "@/components/PersonalizationModal";
 import { initials, subjectAccent } from "@/components/SubjectCard";
 import { useSubjects } from "@/components/useSubjects";
 import AddContentDialog from "@/components/AddContentDialog";
+import SubjectCreateDialog from "@/components/SubjectCreateDialog";
+import { notifySubjectsChanged } from "@/lib/subjectEvents";
 
 /**
  * The sidebar while Malai is open: its chats instead of the app's navigation.
  * Chats filed under a subject sit inside that subject; the rest are "Recent
  * chats". Every chat can be renamed, moved to (or out of) a subject, or deleted.
  * A subject's name opens its page; its "Resources" row lists its materials in
- * a flyout to the right, and each one opens beside Malai.
+ * a flyout to the right, and each one opens beside Malai. "New subject" (under
+ * the list, or in a chat's "Move to subject") creates one; from a chat's menu
+ * the chat is filed under it straight away.
  */
 
 export interface MalaiSidebarProps {
@@ -54,6 +58,7 @@ const BACK_ICON = "M19 12H5M12 19l-7-7 7-7";
 const COLLAPSE_ICON = "M15 6l-6 6 6 6";
 const EXPAND_ICON = "M9 6l6 6-6 6";
 const PERSONALIZE_ICON = "M4 6h9m4 0h3M4 12h3m4 0h9M4 18h11m4 0h1M15 4v4M9 10v4M17 16v4";
+const PLUS_ICON = "M12 5v14M5 12h14";
 
 function ChatMenu({
   chat,
@@ -62,6 +67,7 @@ function ChatMenu({
   anchor,
   onRename,
   onDeleted,
+  onNewSubject,
 }: {
   chat: MalaiChat;
   subjects: Subject[];
@@ -69,6 +75,8 @@ function ChatMenu({
   anchor: DOMRect;
   onRename: () => void;
   onDeleted: () => void;
+  /** Create a subject and file this chat under it. */
+  onNewSubject: () => void;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [view, setView] = useState<"main" | "move" | "delete">("main");
@@ -164,6 +172,15 @@ function ChatMenu({
             </button>
           ))}
           {subjects.length === 0 && <p className="px-3 py-2 text-sm text-gray-500">No subjects yet.</p>}
+          <button
+            type="button"
+            role="menuitem"
+            className={`${item} border-t border-gray-100 font-medium text-violet-700 hover:bg-violet-50 focus:bg-violet-50`}
+            onClick={onNewSubject}
+          >
+            <Icon d={PLUS_ICON} className="h-4 w-4" />
+            New subject
+          </button>
           {chat.subjectId && (
             <button
               type="button"
@@ -204,6 +221,7 @@ function ChatRow({
   compact,
   onOpen,
   onDeletedActive,
+  onNewSubject,
 }: {
   chat: MalaiChat;
   active: boolean;
@@ -212,6 +230,7 @@ function ChatRow({
   compact?: boolean;
   onOpen: (chat: MalaiChat) => void;
   onDeletedActive: () => void;
+  onNewSubject: (chat: MalaiChat) => void;
 }) {
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
   const [renaming, setRenaming] = useState(false);
@@ -303,6 +322,10 @@ function ChatRow({
           onDeleted={() => {
             setAnchor(null);
             if (active) onDeletedActive();
+          }}
+          onNewSubject={() => {
+            setAnchor(null);
+            onNewSubject(chat);
           }}
         />
       )}
@@ -451,7 +474,7 @@ export default function MalaiSidebar({ collapsed, onToggleCollapse, onBack, onNa
   const pageSubject = lessonMatch ? decodeURIComponent(lessonMatch[1]) : params.get("s");
   const [flyout, setFlyout] = useState<{ subjectId: string; anchor: DOMRect } | null>(null);
   const chats = useMalaiChats();
-  const { subjects } = useSubjects();
+  const { subjects, added } = useSubjects();
   const [query, setQuery] = useState("");
   const [subjectsOpen, setSubjectsOpen] = useState(true);
   const [recentOpen, setRecentOpen] = useState(true);
@@ -491,6 +514,24 @@ export default function MalaiSidebar({ collapsed, onToggleCollapse, onBack, onNa
   const [personalizing, setPersonalizing] = useState(false);
   const closePersonalize = useCallback(() => setPersonalizing(false), []);
   const personalizeModal = personalizing && <PersonalizationModal onClose={closePersonalize} />;
+  // Open while creating a subject; `chatId` is the chat to file under it.
+  const [creating, setCreating] = useState<{ chatId: string | null } | null>(null);
+  const closeCreate = useCallback(() => setCreating(null), []);
+  const startCreate = useCallback((chat: MalaiChat | null) => setCreating({ chatId: chat?.id ?? null }), []);
+  const onCreated = useCallback(
+    (created: Subject) => {
+      const chatId = creating?.chatId ?? null;
+      setCreating(null);
+      added(created);
+      notifySubjectsChanged(created.id);
+      setSubjectsOpen(true);
+      setExpanded((e) => ({ ...e, [created.id]: true }));
+      if (chatId) updateChat(chatId, { subjectId: created.id });
+      else go(malaiSubjectPath(created.id));
+    },
+    // `go` is recreated each render but only reads the router.
+    [creating, added],
+  );
 
   const iconButton =
     "flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400";
@@ -623,7 +664,7 @@ export default function MalaiSidebar({ collapsed, onToggleCollapse, onBack, onNa
                           </button>
                         </li>
                         {own.map((c) => (
-                          <ChatRow key={c.id} chat={c} compact active={c.id === activeId} subjects={subjects} onOpen={open} onDeletedActive={newChat} />
+                          <ChatRow key={c.id} chat={c} compact active={c.id === activeId} subjects={subjects} onOpen={open} onDeletedActive={newChat} onNewSubject={startCreate} />
                         ))}
                         {own.length === 0 && (
                           <li className="px-3 py-1.5 text-xs text-gray-500">No chats yet. Open a resource or the subject to start one.</li>
@@ -634,6 +675,18 @@ export default function MalaiSidebar({ collapsed, onToggleCollapse, onBack, onNa
                 );
               })}
               {subjects.length === 0 && <li className="px-1 py-1 text-xs text-gray-500">No subjects yet.</li>}
+              <li>
+                <button
+                  type="button"
+                  onClick={() => startCreate(null)}
+                  className="flex w-full items-center gap-3 rounded-xl py-1.5 pl-1 text-left text-sm text-gray-300 transition hover:bg-white/5 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
+                >
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-dashed border-white/20 text-gray-400">
+                    <Icon d={PLUS_ICON} className="h-4 w-4" />
+                  </span>
+                  New subject
+                </button>
+              </li>
             </ul>
           )}
           {flyout && (
@@ -652,6 +705,7 @@ export default function MalaiSidebar({ collapsed, onToggleCollapse, onBack, onNa
             />
           )}
           <AddContentDialog subjectId={addSubject} open={addOpen} onClose={closeAdd} />
+          <SubjectCreateDialog open={creating !== null} onClose={closeCreate} onCreated={onCreated} />
         </section>
 
         <div className="mx-2 my-4 border-t border-white/10" />
@@ -661,7 +715,7 @@ export default function MalaiSidebar({ collapsed, onToggleCollapse, onBack, onNa
           {recentOpen && (
             <ul className="-mx-1 mt-2 flex flex-col gap-1">
               {recent.map((c) => (
-                <ChatRow key={c.id} chat={c} active={c.id === activeId} subjects={subjects} onOpen={open} onDeletedActive={newChat} />
+                <ChatRow key={c.id} chat={c} active={c.id === activeId} subjects={subjects} onOpen={open} onDeletedActive={newChat} onNewSubject={startCreate} />
               ))}
               {recent.length === 0 && (
                 <li className="px-2 py-1 text-xs text-gray-500">{q ? "No chats match your search." : "No chats yet. Ask Malai anything to start one."}</li>
