@@ -87,9 +87,41 @@ export function saveModelSettings(patch: Partial<ModelSettings>): void {
 /** Headers that tell the API which models to use. */
 export function modelHeaders(): Record<string, string> {
   if (typeof window === "undefined") return {};
+  return modelHeadersFor(loadModelSettings().mode);
+}
+
+/** Headers for `mode`; "custom" uses the saved key and model (Auto without them). */
+export function modelHeadersFor(mode: ModelMode): Record<string, string> {
   const s = loadModelSettings();
-  if (s.mode !== "custom") return { "X-Model-Mode": s.mode };
+  if (mode !== "custom" || !(s.key && s.model)) return { "X-Model-Mode": mode === "custom" ? "auto" : mode };
   return { "X-Model-Mode": "custom", "X-LLM-Provider": s.provider, "X-LLM-Key": s.key, "X-LLM-Model": s.model };
+}
+
+/**
+ * Which model writes a quiz, picked in the quiz form. "default" is the app's
+ * fastest provider; any other value is a chat mode (or the saved own key)
+ * tried first. A quiz asked for in the chat uses the chat's own choice.
+ */
+export type QuizModel = "default" | ModelMode;
+
+const QUIZ_STORE_KEY = "malai:quiz-model";
+
+export function loadQuizModel(): QuizModel {
+  try {
+    const raw = window.localStorage.getItem(QUIZ_STORE_KEY);
+    const ok: QuizModel[] = ["default", "auto", "fast", "balanced", "powerful", "custom"];
+    return ok.includes(raw as QuizModel) ? (raw as QuizModel) : "default";
+  } catch {
+    return "default";
+  }
+}
+
+export function saveQuizModel(model: QuizModel): void {
+  try {
+    window.localStorage.setItem(QUIZ_STORE_KEY, model);
+  } catch {
+    // The choice lasts for this page only.
+  }
 }
 
 export function useModelSettings(): ModelSettings {

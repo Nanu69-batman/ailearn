@@ -270,3 +270,27 @@ def test_quiz_tries_the_chat_model_before_the_agent(chroma_store, embedder):
     agent = _FakeAgent("{}")
     svc._agent = agent
     assert not _quiz(svc, sid).refused and agent.calls == 0
+
+
+class _RecordingAgent:
+    """Stands in for the learner's chosen model (the agent)."""
+
+    def __init__(self, reply: str) -> None:
+        self.reply = reply
+        self.calls = 0
+
+    async def complete_text(self, system, user_prompt, **kw) -> str:
+        self.calls += 1
+        return self.reply
+
+
+@pytest.mark.parametrize("chosen", [False, True])
+def test_quiz_uses_the_chosen_model_first_only_when_asked(chroma_store, embedder, chosen):
+    reply = json.dumps({"questions": [_mcq("open_early")]})
+    svc, sid, llm = _setup(chroma_store, embedder, reply)
+    agent = _RecordingAgent(reply)
+    svc._agent = agent
+    resp = _quiz(svc, sid, count=1, use_chosen_model=chosen)
+    assert len(resp.questions) == 1
+    # Default: the fast chat provider writes it. Chosen: the learner's model.
+    assert (agent.calls, len(llm.prompts)) == ((1, 0) if chosen else (0, 1))

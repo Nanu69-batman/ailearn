@@ -15,6 +15,15 @@ import {
 import CitationBadge, { type CitationBadgeProps } from "./CitationBadge";
 import { pushQuizAttempt } from "@/lib/activitySync";
 import MarkdownBody from "./MarkdownBody";
+import {
+  MODEL_MODES,
+  loadModelSettings,
+  loadQuizModel,
+  modelHeadersFor,
+  saveQuizModel,
+  useModelSettings,
+  type QuizModel,
+} from "@/lib/modelMode";
 
 /** Settings for a quiz written right away: from /quiz, or a chat message. */
 export interface QuizPreset {
@@ -150,12 +159,23 @@ export default function QuizPanel({
   const [results, setResults] = useState<Record<string, Result>>({});
   const [grading, setGrading] = useState<Record<string, boolean>>({});
   const [gradeErrors, setGradeErrors] = useState<Record<string, string>>({});
+  /** Which model writes the quiz; a quiz asked for in the chat uses the chat's. */
+  const [quizModel, setQuizModel] = useState<QuizModel>("default");
+  const modelSettings = useModelSettings();
+  const hasOwnKey = Boolean(modelSettings.key && modelSettings.model);
   /** The quiz (by attempt) whose finish was already reported. */
   const reported = useRef<number | null>(null);
   /** The preset already acted on: a remount or a re-run must not write it twice. */
   const usedPreset = useRef<number | null>(null);
 
   const count = parseCount(countText);
+
+  useEffect(() => setQuizModel(loadQuizModel()), []);
+
+  function chooseModel(m: QuizModel) {
+    setQuizModel(m);
+    saveQuizModel(m);
+  }
 
   function toggleType(t: QuizQuestionType) {
     setTypes((cur) =>
@@ -170,17 +190,21 @@ export default function QuizPanel({
     setCountText(String(preset.count));
     setTypes(preset.types);
     setPrompt(preset.prompt);
+    // Asked for in the chat: the model the chat is set to writes it.
+    const chatModel = loadModelSettings().mode;
+    setQuizModel(chatModel);
     if (offline) {
       if (preset.request) onFailed?.(preset.request, "Quizzes need the live backend, which isn't reachable right now.");
       return;
     }
-    void generate({ count: preset.count, types: preset.types, prompt: preset.prompt }, preset.request);
+    void generate({ count: preset.count, types: preset.types, prompt: preset.prompt }, preset.request, chatModel);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preset?.nonce]);
 
   async function generate(
     settings: { count: number; types: QuizQuestionType[]; prompt: string },
     request?: string,
+    model: QuizModel = quizModel,
   ) {
     setLoading(true);
     setError(null);
@@ -194,8 +218,10 @@ export default function QuizPanel({
           types: settings.types,
           attempt,
           ...(settings.prompt.trim() ? { prompt: settings.prompt.trim() } : {}),
+          ...(model !== "default" ? { use_chosen_model: true } : {}),
         },
         sessionToken,
+        model !== "default" ? modelHeadersFor(model) : undefined,
       );
       setAttempt((a) => a + 1);
       setAnswers({});
@@ -362,6 +388,26 @@ export default function QuizPanel({
               placeholder="e.g. focus on the chain rule, make them exam-level…"
               className={`${field} resize-y`}
             />
+          </label>
+
+          <label className="mt-4 block">
+            <span className="mb-1.5 block text-xs font-medium text-gray-700">Model</span>
+            <select
+              value={quizModel === "custom" && !hasOwnKey ? "default" : quizModel}
+              onChange={(e) => chooseModel(e.target.value as QuizModel)}
+              disabled={loading}
+              className={field}
+            >
+              <option value="default">Default (fastest)</option>
+              {MODEL_MODES.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label} · {m.hint}
+                </option>
+              ))}
+              {hasOwnKey && (
+                <option value="custom">Own key · {modelSettings.modelName || modelSettings.model}</option>
+              )}
+            </select>
           </label>
 
           <div className="mt-4 flex items-center justify-end gap-2">

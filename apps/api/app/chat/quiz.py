@@ -104,6 +104,10 @@ class QuizRequest(BaseModel):
     #: The chat the quiz was asked from; a general quiz reads its recent turns
     #: for the topic when no prompt is given.
     thread_id: str | None = Field(default=None, max_length=64)
+    #: Write the quiz with the model in the request's model headers (a mode or
+    #: the learner's own key) before the default chat provider. False keeps the
+    #: fastest provider first.
+    use_chosen_model: bool = False
 
 
 class QuizQuestion(BaseModel):
@@ -572,12 +576,16 @@ class QuizService:
         #: Chat history, read only by a general quiz (for its topic).
         self._messages = messages
 
-    async def _replies(self, system: str, user_prompt: str, passages: Sequence, mode: str):
+    async def _replies(
+        self, system: str, user_prompt: str, passages: Sequence, mode: str,
+        chosen_first: bool = False,
+    ):
         """Each configured model's reply in turn, fastest first.
 
         The chat provider (Gemini) writes a quiz in seconds; the free agent
         model took over a minute, so it is the fallback. The offline stub goes
-        last. A provider that fails is logged and skipped.
+        last. A provider that fails is logged and skipped. ``chosen_first``
+        puts the learner's chosen model (the agent) ahead of the chat provider.
         """
         from app.chat.llm import DeterministicStubLLM
 
@@ -596,7 +604,7 @@ class QuizService:
         order = [chat_llm]
         if self._agent is not None:
             stub = isinstance(self._llm, DeterministicStubLLM)
-            order = [agent, chat_llm] if stub else [chat_llm, agent]
+            order = [agent, chat_llm] if stub or chosen_first else [chat_llm, agent]
         for call in order:
             try:
                 yield await call()
@@ -732,7 +740,9 @@ class QuizService:
         prompt = build_quiz_prompt(
             passages, req.count, req.types, req.attempt, req.video_id, req.prompt
         )
-        async for text in self._replies(QUIZ_SYSTEM, prompt, passages, "quiz_json"):
+        async for text in self._replies(
+            QUIZ_SYSTEM, prompt, passages, "quiz_json", req.use_chosen_model
+        ):
             rng = random.Random(f"{req.session_id}:{t_ms}:{req.attempt}")
             raw = parse_json_object(text)
             questions = validate_questions(raw, passages, rng)
@@ -772,7 +782,9 @@ class QuizService:
         prompt = build_general_quiz_prompt(
             req.count, req.types, req.attempt, req.prompt, history
         )
-        async for text in self._replies(QUIZ_GENERAL_SYSTEM, prompt, [], "quiz_json"):
+        async for text in self._replies(
+            QUIZ_GENERAL_SYSTEM, prompt, [], "quiz_json", req.use_chosen_model
+        ):
             rng = random.Random(f"{req.session_id}:general:{req.attempt}")
             questions = validate_questions(parse_json_object(text), [], rng, general=True)
             if questions:

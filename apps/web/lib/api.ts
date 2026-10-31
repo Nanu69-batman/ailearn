@@ -1249,6 +1249,8 @@ export interface QuizRequest {
   general?: boolean;
   /** The chat the quiz was asked from (a general quiz reads it for a topic). */
   thread_id?: string;
+  /** Write it with the model in the request headers before the default one. */
+  use_chosen_model?: boolean;
 }
 
 /** Where a quiz may draw from: the chat that asked for it decides. */
@@ -1299,11 +1301,16 @@ function tokenHeader(sessionToken?: string): Record<string, string> | undefined 
   return token ? { "X-Session-Token": token } : undefined;
 }
 
-export function postQuiz(req: QuizRequest, sessionToken?: string): Promise<QuizResponse> {
+/** `modelHeaders` overrides the chat's model choice for this quiz (lib/modelMode). */
+export function postQuiz(
+  req: QuizRequest,
+  sessionToken?: string,
+  modelHeaders?: Record<string, string>,
+): Promise<QuizResponse> {
   return apiFetch<QuizResponse>("/quiz", {
     method: "POST",
     body: JSON.stringify(req),
-    headers: tokenHeader(sessionToken),
+    headers: { ...(modelHeaders ?? {}), ...(tokenHeader(sessionToken) ?? {}) },
   });
 }
 
