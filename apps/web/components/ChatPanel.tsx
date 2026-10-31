@@ -76,6 +76,8 @@ interface ChatPanelProps {
   headerLead?: ReactNode;
   /** Right end of the header, e.g. window buttons. */
   headerActions?: ReactNode;
+  /** After the Chat/Quiz tabs: the chat dropdown (chats from Malai's sidebar). */
+  chatPicker?: ReactNode;
   /**
    * The chat (thread) picked in Malai's sidebar. Chats are managed there
    * only; without one the panel starts a new chat.
@@ -160,6 +162,7 @@ export default function ChatPanel({
   fill = false,
   headerLead,
   headerActions,
+  chatPicker,
   openThreadId,
   onAsk,
   onTitled,
@@ -635,7 +638,7 @@ export default function ChatPanel({
             </button>
           ))}
         </div>
-        <span className="flex-1" />
+        {chatPicker && !offline ? <div className="flex min-w-0 flex-1">{chatPicker}</div> : <span className="flex-1" />}
         {offline && <span className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-xs text-amber-600">offline mock</span>}
         {headerActions}
       </div>

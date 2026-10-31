@@ -14,8 +14,10 @@ import LessonWorkspace from "@/components/LessonWorkspace";
 import WindowToolbar from "@/components/WindowToolbar";
 import { useLessonLayout } from "@/components/useLessonLayout";
 import {
+  ChaptersContext,
   CitedRangeContext,
   ImmersiveContext,
+  type SeekChapter,
   type Immersive,
 } from "@/components/PlayerControls";
 import type { PdfTarget } from "@/components/PdfView";
@@ -35,13 +37,11 @@ import {
   SUBJECTS_PATH,
   contentPath,
   firstParam,
-  readCompletion,
   resourceIcon,
   resourceKindLabel,
   sampleClipSelected,
   subjectPath,
   toSelected,
-  writeCompletion,
   type Selected,
 } from "@/lib/learn";
 import {
@@ -51,7 +51,20 @@ import {
   malaiSubjectPath,
   recordLessonChat,
   titleLessonChat,
+  useMalaiChats,
 } from "@/lib/malai";
+import {
+  adoptDraftAllowance,
+  draftAllowanceKey,
+  effectiveAllowance,
+  recordWatch,
+  setChatAllowed,
+  setSubjectCompletion,
+  useChatAllowances,
+  useSubjectCompletion,
+} from "@/lib/progress";
+import { CircleCheck } from "@/components/ResourceChecklist";
+import ChatSwitcher from "@/components/ChatSwitcher";
 
 /**
  * The lesson page: video/PDF + chat + sources, one real URL per resource.
@@ -97,9 +110,21 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
    * the page re-renders about once a second, not on every timeupdate.
    */
   const [playheadMs, setPlayheadMs] = useState(0);
-  const onTimeChange = useCallback((ms: number): void => {
-    setPlayheadMs(Math.floor(ms / 1000) * 1000);
-  }, []);
+  /** Last reported time, for telling playback from a seek in recordWatch. */
+  const lastTimeRef = useRef<{ id: string; ms: number } | null>(null);
+  const onTimeChange = useCallback(
+    (ms: number): void => {
+      setPlayheadMs(Math.floor(ms / 1000) * 1000);
+      if (!resourceId || resourceId === SAMPLE_CLIP_ID) return;
+      const el = videoRef.current;
+      const durationMs =
+        el && Number.isFinite(el.duration) ? el.duration * 1000 : ytHandleRef.current?.getDurationMs() ?? 0;
+      const prev = lastTimeRef.current?.id === resourceId ? lastTimeRef.current.ms : null;
+      recordWatch(resourceId, prev, ms, durationMs);
+      lastTimeRef.current = { id: resourceId, ms };
+    },
+    [resourceId],
+  );
 
   /**
    * Fullscreen with the tutor. The page (not the player) goes fullscreen, and
@@ -158,12 +183,22 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
     },
     [onTimeChange],
   );
-  /** Resource ids the user explicitly ticked. Nothing else marks work done. */
-  const [completedIds, setCompletedIds] = useState<string[]>([]);
-
-  useEffect(() => {
-    setCompletedIds(readCompletion(subjectId ?? ""));
-  }, [subjectId]);
+  /** Resource ids the user explicitly ticked for the subject. Nothing else marks work done. */
+  const subjectDone = useSubjectCompletion(subjectId);
+  /**
+   * With the tutor, the ticks are this chat's allowance: the subject's
+   * completed resources, adjusted for this chat. A chat not asked in yet uses
+   * the draft, which it keeps once its first question files it.
+   */
+  const allowances = useChatAllowances();
+  const openChatKnown = Boolean(openChatId && getChatSafe(openChatId));
+  const chatKey = withChat && subjectId ? (openChatKnown ? openChatId! : draftAllowanceKey(subjectId)) : null;
+  const completedIds = useMemo(
+    () => (chatKey ? effectiveAllowance(resources.map((r) => r.id), subjectDone, allowances[chatKey]) : subjectDone),
+    [chatKey, resources, subjectDone, allowances],
+  );
+  /** A resource being ticked in a chat: for this chat only, or the subject? */
+  const [askingId, setAskingId] = useState<string | null>(null);
 
   useEffect(() => {
     setPlayheadMs(0);
@@ -171,15 +206,17 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
 
   const toggleCompleted = useCallback(
     (id: string): void => {
-      setCompletedIds((prev) => {
-        const next = prev.includes(id)
-          ? prev.filter((x) => x !== id)
-          : [...prev, id];
-        writeCompletion(subjectId ?? "", next);
-        return next;
-      });
+      if (!subjectId) return;
+      const on = completedIds.includes(id);
+      if (!chatKey) {
+        setSubjectCompletion(subjectId, [id], !on);
+        return;
+      }
+      if (on) setChatAllowed(chatKey, subjectId, id, false);
+      else if (subjectDone.includes(id)) setChatAllowed(chatKey, subjectId, id, true);
+      else setAskingId(id);
     },
-    [subjectId],
+    [subjectId, completedIds, chatKey, subjectDone],
   );
 
   /**
@@ -401,6 +438,14 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
     apiLive && selected && selected.resourceId !== SAMPLE_CLIP_ID ? selected.resourceId : null,
     procState === "ready" ? "ready" : Math.floor((procThrough ?? 0) / 120_000),
   );
+  /** Video chapters for the seek bar's segments. */
+  const seekChapters = useMemo<SeekChapter[]>(
+    () =>
+      chapters
+        .filter((c) => typeof c.start_ms === "number")
+        .map((c) => ({ title: c.title, startMs: c.start_ms as number })),
+    [chapters],
+  );
   const openPage = useCallback((page: number): void => {
     setPdfJump((prev) => ({ page, text: null, nonce: (prev?.nonce ?? 0) + 1 }));
   }, []);
@@ -442,7 +487,9 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
   const onAsk = useCallback(
     (threadId: string, question: string): void => {
       if (!sessionId || !subjectId || resourceId === SAMPLE_CLIP_ID) return;
+      const known = Boolean(getChatSafe(openChatId ?? ""));
       const id = recordLessonChat({ sessionId, threadId, subjectId, resourceId, question });
+      if (!known && id !== openChatId) adoptDraftAllowance(subjectId, id);
       if (malai && id !== openChatId) {
         // Same page, new address: no remount, so the answer keeps streaming.
         window.history.replaceState(null, "", malaiLessonPath(subjectId, resourceId, id));
@@ -455,6 +502,12 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
       if (sessionId) titleLessonChat(sessionId, threadId, title);
     },
     [sessionId],
+  );
+  // The split view's chat dropdown lists this subject's chats from the sidebar.
+  const allChats = useMalaiChats();
+  const subjectChats = useMemo(
+    () => (subjectId ? allChats.filter((c) => c.subjectId === subjectId) : []),
+    [allChats, subjectId],
   );
   const openChat = openChatId ? getChatSafe(openChatId) : null;
   const openThreadId = openChat && openChat.sessionId === sessionId ? openChat.threadId : null;
@@ -609,7 +662,7 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
                   <span
                     className={`block break-words text-sm font-medium ${
                       isCurrent ? "text-violet-800" : "text-gray-800"
-                    } ${isDone ? "line-through decoration-gray-300" : ""}`}
+                    } ${isDone ? "text-emerald-800" : ""}`}
                   >
                     {r.title ?? r.id}
                   </span>
@@ -634,18 +687,21 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
             return (
               <li
                 key={r.id}
-                className={`flex items-center gap-2 rounded-xl pl-2 ${
-                  isCurrent ? "bg-violet-50 ring-1 ring-violet-200" : ""
+                className={`flex flex-wrap items-center gap-2 rounded-xl pl-2 ${
+                  isCurrent ? "bg-violet-50 ring-1 ring-violet-200" : isDone ? "bg-emerald-50/60 opacity-70 hover:opacity-100" : ""
                 }`}
               >
-                <input
-                  type="checkbox"
-                  className="h-4 w-4 shrink-0 cursor-pointer rounded accent-violet-600"
-                  checked={isDone}
-                  onChange={() => toggleCompleted(r.id)}
+                <button
+                  type="button"
+                  role="checkbox"
+                  aria-checked={isDone}
+                  onClick={() => toggleCompleted(r.id)}
                   aria-label={`Mark "${r.title ?? r.id}" as done`}
-                  title="Mark as done"
-                />
+                  title={isDone ? "Completed - click to undo" : "Mark as done"}
+                  className="shrink-0 rounded-full p-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+                >
+                  <CircleCheck checked={isDone} />
+                </button>
                 {s ? (
                   <button
                     type="button"
@@ -665,15 +721,48 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
                     <span className="sr-only">(original file unavailable)</span>
                   </div>
                 )}
+                {askingId === r.id && chatKey && subjectId && (
+                  <div className="mb-2 mr-2 w-full rounded-lg border border-violet-200 bg-violet-50 p-2.5 text-xs text-gray-700" role="group" aria-label="Apply to">
+                    <p className="mb-2">Mark completed for…</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      <button
+                        type="button"
+                        autoFocus
+                        onClick={() => {
+                          setChatAllowed(chatKey, subjectId, r.id, true);
+                          setAskingId(null);
+                        }}
+                        className="rounded-md bg-white px-2.5 py-1 font-medium text-violet-700 ring-1 ring-violet-200 transition hover:bg-violet-100"
+                      >
+                        This chat only
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSubjectCompletion(subjectId, [r.id], true);
+                          setChatAllowed(chatKey, subjectId, r.id, true);
+                          setAskingId(null);
+                        }}
+                        className="rounded-md bg-violet-600 px-2.5 py-1 font-medium text-white transition hover:bg-violet-700"
+                      >
+                        The whole subject
+                      </button>
+                      <button type="button" onClick={() => setAskingId(null)} className="px-1.5 py-1 text-gray-500 hover:text-gray-800">
+                        Cancel
+                      </button>
+                    </div>
+                    <p className="mt-1.5 text-[11px] text-gray-500">The whole subject affects every chat in it.</p>
+                  </div>
+                )}
               </li>
             );
           })}
         </ul>
       )}
       <p className="mt-3 px-1 text-[11px] leading-snug text-gray-400">
-        Tick an item to mark it done — nothing is marked complete
-        automatically. Titles and statuses come from the ingested course
-        resources.
+        {chatKey
+          ? "Ticks are what this chat reads besides the open resource. They start from the subject's completed resources; nothing is marked complete automatically."
+          : "Tick an item to mark it done for the subject. Nothing is marked complete automatically."}
       </p>
     </div>
   );
@@ -776,6 +865,7 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
             <div className={immersive ? "contents" : stacked && isMedia ? "lg:mx-auto lg:w-[min(100cqw,calc(100cqh*16/9))]" : ""}>
               <ImmersiveContext.Provider value={immersiveCtx}>
               <CitedRangeContext.Provider value={citedRange}>
+              <ChaptersContext.Provider value={seekChapters}>
               {selected.kind === "youtube" ? (
                 <YouTubePlayer
                   ref={ytHandleRef}
@@ -802,6 +892,7 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
                   onTimeChange={onTimeChange}
                 />
               )}
+              </ChaptersContext.Provider>
               </CitedRangeContext.Provider>
               </ImmersiveContext.Provider>
             </div>
@@ -920,6 +1011,16 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
         onAsk={onAsk}
         onTitled={onTitled}
         headerLead={grip}
+        chatPicker={
+          malai && subjectId ? (
+            <ChatSwitcher
+              chats={subjectChats}
+              currentId={openChatKnown ? openChatId : null}
+              currentResourceId={resourceId}
+              newChatHref={malaiLessonPath(subjectId, resourceId)}
+            />
+          ) : undefined
+        }
         isVideo={isMedia}
         // The floating window toolbar sits over the bottom-left corner; when
         // Malai is there, its input bar starts after the toolbar.

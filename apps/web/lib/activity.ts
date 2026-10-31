@@ -15,6 +15,7 @@
 import type { Subject } from "@/lib/api";
 import { pullActivity, pushStudySeconds, pushVisit } from "@/lib/activitySync";
 import { readCompletion, writeCompletionLocal } from "@/lib/learn";
+import { readWatch, watchFraction } from "@/lib/progress";
 
 /** { "YYYY-MM-DD": seconds studied that local day } */
 const DAYS_KEY = "ailearn.activity.days";
@@ -193,13 +194,19 @@ export function writeArchived(ids: string[]): void {
   writeJson(ARCHIVED_KEY, ids);
 }
 
-/** Whole-number percent of the subject's resources marked as done. */
+/**
+ * Whole-number percent of the subject done: resources marked done count in
+ * full, an unfinished video by how far it has been watched.
+ */
 export function subjectProgress(subject: Subject): number {
   const total = subject.resource_count ?? 0;
   if (total === 0) return 0;
   const done = readCompletion(subject.id);
   const ids = subject.resource_ids;
-  const count = ids ? done.filter((id) => ids.includes(id)).length : done.length;
+  let count = ids ? done.filter((id) => ids.includes(id)).length : done.length;
+  for (const id of ids ?? []) {
+    if (!done.includes(id)) count += watchFraction(readWatch(id)) ?? 0;
+  }
   return Math.min(100, Math.round((count / total) * 100));
 }
 

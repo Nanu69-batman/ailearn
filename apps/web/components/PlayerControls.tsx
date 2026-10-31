@@ -85,6 +85,30 @@ export interface CitedRange {
 
 export const CitedRangeContext = createContext<CitedRange | null>(null);
 
+/**
+ * The video's chapters, drawn on the seek bar as segments (like YouTube's):
+ * the track is split at each chapter start and hovering shows its title.
+ * Page-provided, like CitedRangeContext.
+ */
+export interface SeekChapter {
+  title: string;
+  startMs: number;
+}
+
+export const ChaptersContext = createContext<SeekChapter[] | null>(null);
+
+/** Chapter segments as [start, end) seconds, clamped to the video's length. */
+function chapterSegments(chapters: SeekChapter[] | null, duration: number): { title: string; start: number; end: number }[] {
+  if (!chapters || chapters.length < 2 || duration <= 0) return [];
+  const sorted = [...chapters]
+    .map((c) => ({ title: c.title, start: clamp(c.startMs / 1000, 0, duration) }))
+    .sort((a, b) => a.start - b.start)
+    .filter((c, i, arr) => i === 0 || c.start - arr[i - 1].start >= 1);
+  if (sorted.length < 2) return [];
+  sorted[0].start = 0;
+  return sorted.map((c, i) => ({ ...c, end: i + 1 < sorted.length ? sorted[i + 1].start : duration }));
+}
+
 const HIDE_AFTER_MS = 2500;
 
 function clamp(n: number, lo: number, hi: number): number {
@@ -216,6 +240,8 @@ function SeekBar({
   const cited = useContext(CitedRangeContext);
   const citedLeft = known && cited ? clamp((cited.startMs / 1000 / duration) * 100, 0, 100) : 0;
   const citedRight = known && cited ? clamp((cited.endMs / 1000 / duration) * 100, 0, 100) : 0;
+  const segments = chapterSegments(useContext(ChaptersContext), duration);
+  const hoverChapter = hover && segments.length ? segments.find((c) => hover.t >= c.start && hover.t < c.end) ?? segments[segments.length - 1] : null;
 
   const onMove = (e: ReactMouseEvent<HTMLDivElement>): void => {
     const el = wrapRef.current;
@@ -232,21 +258,50 @@ function SeekBar({
       onMouseMove={onMove}
       onMouseLeave={() => setHover(null)}
     >
-      <div className="relative h-1 w-full rounded-full bg-white/25 transition-[height] duration-150 group-hover/seek:h-1.5">
-        <div
-          className="absolute inset-y-0 left-0 rounded-full bg-white/35"
-          style={{ width: `${bufferedPct}%` }}
-        />
-        {hover && (
-          <div
-            className="absolute inset-y-0 left-0 rounded-full bg-white/20"
-            style={{ width: `${clamp((hover.x / hover.width) * 100, 0, 100)}%` }}
-          />
+      <div
+        className={`relative h-1 w-full rounded-full transition-[height] duration-150 group-hover/seek:h-1.5 ${
+          segments.length ? "" : "bg-white/25"
+        }`}
+      >
+        {segments.length ? (
+          // One track piece per chapter, with a small gap between them. Each
+          // piece fills by its own share of the buffered / hovered / played time.
+          <div className="absolute inset-0 flex gap-[3px]">
+            {segments.map((c) => {
+              const span = c.end - c.start || 1;
+              const fill = (t: number) => `${clamp(((t - c.start) / span) * 100, 0, 100)}%`;
+              const isHover = hoverChapter === c;
+              return (
+                <div
+                  key={c.start}
+                  className={`relative h-full overflow-hidden rounded-full bg-white/25 transition-transform duration-150 ${isHover ? "scale-y-[1.6]" : ""}`}
+                  style={{ flex: `${c.end - c.start} 1 0%` }}
+                >
+                  <div className="absolute inset-y-0 left-0 bg-white/35" style={{ width: fill(buffered) }} />
+                  {hover && <div className="absolute inset-y-0 left-0 bg-white/20" style={{ width: fill(hover.t) }} />}
+                  <div className="absolute inset-y-0 left-0 bg-violet-600" style={{ width: fill(shown) }} />
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <>
+            <div
+              className="absolute inset-y-0 left-0 rounded-full bg-white/35"
+              style={{ width: `${bufferedPct}%` }}
+            />
+            {hover && (
+              <div
+                className="absolute inset-y-0 left-0 rounded-full bg-white/20"
+                style={{ width: `${clamp((hover.x / hover.width) * 100, 0, 100)}%` }}
+              />
+            )}
+            <div
+              className="absolute inset-y-0 left-0 rounded-full bg-violet-600"
+              style={{ width: `${playedPct}%` }}
+            />
+          </>
         )}
-        <div
-          className="absolute inset-y-0 left-0 rounded-full bg-violet-600"
-          style={{ width: `${playedPct}%` }}
-        />
         {known && cited && (
           <div
             className="pointer-events-none absolute inset-y-0 rounded-full bg-amber-400"
@@ -268,9 +323,16 @@ function SeekBar({
       {hover && known && (
         <div
           className="pointer-events-none absolute bottom-full mb-2 -translate-x-1/2 rounded-md bg-gray-950/90 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-white shadow"
-          style={{ left: clamp(hover.x, 22, Math.max(22, hover.width - 22)) }}
+          style={{
+            left: hoverChapter
+              ? clamp(hover.x, 80, Math.max(80, hover.width - 80))
+              : clamp(hover.x, 22, Math.max(22, hover.width - 22)),
+          }}
         >
-          {formatClock(hover.t)}
+          {hoverChapter && (
+            <span className="block max-w-[10rem] truncate text-center font-medium text-white/80">{hoverChapter.title}</span>
+          )}
+          <span className="block text-center">{formatClock(hover.t)}</span>
         </div>
       )}
       <input

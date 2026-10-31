@@ -12,6 +12,7 @@ import FileIngestForm, {
 import IngestDialog from "@/components/IngestDialog";
 import ContentCard, { ContentPendingCard } from "@/components/ContentCard";
 import ContentConfirmDialog from "@/components/ContentConfirmDialog";
+import SubjectAnalytics from "@/components/SubjectAnalytics";
 import type { IngestProgress, IngestSource } from "@/components/IngestProgress";
 import { useLearnSession } from "@/components/LearnSessionProvider";
 import { useCourseResources } from "@/components/useCourseResources";
@@ -251,6 +252,10 @@ export default function SubjectPage() {
           </p>
         )}
       </header>
+
+      {ready && resources.length > 0 && subjectId && (
+        <SubjectAnalytics subjectId={subjectId} resources={resources} />
+      )}
 
       {/* ---- Content ---------------------------------------------------- */}
       <section aria-label="Subject content">

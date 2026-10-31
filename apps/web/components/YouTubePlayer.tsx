@@ -31,6 +31,8 @@ import PlayerFrame, {
 export interface YouTubePlayerHandle {
   seekTo: (startMs: number) => void;
   getCurrentTimeMs: () => number;
+  /** Video length in ms; 0 until the player knows it. */
+  getDurationMs: () => number;
   pause: () => void;
 }
 
@@ -173,6 +175,10 @@ const YouTubePlayer = forwardRef<YouTubePlayerHandle, YouTubePlayerProps>(
         },
         getCurrentTimeMs(): number {
           return latestMsRef.current;
+        },
+        getDurationMs(): number {
+          const p = playerRef.current;
+          return p ? toMs(finite(p.getDuration())) : 0;
         },
         pause(): void {
           playerRef.current?.pauseVideo();

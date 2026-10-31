@@ -16,7 +16,16 @@ import {
   type QuizScope,
 } from "@/lib/api";
 import { detectQuizIntent } from "@/lib/quizIntent";
-import { LEARNER_NAME, resourceIcon, resourceKindLabel, toSelected } from "@/lib/learn";
+import { LEARNER_NAME } from "@/lib/learn";
+import {
+  adoptDraftAllowance,
+  draftAllowanceKey,
+  effectiveAllowance,
+  useChatAllowances,
+  useSubjectCompletion,
+} from "@/lib/progress";
+import { ResourceChooser, SubjectChecklist } from "@/components/ResourceChecklist";
+import SubjectAnalytics from "@/components/SubjectAnalytics";
 import {
   addChat,
   allResourceIds,
@@ -111,9 +120,12 @@ function Composer({
   voice,
   images,
   pickerDown,
+  chooser,
 }: {
   /** The model chooser opens downward (a new chat or a subject's page). */
   pickerDown?: boolean;
+  /** The chat's resource chooser, beside the model picker under the bar. */
+  chooser?: React.ReactNode;
   /** Images attached in the bar (chat context, never resources). */
   images?: { items: PendingImage[]; onFiles: (f: FileList | File[]) => void; onRemove: (key: string) => void; uploading: boolean };
   /** Dictation and the voice conversation; absent when voice is off. */
@@ -216,7 +228,10 @@ function Composer({
         voice && <VoiceButton size="lg" primary onClick={voice.onTalk} disabled={disabled} />
       )}
     </form>
-    <ModelModePicker className="mt-1.5 pl-3" down={pickerDown} />
+    <div className="mt-1.5 flex flex-wrap items-center gap-2 pl-3">
+      {chooser}
+      <ModelModePicker down={pickerDown} />
+    </div>
     </div>
   );
 }
@@ -252,6 +267,22 @@ export default function MalaiChatView() {
   const subjectId = chat ? known(chat.subjectId) : known(pageSubjectId);
   const subject = subjects.find((s) => s.id === subjectId) ?? null;
   const slashContext: SlashContext = subject ? "subject" : "general";
+
+  // What this chat may read in its subject: the subject's completed
+  // resources, adjusted in this chat's chooser. A chat not made yet uses the
+  // subject page's draft, which the new chat then keeps.
+  const { resources: subjectResources, state: subjectResourcesState } = useSubjectResources(subject?.id ?? null);
+  const subjectDone = useSubjectCompletion(subject?.id ?? null);
+  const allowances = useChatAllowances();
+  const chatKey = subject ? (chat ? chat.id : draftAllowanceKey(subject.id)) : null;
+  const subjectIds =
+    subjectResourcesState === "ready" ? subjectResources.map((r) => r.id) : subject?.resource_ids ?? [];
+  const allowed = chatKey ? effectiveAllowance(subjectIds, subjectDone, allowances[chatKey]) : [];
+  /** Scope fields for a request from this chat. */
+  const readScope = (): Pick<ChatRequest, "completed_resource_ids" | "scope_resource_ids" | "general"> =>
+    subject
+      ? { completed_resource_ids: allowed.slice(0, 100), scope_resource_ids: allowed }
+      : { completed_resource_ids: doneResourceIds(subjects), general: true };
 
   // Load the open chat's history whenever the chat changes.
   const chatSession = chat ? `${chat.sessionId}|${chat.threadId}` : null;
@@ -329,6 +360,7 @@ export default function MalaiChatView() {
       updatedAt: now,
     };
     createdHere.current = created.id;
+    if (subject) adoptDraftAllowance(subject.id, created.id);
     addChat(created);
     window.history.replaceState(null, "", malaiChatPath(created.id));
     return created;
@@ -375,8 +407,7 @@ export default function MalaiChatView() {
       session_id: c.sessionId,
       thread_id: c.threadId === MAIN_THREAD_ID ? undefined : c.threadId,
       current_time_ms: 0,
-      completed_resource_ids: doneResourceIds(subject ? [subject] : subjects),
-      ...(subject ? { scope_resource_ids: subject.resource_ids ?? [] } : { general: true }),
+      ...readScope(),
     };
   };
 
@@ -455,6 +486,7 @@ export default function MalaiChatView() {
           updatedAt: now,
         };
         createdHere.current = current.id;
+        if (subject) adoptDraftAllowance(subject.id, current.id);
         addChat(current);
         // Same page, new address: no remount, so the answer keeps streaming.
         window.history.replaceState(null, "", malaiChatPath(current.id));
@@ -476,9 +508,8 @@ export default function MalaiChatView() {
           current_time_ms: 0,
           message: text,
           mode,
-          completed_resource_ids: doneResourceIds(subject ? [subject] : subjects),
           // No subject: a general chat; materials are read only when asked for.
-          ...(subject ? { scope_resource_ids: subject.resource_ids ?? [] } : { general: true }),
+          ...readScope(),
         };
         return streamChat(req, {
           onStatus: (status) => setPreview((p) => ({ status, text: p?.text ?? "" })),
@@ -521,14 +552,15 @@ export default function MalaiChatView() {
       setLoading(false);
       setPreview(null);
     }
-  }, [draft, loading, subject, subjects, chat, slashContext, stopDictation, imageNames, clearImages]);
+    // readScope reads `allowed`, derived from the deps below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft, loading, subject, subjects, chat, slashContext, stopDictation, imageNames, clearImages, allowed.join("|")]);
 
   /** What a quiz from this chat may draw from: the chat's own reach. */
   const quizScope: QuizScope | null = quizChat
     ? {
         thread_id: quizChat.threadId,
-        completed_resource_ids: doneResourceIds(subject ? [subject] : subjects),
-        ...(subject ? { scope_resource_ids: subject.resource_ids ?? [] } : { general: true }),
+        ...readScope(),
       }
     : null;
 
@@ -618,6 +650,17 @@ export default function MalaiChatView() {
       inputRef={inputRef}
       slashContext={slashContext}
       pickerDown={chatId === null && messages.length === 0 && !loading}
+      chooser={
+        subject && chatKey ? (
+          <ResourceChooser
+            chatKey={chatKey}
+            subjectId={subject.id}
+            subjectName={subject.name}
+            resources={subjectResources}
+            up={!(chatId === null && messages.length === 0 && !loading)}
+          />
+        ) : undefined
+      }
     />
   );
   const notes = (
@@ -848,8 +891,11 @@ function SubjectHome({
       <div className="mt-6">{composer}</div>
       {notes}
       <p className="mt-2 px-2 text-xs text-gray-400">
-        New chats here are filed under {name} and read only its materials.
+        New chats here are filed under {name}. Each chat reads the resources ticked in its chooser, which starts from
+        the ones you&apos;ve completed.
       </p>
+
+      {state === "ready" && <SubjectAnalytics subjectId={subjectId} resources={resources} className="mt-8" />}
 
       <div className="mt-8 grid gap-5 lg:grid-cols-2">
         <section className={card} aria-labelledby="subject-chats">
@@ -881,6 +927,7 @@ function SubjectHome({
           <div className="flex items-center gap-3 border-b border-gray-100 py-2.5 pl-5 pr-3">
             <h2 id="subject-resources" className="flex-1 text-sm font-semibold text-gray-900">
               Resources
+              <span className="ml-2 text-xs font-normal text-gray-400">tick what you&apos;ve completed</span>
             </h2>
             <button
               type="button"
@@ -905,34 +952,12 @@ function SubjectHome({
           ) : resources.length === 0 ? (
             <p className="px-5 py-6 text-sm text-gray-500">No resources in this subject yet.</p>
           ) : (
-            <ul className="flex flex-col gap-0.5 p-2">
-              {resources.map((r) => {
-                const body = (
-                  <>
-                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-base" aria-hidden="true">
-                      {resourceIcon(r)}
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-medium text-gray-900">{r.title ?? r.id}</span>
-                      <span className="block text-xs text-gray-500">{resourceKindLabel(r)}</span>
-                    </span>
-                  </>
-                );
-                return (
-                  <li key={r.id}>
-                    {toSelected(r) ? (
-                      <Link href={malaiLessonPath(subjectId, r.id)} className={row}>
-                        {body}
-                      </Link>
-                    ) : (
-                      <div className={`${row} cursor-not-allowed opacity-60 hover:bg-transparent`} title="The original file is unavailable">
-                        {body}
-                      </div>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
+            <SubjectChecklist
+              subjectId={subjectId}
+              subjectName={name}
+              resources={resources}
+              openHref={(id) => malaiLessonPath(subjectId, id)}
+            />
           )}
         </section>
       </div>
