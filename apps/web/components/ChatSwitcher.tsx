@@ -18,6 +18,7 @@ export default function ChatSwitcher({
   currentId,
   currentResourceId,
   newChatHref,
+  hrefFor,
   className = "",
 }: {
   /** The subject's chats, as listed in the sidebar (most recent first). */
@@ -26,6 +27,8 @@ export default function ChatSwitcher({
   /** The open resource: its own chats are marked. */
   currentResourceId: string;
   newChatHref: string;
+  /** Where picking a chat goes; by default the chat's own place. */
+  hrefFor?: (chat: MalaiChat) => string;
   className?: string;
 }) {
   const router = useRouter();
@@ -119,7 +122,7 @@ export default function ChatSwitcher({
                 type="button"
                 role="option"
                 aria-selected={c.id === currentId}
-                onClick={() => (c.id === currentId ? setOpen(false) : go(chatPath(c)))}
+                onClick={() => (c.id === currentId ? setOpen(false) : go(hrefFor ? hrefFor(c) : chatPath(c)))}
                 className={`${item} ${c.id === currentId ? "bg-violet-50" : ""}`}
               >
                 <span className="min-w-0 flex-1">

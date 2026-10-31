@@ -231,7 +231,7 @@ interface LessonPanelProps {
   /** A PDF: open this page in the viewer. Slides cannot be jumped to. */
   onOpenPage?: (page: number) => void;
   /** The subject's materials list. */
-  resources: ReactNode;
+  resources?: ReactNode;
   collapsed: boolean;
   onCollapsedChange: (collapsed: boolean) => void;
 }
@@ -253,7 +253,8 @@ export default function LessonPanel({
   collapsed,
   onCollapsedChange,
 }: LessonPanelProps) {
-  const tabs: LessonTab[] = isMedia ? ["chapters", "transcript", "resources"] : ["chapters", "resources"];
+  // Resources live in Malai's chooser (under its input bar) now.
+  const tabs: LessonTab[] = ["chapters"];
   const [tab, setTab] = useState<LessonTab>(tabs[0]);
   // A document has no transcript tab to stay on.
   useEffect(() => {

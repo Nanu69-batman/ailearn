@@ -40,11 +40,8 @@ RELAY_SYSTEM_INSTRUCTION = (
 #: How to speak. The course answers already follow the chat's language rule;
 #: this keeps the voice itself in the same register.
 SPOKEN_LANGUAGE_RULE = (
-    "Speak the learner's language. If they speak Hindi or Hinglish, speak "
-    "natural Hinglish the way English-medium students in India talk: Hindi "
-    "sentence flow with English technical terms and most content words in "
-    "English. Never use formal or shuddh Hindi words; say 'example', "
-    "'important', 'concept'. Explain concepts in that same Hinglish."
+    "Speak the language the learner speaks, the way they speak it (the same "
+    "mix of languages if they mix), keeping standard technical terms."
 )
 
 

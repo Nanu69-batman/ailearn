@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   ApiError,
   MAIN_THREAD_ID,
@@ -10,6 +10,7 @@ import {
   postQuizNote,
   streamChat,
   type ChatMessage,
+  type Citation,
   type ChatMode,
   type ChatResponse,
   type ChatRequest,
@@ -246,6 +247,7 @@ function Composer({
 
 export default function MalaiChatView() {
   const params = useSearchParams();
+  const router = useRouter();
   const chatId = params.get("c");
   const pageSubjectId = chatId ? null : params.get("s");
   const chats = useMalaiChats();
@@ -685,6 +687,29 @@ export default function MalaiChatView() {
     setAccessAsk(null);
   };
 
+  /**
+   * The split view is this chat with a resource open beside it: the chooser's
+   * play button and a clicked citation both go there. A citation also says
+   * where to land (a moment of the video, a page of the PDF).
+   */
+  const openBeside = (resourceId: string, at?: { t?: number | null; page?: number | null }): void => {
+    const sid =
+      subject?.id ?? subjects.find((s) => s.resource_ids?.includes(resourceId))?.id ?? null;
+    if (!sid) return;
+    const q = new URLSearchParams();
+    if (at?.page != null) q.set("page", String(at.page));
+    else if (at?.t != null) q.set("t", String(Math.round(at.t)));
+    const href = malaiLessonPath(sid, resourceId, chat?.id);
+    router.push(q.size ? `${href}${href.includes("?") ? "&" : "?"}${q}` : href);
+  };
+  const citeDoc = {
+    resourceId: "*",
+    onOpen: (c: Citation): void => {
+      const rid = citationResource(c);
+      if (rid) openBeside(rid, { t: c.start_ms, page: c.page_no });
+    },
+  };
+
   const start = (prompt: string) => {
     setDraft(prompt);
     requestAnimationFrame(() => {
@@ -732,6 +757,7 @@ export default function MalaiChatView() {
             subjectName={subject.name}
             resources={subjectResources}
             up={!(chatId === null && messages.length === 0 && !loading)}
+            onPlay={(r) => openBeside(r.id)}
           />
         ) : undefined
       }
@@ -780,7 +806,8 @@ export default function MalaiChatView() {
                   setQuizChat(chat);
                   setQuizOpen(true);
                 }}
-                className="ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-full border border-violet-200 bg-white px-3 py-1 text-xs font-medium text-violet-700 transition hover:bg-violet-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
+                // Floats: stays put while the conversation scrolls.
+                className="fixed right-4 top-20 z-30 inline-flex shrink-0 items-center gap-1.5 rounded-full border border-violet-200 bg-white px-3.5 py-1.5 text-xs font-medium text-violet-700 shadow-md shadow-violet-900/10 transition hover:bg-violet-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 md:right-[4.75rem] md:top-5 lg:right-[5.75rem] lg:top-7"
               >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5" aria-hidden="true">
                   <path d="M12 22a10 10 0 110-20 10 10 0 010 20zM12 16a4 4 0 110-8 4 4 0 010 8zM12 12h.01" />
@@ -857,7 +884,7 @@ export default function MalaiChatView() {
                     The server no longer has this conversation&apos;s earlier messages (it restarted). You can keep asking here.
                   </p>
                 )}
-                <MessageList fill messages={messages} loading={loading} preview={preview} onSeek={() => {}} />
+                <MessageList fill messages={messages} loading={loading} preview={preview} onSeek={() => {}} openDoc={citeDoc} />
                 {accessAsk?.general && subject && !loading && (
                   <div className="mt-4">
                     <GeneralPrompt
@@ -1070,4 +1097,11 @@ function isVideoResource(r: { type?: string | null; provider?: string | null } |
 function firstVideoWatched(ids: string[], resources: ReadonlyArray<{ id: string; type?: string | null; provider?: string | null }>): number | null {
   const v = ids.find((id) => isVideoResource(resources.find((r) => r.id === id)));
   return v ? readWatch(v)?.ms ?? 0 : null;
+}
+
+/** Chunk ids are `{resource_id}_c{n}_...`; a live frame is `live_{resource_id}_{ms}`. */
+function citationResource(c: Citation): string | null {
+  const id = c.chunk_id.startsWith("live_") ? c.chunk_id.slice(5) : c.chunk_id;
+  const m = /^(.+?)_c\d+_/.exec(id) ?? /^(.+)_\d+$/.exec(id);
+  return m ? m[1] : c.video_id ?? null;
 }

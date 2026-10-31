@@ -225,6 +225,9 @@ export function ResourceChooser({
   resources,
   up = true,
   className = "",
+  onPlay,
+  openId = null,
+  onClose,
 }: {
   chatKey: string;
   subjectId: string;
@@ -233,6 +236,12 @@ export function ResourceChooser({
   /** Open the list upward (the input bar is at the bottom). */
   up?: boolean;
   className?: string;
+  /** Open this chat beside the resource (the split view). */
+  onPlay?: (r: CourseResource) => void;
+  /** The resource open beside the chat now, if any. */
+  openId?: string | null;
+  /** Close the open resource: back to the chat on its own. */
+  onClose?: () => void;
 }) {
   const done = useSubjectCompletion(subjectId);
   const allowances = useChatAllowances();
@@ -292,12 +301,13 @@ export function ResourceChooser({
           const label = isVideo(r) ? watchLabel(watch[r.id]) : null;
           return (
             <li key={r.id}>
+              <div className="flex items-center gap-1">
               <button
                 type="button"
                 role="checkbox"
                 aria-checked={on}
                 onClick={() => toggle(r)}
-                className={`flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition hover:bg-violet-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300 ${
+                className={`flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition hover:bg-violet-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300 ${
                   on ? "opacity-80" : ""
                 }`}
               >
@@ -307,9 +317,42 @@ export function ResourceChooser({
                   <span className="block truncate text-[11px] text-gray-500">
                     {resourceKindLabel(r)}
                     {done.includes(r.id) ? " · completed in subject" : label ? ` · ${label}` : ""}
+                    {openId === r.id ? " · open" : ""}
                   </span>
                 </span>
               </button>
+              {openId === r.id && onClose ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    onClose();
+                  }}
+                  title="Close this resource and keep chatting"
+                  aria-label={`Close ${r.title ?? "resource"}`}
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-violet-100 text-violet-700 transition hover:bg-violet-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
+                >
+                  <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden="true">
+                    <rect x="5" y="5" width="10" height="10" rx="1.5" />
+                  </svg>
+                </button>
+              ) : onPlay && openId !== r.id ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    onPlay(r);
+                  }}
+                  title="Open beside this chat"
+                  aria-label={`Open ${r.title ?? "resource"} beside this chat`}
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-violet-600 transition hover:bg-violet-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
+                >
+                  <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden="true">
+                    <path d="M6.5 4.5v11a.5.5 0 00.77.42l8.5-5.5a.5.5 0 000-.84l-8.5-5.5a.5.5 0 00-.77.42z" />
+                  </svg>
+                </button>
+              ) : null}
+              </div>
               {asking?.id === r.id && (
                 <div className="mx-2 mb-2 mt-1 rounded-lg border border-violet-200 bg-violet-50 p-2.5 text-xs text-gray-700" role="group" aria-label="Apply to">
                   <p className="mb-2">Mark completed for…</p>

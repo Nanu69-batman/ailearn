@@ -644,7 +644,7 @@ def test_live_config_carries_voice_tone_language_and_personalization():
         vm, voice="Kore", tone="calm", personalization=Personalization(name="Rohan")
     )
     assert cfg.speech_config.voice_config.prebuilt_voice_config.voice_name == "Kore"
-    assert "Hinglish" in cfg.system_instruction
+    assert "language the learner speaks" in cfg.system_instruction
     assert "unhurried" in cfg.system_instruction
     assert "Rohan" in cfg.system_instruction
     unknown = gemini.live_config(vm, voice="NotAVoice")

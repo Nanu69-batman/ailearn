@@ -35,10 +35,7 @@ import {
 import {
   SAMPLE_CLIP_ID,
   SUBJECTS_PATH,
-  contentPath,
   firstParam,
-  resourceIcon,
-  resourceKindLabel,
   sampleClipSelected,
   subjectPath,
   toSelected,
@@ -47,6 +44,7 @@ import {
 import {
   MALAI_PATH,
   getChat,
+  malaiChatPath,
   malaiLessonPath,
   malaiSubjectPath,
   recordLessonChat,
@@ -67,7 +65,7 @@ import {
   useChatAllowances,
   useSubjectCompletion,
 } from "@/lib/progress";
-import { CircleCheck } from "@/components/ResourceChecklist";
+import { ResourceChooser } from "@/components/ResourceChecklist";
 import ChatSwitcher from "@/components/ChatSwitcher";
 
 /**
@@ -201,27 +199,11 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
     () => (chatKey ? effectiveAllowance(resources.map((r) => r.id), subjectDone, allowances[chatKey]) : subjectDone),
     [chatKey, resources, subjectDone, allowances],
   );
-  /** A resource being ticked in a chat: for this chat only, or the subject? */
-  const [askingId, setAskingId] = useState<string | null>(null);
 
   useEffect(() => {
     setPlayheadMs(0);
   }, [resourceId]);
 
-  const toggleCompleted = useCallback(
-    (id: string): void => {
-      if (!subjectId) return;
-      const on = completedIds.includes(id);
-      if (!chatKey) {
-        setSubjectCompletion(subjectId, [id], !on);
-        return;
-      }
-      if (on) setChatAllowed(chatKey, subjectId, id, false);
-      else if (subjectDone.includes(id)) setChatAllowed(chatKey, subjectId, id, true);
-      else setAskingId(id);
-    },
-    [subjectId, completedIds, chatKey, subjectDone],
-  );
 
   /**
    * What the chat may read besides the open material: the ticked ones that
@@ -243,13 +225,6 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
   const backToSubject = useCallback((): void => {
     router.push(malai ? malaiSubjectPath(subjectId ?? "") : subjectPath(subjectId ?? ""));
   }, [router, subjectId, malai]);
-
-  const openResource = useCallback(
-    (id: string): void => {
-      router.push(malai ? malaiLessonPath(subjectId ?? "", id) : contentPath(subjectId ?? "", id));
-    },
-    [router, subjectId, malai],
-  );
 
   // The sample clip is not in the resource list, so it is resolved from the URL
   // directly. Everything else must match a real resource before we render.
@@ -363,8 +338,6 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
     return { blob, atMs };
   }, []);
 
-  const activeResourceId = selected ? selected.resourceId : null;
-
   // Feeds the dashboard: last lesson opened, and time spent studying.
   useStudyTracker(
     subjectId && selected && selected.resourceId !== SAMPLE_CLIP_ID
@@ -454,6 +427,27 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
     setPdfJump((prev) => ({ page, text: null, nonce: (prev?.nonce ?? 0) + 1 }));
   }, []);
 
+  // Opened from a citation in the chat on its own (?t= ms, ?page=): land
+  // there once the resource is on screen. The player may still be loading,
+  // so the seek is retried for a few seconds.
+  const landT = search.get("t");
+  const landPage = search.get("page");
+  const landed = useRef<string | null>(null);
+  useEffect(() => {
+    if (!selected || (!landT && !landPage)) return;
+    const key = `${selected.resourceId}|${landT}|${landPage}`;
+    if (landed.current === key) return;
+    landed.current = key;
+    const page = Number(landPage);
+    if (landPage && Number.isFinite(page) && page > 0) {
+      openPage(page);
+      return;
+    }
+    const t = Number(landT);
+    if (!Number.isFinite(t) || t < 0) return;
+    for (const d of [0, 800, 2000, 4000]) window.setTimeout(() => handleSeek(t), d);
+  }, [selected, landT, landPage, openPage, handleSeek]);
+
   // Window layout: Malai's side, the split, the panel, and "hide video".
   const layout = useLessonLayout();
   // Without the chat, the lesson fills the page and its panel sits beside it.
@@ -487,7 +481,10 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
 
   // File each chat asked here under its subject in Malai's sidebar, and keep
   // the address on that chat so a reload (or the sidebar) reopens it.
-  const sessionId = session?.session_id ?? null;
+  // A chat opened here (?c=) keeps its own session: a subject chat lives in
+  // Malai's session, a chat started beside a resource in the lesson's.
+  const openChatEntry = openChatId ? getChatSafe(openChatId) : null;
+  const sessionId = openChatEntry?.sessionId ?? session?.session_id ?? null;
   const onAsk = useCallback(
     (threadId: string, question: string): void => {
       if (!sessionId || !subjectId || resourceId === SAMPLE_CLIP_ID) return;
@@ -513,8 +510,7 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
     () => (subjectId ? allChats.filter((c) => c.subjectId === subjectId) : []),
     [allChats, subjectId],
   );
-  const openChat = openChatId ? getChatSafe(openChatId) : null;
-  const openThreadId = openChat && openChat.sessionId === sessionId ? openChat.threadId : null;
+  const openThreadId = openChatEntry?.threadId ?? null;
 
   if (!session) return null;
 
@@ -597,7 +593,6 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
   }
 
   const isMedia = selected.kind === "file" || selected.kind === "youtube";
-  const doneCount = resources.filter((r) => completedIds.includes(r.id)).length;
   // The developer-view button floats over the workspace's top-right corner;
   // whichever window is there keeps its header clear of it.
   const cornerWindow = !withChat
@@ -614,162 +609,6 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
 
   const iconButton =
     "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-gray-500 transition hover:bg-gray-100 hover:text-gray-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400";
-
-  /* Course materials: completion ticks + open + ingest status.
-     TODO(backend): `GET /subjects/{id}/resources` returns a flat resource list
-     with no unit/module hierarchy, so this list is derived from the ingested
-     resources themselves rather than from a course tree. Once the backend
-     exposes the real tree (unit -> ordered lessons -> resource ids), render
-     that here and keep the same id-based completion map. */
-  const materials = (
-    <div aria-label="Subject content">
-      <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2 px-1">
-        <h2 className="text-sm font-semibold text-gray-900">Course materials</h2>
-        {resources.length > 0 && (
-          <span className="text-xs text-gray-400">
-            {doneCount} of {resources.length} marked done
-          </span>
-        )}
-      </div>
-      {/* Loading and error are handled above, so by this point the list has
-          resolved and may legitimately be empty. */}
-      {resources.length === 0 ? (
-        <p className="rounded-xl border border-dashed border-gray-200 px-3 py-3 text-xs text-gray-400">
-          No subject content available yet — no resources have been ingested
-          for this subject.
-        </p>
-      ) : (
-        <ul className="flex flex-col gap-1">
-          {resources.map((r) => {
-            const s = toSelected(r);
-            const isDone = completedIds.includes(r.id);
-            const isCurrent = activeResourceId === r.id;
-            const statusStyle =
-              r.status === "done"
-                ? "border-emerald-200 bg-emerald-50 text-emerald-600"
-                : r.status === "failed"
-                  ? "border-red-200 bg-red-50 text-red-600"
-                  : r.status
-                    ? "border-amber-200 bg-amber-50 text-amber-600"
-                    : "border-gray-200 bg-gray-50 text-gray-500";
-            const body = (
-              <>
-                <span
-                  className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-sm ${
-                    isCurrent ? "bg-violet-600 text-white" : "bg-gray-100"
-                  }`}
-                  aria-hidden="true"
-                >
-                  {resourceIcon(r)}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span
-                    className={`block break-words text-sm font-medium ${
-                      isCurrent ? "text-violet-800" : "text-gray-800"
-                    } ${isDone ? "text-emerald-800" : ""}`}
-                  >
-                    {r.title ?? r.id}
-                  </span>
-                  <span className="block text-[11px] text-gray-400">
-                    {resourceKindLabel(r)}
-                  </span>
-                </span>
-                {isCurrent && (
-                  <span className="shrink-0 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-violet-700">
-                    Viewing
-                  </span>
-                )}
-                {r.status && (
-                  <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium ${statusStyle}`}>
-                    {r.status}
-                  </span>
-                )}
-              </>
-            );
-            const rowClass =
-              "flex min-w-0 flex-1 items-center gap-3 rounded-xl px-2 py-2 text-left transition";
-            return (
-              <li
-                key={r.id}
-                className={`flex flex-wrap items-center gap-2 rounded-xl pl-2 ${
-                  isCurrent ? "bg-violet-50 ring-1 ring-violet-200" : isDone ? "bg-emerald-50/60 opacity-70 hover:opacity-100" : ""
-                }`}
-              >
-                <button
-                  type="button"
-                  role="checkbox"
-                  aria-checked={isDone}
-                  onClick={() => toggleCompleted(r.id)}
-                  aria-label={`Mark "${r.title ?? r.id}" as done`}
-                  title={isDone ? "Completed - click to undo" : "Mark as done"}
-                  className="shrink-0 rounded-full p-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
-                >
-                  <CircleCheck checked={isDone} />
-                </button>
-                {s ? (
-                  <button
-                    type="button"
-                    onClick={() => openResource(r.id)}
-                    aria-current={isCurrent ? "true" : undefined}
-                    title={`Open ${resourceKindLabel(r)}`}
-                    className={`${rowClass} hover:bg-violet-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300`}
-                  >
-                    {body}
-                  </button>
-                ) : (
-                  <div
-                    className={`${rowClass} opacity-60`}
-                    title="Original file is unavailable, so this resource cannot be opened"
-                  >
-                    {body}
-                    <span className="sr-only">(original file unavailable)</span>
-                  </div>
-                )}
-                {askingId === r.id && chatKey && subjectId && (
-                  <div className="mb-2 mr-2 w-full rounded-lg border border-violet-200 bg-violet-50 p-2.5 text-xs text-gray-700" role="group" aria-label="Apply to">
-                    <p className="mb-2">Mark completed for…</p>
-                    <div className="flex flex-wrap gap-1.5">
-                      <button
-                        type="button"
-                        autoFocus
-                        onClick={() => {
-                          setChatAllowed(chatKey, subjectId, r.id, true);
-                          setAskingId(null);
-                        }}
-                        className="rounded-md bg-white px-2.5 py-1 font-medium text-violet-700 ring-1 ring-violet-200 transition hover:bg-violet-100"
-                      >
-                        This chat only
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSubjectCompletion(subjectId, [r.id], true);
-                          setChatAllowed(chatKey, subjectId, r.id, true);
-                          setAskingId(null);
-                        }}
-                        className="rounded-md bg-violet-600 px-2.5 py-1 font-medium text-white transition hover:bg-violet-700"
-                      >
-                        The whole subject
-                      </button>
-                      <button type="button" onClick={() => setAskingId(null)} className="px-1.5 py-1 text-gray-500 hover:text-gray-800">
-                        Cancel
-                      </button>
-                    </div>
-                    <p className="mt-1.5 text-[11px] text-gray-500">The whole subject affects every chat in it.</p>
-                  </div>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-      )}
-      <p className="mt-3 px-1 text-[11px] leading-snug text-gray-400">
-        {chatKey
-          ? "Ticks are what this chat reads besides the open resource. They start from the subject's completed resources; nothing is marked complete automatically."
-          : "Tick an item to mark it done for the subject. Nothing is marked complete automatically."}
-      </p>
-    </div>
-  );
 
   const lessonWindow = (grip: ReactNode) => (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
@@ -964,7 +803,6 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
           playheadMs={playheadMs}
           onSeek={handleSeek}
           onOpenPage={selected.kind === "pdf" && selected.src ? openPage : undefined}
-          resources={materials}
           collapsed={layout.panelCollapsed}
           onCollapsedChange={layout.setPanelCollapsed}
         />
@@ -1000,9 +838,10 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
         </button>
       )}
       <ChatPanel
+        key={sessionId ?? session.session_id}
         fill
         subjectId={subjectId}
-        sessionId={session.session_id}
+        sessionId={sessionId ?? session.session_id}
         videoId={selected.resourceId}
         getCurrentTimeMs={getCurrentTimeMs}
         captureFrame={captureFrame}
@@ -1052,6 +891,22 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
               currentId={openChatKnown ? openChatId : null}
               currentResourceId={resourceId}
               newChatHref={malaiLessonPath(subjectId, resourceId)}
+              // Another chat opens beside the same resource.
+              hrefFor={(c) => malaiLessonPath(subjectId, resourceId, c.id)}
+            />
+          ) : undefined
+        }
+        chooser={
+          malai && subjectId && chatKey ? (
+            <ResourceChooser
+              chatKey={chatKey}
+              subjectId={subjectId}
+              subjectName={subject?.name ?? "this subject"}
+              resources={resources}
+              openId={resourceId}
+              onPlay={(r) => router.push(malaiLessonPath(subjectId, r.id, openChatKnown ? openChatId! : undefined))}
+              // The chat on its own: the same chat, with no resource open.
+              onClose={() => router.push(openChatKnown ? malaiChatPath(openChatId!) : malaiSubjectPath(subjectId))}
             />
           ) : undefined
         }

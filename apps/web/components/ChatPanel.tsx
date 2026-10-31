@@ -95,6 +95,8 @@ interface ChatPanelProps {
   headerActions?: ReactNode;
   /** After the Chat/Quiz tabs: the chat dropdown (chats from Malai's sidebar). */
   chatPicker?: ReactNode;
+  /** Beside the model picker under the input: the resources this chat reads. */
+  chooser?: ReactNode;
   /**
    * The chat (thread) picked in Malai's sidebar. Chats are managed there
    * only; without one the panel starts a new chat.
@@ -187,6 +189,7 @@ export default function ChatPanel({
   headerLead,
   headerActions,
   chatPicker,
+  chooser,
   openThreadId,
   onAsk,
   onTitled,
@@ -981,7 +984,10 @@ export default function ChatPanel({
             )}
           </div>
           </div>
-          <ModelModePicker className="mt-1 px-1" />
+          <div className="mt-1 flex flex-wrap items-center gap-2 px-1">
+            <ModelModePicker />
+            {chooser}
+          </div>
           {frameLatched && (
             <p className="mt-1.5 px-3 text-[11px] text-violet-700">
               Your next question will be answered from the frame on screen.

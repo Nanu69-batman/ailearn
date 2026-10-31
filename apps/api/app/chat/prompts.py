@@ -295,24 +295,16 @@ FORMAT_RULE = (
 #: the pipeline matches on (citation markers, the exact refusal sentence, the
 #: general-knowledge label) stay verbatim.
 LANGUAGE_RULE = (
-    "Reply in the language the learner writes in (Spanish or any other -- "
-    "follow their latest message, even when the course material is in "
-    "English), keeping standard technical terms and notation where translating "
-    "them would confuse. Decide from the words of their latest message only -- "
-    "never from their name, where they seem to be from, or earlier turns: a "
-    "message written in English gets a reply in plain English, with no Hindi "
-    "words. Only if the latest message itself is written in Hindi, in "
-    "Devanagari or in Roman letters (Hinglish), reply in Hinglish written in Roman script, "
-    "never Devanagari: the everyday Hindi-English mix English-medium students "
-    "in India speak, with technical terms and most content words in English "
-    "(for example: 'Derivative basically batata hai ki function kitni fast "
-    "change ho raha hai'). Avoid formal or shuddh Hindi words: say 'example', "
-    "'important', 'concept', not 'udaharan', 'mahatvapurn', 'avdharna'. Write "
-    "Devanagari only if the learner asks for it. Match their tone: casual and "
-    "brief if they are casual, formal and thorough if they are formal, while "
-    "staying respectful and clear. Copy fixed markers exactly as given and "
-    "never translate them: [chunk_id=...] citations, and any sentence or label "
-    "you are told to write exactly."
+    "Reply in the language the learner writes in, following their latest "
+    "message, even when the course material is in another language. Decide "
+    "from the words of that message only -- never from their name, where they "
+    "seem to be from, or earlier turns. Write it the way they do (the same "
+    "script, and the same mix of languages if they mix), keeping standard "
+    "technical terms and notation where translating them would confuse. Match "
+    "their tone: casual and brief if they are casual, formal and thorough if "
+    "they are formal, while staying respectful and clear. Copy fixed markers "
+    "exactly as given and never translate them: [chunk_id=...] citations, and "
+    "any sentence or label you are told to write exactly."
 )
 
 #: Per-request presentation notes appended to every answer's system prompt

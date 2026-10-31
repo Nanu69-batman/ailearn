@@ -11,10 +11,12 @@ export interface CitationBadgeProps {
    * span marked on the video's scrub bar.
    */
   openDoc?: { resourceId: string; onOpen: (citation: Citation) => void } | null;
+  // resourceId "*": every citation opens (the chat on its own opens the split view).
 }
 
 /** Chunk ids are `{resource_id}_c{n}_...`; a live frame is `live_{resource_id}_{ms}`. */
 function fromResource(citation: Citation, resourceId: string): boolean {
+  if (resourceId === "*") return true;
   const id = citation.chunk_id;
   return id.startsWith(`${resourceId}_c`) || id.startsWith(`live_${resourceId}_`);
 }
