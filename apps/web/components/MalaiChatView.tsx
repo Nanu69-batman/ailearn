@@ -786,6 +786,7 @@ export default function MalaiChatView() {
               sessionToken={quizChat.sessionToken}
               getCurrentTimeMs={() => 0}
               scope={quizScope}
+              subjectId={subject?.id ?? null}
               sourceNote={
                 subject
                   ? `From ${subject.name}: its documents and the videos you've marked done.`

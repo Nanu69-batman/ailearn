@@ -45,6 +45,8 @@ import { useDictation } from "./useDictation";
 import { useVoiceModels, type VoiceStartFields, type VoiceTurn } from "./useVoiceSession";
 
 interface ChatPanelProps {
+  /** The subject a quiz written here is saved under. */
+  subjectId?: string | null;
   sessionId: string;
   sessionToken: string;
   videoId: string;
@@ -146,6 +148,7 @@ function fmtMs(ms: number): string {
 }
 
 export default function ChatPanel({
+  subjectId = null,
   sessionId,
   sessionToken,
   videoId,
@@ -655,6 +658,7 @@ export default function ChatPanel({
           sessionId={sessionId}
           sessionToken={sessionToken}
           getCurrentTimeMs={getCurrentTimeMs}
+          subjectId={subjectId}
           scope={{ video_id: videoId, completed_resource_ids: completedResourceIds, thread_id: threadId }}
           sourceNote={`From this ${isVideo ? "video up to where you are" : "material"}${
             extraDone > 0 ? ` + ${extraDone} completed material${extraDone === 1 ? "" : "s"}` : ""

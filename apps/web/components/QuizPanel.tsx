@@ -14,6 +14,7 @@ import {
 } from "../lib/api";
 import CitationBadge, { type CitationBadgeProps } from "./CitationBadge";
 import { pushQuizAttempt } from "@/lib/activitySync";
+import { addAttempt, saveQuiz, type SavedQuiz } from "@/lib/quizStore";
 import MarkdownBody from "./MarkdownBody";
 import {
   MODEL_MODES,
@@ -63,11 +64,15 @@ interface QuizPanelProps {
   onFailed?: (request: string, message: string) => void;
   /** Every answer of the current quiz was submitted. */
   onFinished?: (outcome: QuizOutcome) => void;
+  /** The subject a new quiz is saved under (Resources > Quizzes). */
+  subjectId?: string | null;
+  /** Re-attempt this saved quiz: no form, attempts are added to it. */
+  saved?: SavedQuiz;
 }
 
 type Verdict = QuizGrade["verdict"];
 
-interface Result {
+export interface Result {
   verdict: Verdict;
   /** 0..1; partial credit only for subjective answers. */
   score: number;
@@ -143,16 +148,22 @@ export default function QuizPanel({
   onStarted,
   onFailed,
   onFinished,
+  subjectId = null,
+  saved,
 }: QuizPanelProps) {
   // The form. The count is kept as typed so the box can be cleared and retyped.
   const [countText, setCountText] = useState("5");
   const [types, setTypes] = useState<QuizQuestionType[]>(ALL_TYPES);
   const [prompt, setPrompt] = useState("");
-  const [formOpen, setFormOpen] = useState(true);
+  const [formOpen, setFormOpen] = useState(!saved);
   const [attempt, setAttempt] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [quiz, setQuiz] = useState<QuizResponse | null>(null);
+  const [quiz, setQuiz] = useState<QuizResponse | null>(
+    saved ? { questions: saved.questions, refused: false, current_time_ms: 0 } : null,
+  );
+  /** The saved quiz the shown one's attempts are recorded in. */
+  const savedId = useRef<string | null>(saved?.id ?? null);
   /** Settings the shown quiz was written with, for its summary line. */
   const [written, setWritten] = useState<{ count: number; types: QuizQuestionType[]; prompt: string } | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -235,6 +246,13 @@ export default function QuizPanel({
       } else {
         setQuiz(res);
         setWritten(settings);
+        savedId.current = saveQuiz({
+          subjectId,
+          sessionId,
+          sessionToken,
+          questions: res.questions,
+          title: settings.prompt.trim() || res.questions[0]?.prompt.slice(0, 80) || "Quiz",
+        });
         setFormOpen(false);
         if (request) onStarted?.(request, res.questions.length);
       }
@@ -279,6 +297,14 @@ export default function QuizPanel({
   useEffect(() => {
     if (!done || reported.current === attempt) return;
     reported.current = attempt;
+    if (savedId.current) {
+      addAttempt(savedId.current, {
+        answers,
+        results,
+        score: Math.round(score * 10) / 10,
+        total: questions.length,
+      });
+    }
     void pushQuizAttempt({
       resourceId: scope.video_id ?? null,
       subjectId: null,
@@ -438,14 +464,14 @@ export default function QuizPanel({
             {written ? ` · ${typesLabel(written.types)}` : ""}
             {written?.prompt.trim() ? ` · “${written.prompt.trim()}”` : ""}
           </p>
-          <button
+          {!saved && <button
             type="button"
             onClick={() => setFormOpen(true)}
             disabled={loading}
             className="shrink-0 rounded-lg border border-violet-200 bg-white px-3 py-1 text-xs font-medium text-violet-700 transition hover:bg-violet-50"
           >
             New quiz
-          </button>
+          </button>}
         </div>
       )}
 
@@ -507,7 +533,8 @@ export default function QuizPanel({
           {done && (
             <div className="rounded-xl border border-gray-200 bg-white p-3 text-center text-sm text-gray-700">
               Finished: <span className="font-semibold">{fmtNumber(Math.round(score * 10) / 10)}</span> out of{" "}
-              {questions.length}. Use <span className="font-medium">New quiz</span> for a different set.
+              {questions.length}.{" "}
+              {saved ? "Saved to this quiz's attempts." : <>Saved under Resources &gt; Quizzes. Use <span className="font-medium">New quiz</span> for a different set.</>}
             </div>
           )}
         </>
@@ -535,7 +562,7 @@ interface QuestionCardProps {
   openDoc?: CitationBadgeProps["openDoc"];
 }
 
-function QuestionCard({
+export function QuestionCard({
   n,
   q,
   answer,

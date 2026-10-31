@@ -907,6 +907,7 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
       )}
       <ChatPanel
         fill
+        subjectId={subjectId}
         sessionId={session.session_id}
         sessionToken={session.session_token}
         videoId={selected.resourceId}

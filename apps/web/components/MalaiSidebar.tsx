@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { deleteThread, renameThread, type Subject } from "@/lib/api";
 import { resourceIcon, resourceKindLabel, toSelected } from "@/lib/learn";
+import { quizPath, useSavedQuizzes } from "@/lib/quizStore";
 import {
   MALAI_PATH,
   chatDate,
@@ -344,6 +345,7 @@ function ResourcesFlyout({
   anchor,
   onClose,
   onOpen,
+  onOpenQuiz,
   onAdd,
 }: {
   subjectId: string;
@@ -351,11 +353,14 @@ function ResourcesFlyout({
   anchor: DOMRect;
   onClose: () => void;
   onOpen: (resourceId: string) => void;
+  onOpenQuiz: (quizId: string) => void;
   /** Opens the Add content dialog for this subject. */
   onAdd: () => void;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const { resources, state, error } = useSubjectResources(subjectId);
+  const quizzes = useSavedQuizzes().filter((q) => q.subjectId === subjectId);
+  const [quizzesOpen, setQuizzesOpen] = useState(false);
 
   useEffect(() => {
     function onPointer(e: MouseEvent) {
@@ -444,6 +449,45 @@ function ResourcesFlyout({
             );
           })
         )}
+        <div className="mt-1 border-t border-gray-100 pt-1">
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => setQuizzesOpen((v) => !v)}
+            aria-expanded={quizzesOpen}
+            className="flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition hover:bg-violet-50 focus:bg-violet-50 focus:outline-none"
+          >
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-violet-100 text-sm" aria-hidden="true">📝</span>
+            <span className="flex-1 text-sm font-medium text-gray-900">Quizzes</span>
+            <span className="text-xs tabular-nums text-gray-400">{quizzes.length}</span>
+            <Icon d={quizzesOpen ? "M18 15l-6-6-6 6" : "M6 9l6 6 6-6"} className="h-4 w-4 text-gray-400" />
+          </button>
+          {quizzesOpen &&
+            (quizzes.length === 0 ? (
+              <p className="px-3 py-2 text-xs text-gray-500">No quizzes yet. Quizzes you take in this subject are saved here.</p>
+            ) : (
+              quizzes.map((q) => {
+                const last = q.attempts[q.attempts.length - 1];
+                return (
+                  <button
+                    key={q.id}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => onOpenQuiz(q.id)}
+                    className="ml-4 flex w-[calc(100%-1rem)] items-center gap-2 rounded-xl px-2.5 py-1.5 text-left transition hover:bg-violet-50 focus:bg-violet-50 focus:outline-none"
+                  >
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm text-gray-900">{q.title}</span>
+                      <span className="block text-[11px] text-gray-500">
+                        {q.questions.length} questions · {q.attempts.length} attempt{q.attempts.length === 1 ? "" : "s"}
+                        {last ? ` · last ${last.score}/${last.total}` : ""}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })
+            ))}
+        </div>
       </div>
     </div>,
     document.body,
@@ -697,6 +741,7 @@ export default function MalaiSidebar({ collapsed, onToggleCollapse, onBack, onNa
               anchor={flyout.anchor}
               onClose={closeFlyout}
               onOpen={(rid) => go(malaiLessonPath(flyout.subjectId, rid))}
+              onOpenQuiz={(id) => go(quizPath(id))}
               onAdd={() => {
                 setAddSubject(flyout.subjectId);
                 setAddOpen(true);
