@@ -12,6 +12,7 @@ import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
+from app import devtrace
 from app.auth import AuthUser, get_current_user
 from app.chat.launch import (
     DEV_SECRET,
@@ -255,6 +256,8 @@ async def _answer(body: ChatRequest, *, voice: bool = False) -> ChatResponse:
     images = prompt_note(body.session_id, _resolve_thread(body.session_id, body.thread_id))
     style = "\n\n".join(p for p in (style_for(body.personalization, voice=voice), images) if p)
     note = style_note.set(style)
+    # As sent, before references narrow it: the trace's first event shows it.
+    sent = {**body.model_dump(mode="json"), "voice": voice}
     # The message names materials ("the pdf", "the video"): answer from those,
     # or ask for access when this chat cannot read any of them.
     locked_refs: list[str] = []
@@ -267,6 +270,7 @@ async def _answer(body: ChatRequest, *, voice: bool = False) -> ChatResponse:
     # Ask-first: hold this turn's saving until we know whether the refusal is
     # replaced by a question to the learner.
     held = deferred_turns.set([]) if body.ask_first and not voice else None
+    traced = devtrace.set_request(sent)
     try:
         resp = await service.chat(
             session_id=body.session_id,
@@ -326,6 +330,7 @@ async def _answer(body: ChatRequest, *, voice: bool = False) -> ChatResponse:
     finally:
         if held is not None:
             deferred_turns.reset(held)
+        devtrace.reset_request(traced)
         style_note.reset(note)
 
 

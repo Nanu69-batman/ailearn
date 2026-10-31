@@ -46,7 +46,7 @@ async def _traced(label: str, impl, *, system: str, user_prompt: str, passages: 
             "passages_in_prompt": len(passages),
             "passage_ids": [getattr(p, "chunk_id", None) for p in list(passages)[:10]],
             "prompt_chars": len(system) + len(user_prompt),
-            "prompt_tail": devtrace.preview(user_prompt[-400:], 240),
+            "prompt": {"system": system, "user": user_prompt},
         },
     ) as out:
         result = await impl(system=system, user_prompt=user_prompt, passages=passages, mode=mode)
@@ -54,7 +54,7 @@ async def _traced(label: str, impl, *, system: str, user_prompt: str, passages: 
             # A provider that does not stream (the stub, a cache hit) still
             # shows its reply, all at once.
             sink.delta(result.text)
-        out["reply"] = devtrace.preview(result.text, 260)
+        out["reply"] = result.text
         out["cited_ids"] = list(result.cited_ids)[:10]
         return result
 

@@ -269,6 +269,8 @@ export default function DevConsole() {
     quiz: null,
   });
   const [selectedStep, setSelectedStep] = useState<string | null>(null);
+  /** An event picked in the log: the inspector shows that call of its step. */
+  const [pickedSeq, setPickedSeq] = useState<number | null>(null);
   const [follow, setFollow] = useState(true);
   const [where, setWhere] = useState<WhereMap>({});
   const [agentOn, setAgentOn] = useState(false);
@@ -734,7 +736,10 @@ export default function DevConsole() {
                   state={run?.nodes[n.id]}
                   sub={run?.nodes[n.id]?.events.at(-1)?.where ?? (n.role ? where[n.role] : undefined)}
                   selected={focusStep === n.id}
-                  onClick={() => setSelectedStep(n.id)}
+                  onClick={() => {
+                    setSelectedStep(n.id);
+                    setPickedSeq(null);
+                  }}
                 />
               ))}
 
@@ -766,11 +771,19 @@ export default function DevConsole() {
               </div>
             )}
           </div>
-          <EventLog run={run} focus={focusStep} onPick={setSelectedStep} />
+          <EventLog
+            run={run}
+            focus={focusStep}
+            pickedSeq={pickedSeq}
+            onPick={(step, seq) => {
+              setSelectedStep(step);
+              setPickedSeq(seq);
+            }}
+          />
         </section>
 
         <aside className="flex min-h-0 flex-col rounded-xl border border-[var(--dev-border)] bg-[var(--dev-panel)]">
-          <Inspector def={focusDef} step={focusStep} state={focusNode} run={run} />
+          <Inspector def={focusDef} step={focusStep} state={focusNode} run={run} pickedSeq={pickedSeq} onPickSeq={setPickedSeq} />
         </aside>
       </div>
     </div>
@@ -1060,11 +1073,13 @@ function RunBar({
 function EventLog({
   run,
   focus,
+  pickedSeq,
   onPick,
 }: {
   run?: RunState;
   focus: string | null;
-  onPick: (step: string) => void;
+  pickedSeq: number | null;
+  onPick: (step: string, seq: number) => void;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const count = run?.events.length ?? 0;
@@ -1082,9 +1097,9 @@ function EventLog({
           <button
             key={ev.seq}
             type="button"
-            onClick={() => onPick(ev.step)}
+            onClick={() => onPick(ev.step, ev.seq)}
             className={`dev-in flex w-full items-center gap-3 rounded px-2 py-1 text-left hover:bg-[var(--dev-chip)] ${
-              focus === ev.step ? "bg-[var(--dev-chip)]" : ""
+              pickedSeq === ev.seq ? "bg-[var(--dev-accent-soft)]" : focus === ev.step ? "bg-[var(--dev-chip)]" : ""
             }`}
           >
             <span className="w-14 shrink-0 text-[var(--dev-faint)]">+{(ev.ts - run.startedAt).toFixed(2)}s</span>
@@ -1117,11 +1132,15 @@ function Inspector({
   step,
   state,
   run,
+  pickedSeq = null,
+  onPickSeq,
 }: {
   def?: DiagramNode;
   step: string | null;
   state?: NodeState;
   run?: RunState;
+  pickedSeq?: number | null;
+  onPickSeq?: (seq: number) => void;
 }) {
   if (!step || !state) {
     return (
@@ -1131,15 +1150,18 @@ function Inspector({
       </div>
     );
   }
-  // The latest invocation: its start event's inputs plus its end event's outputs.
-  const evs = state.events;
-  const lastIdx = evs.length - 1;
-  let startIdx = lastIdx;
-  while (startIdx > 0 && evs[startIdx].phase !== "start") startIdx--;
-  const inv = evs.slice(evs[startIdx].phase === "start" ? startIdx : lastIdx);
+  // Each call of the step: its start event's inputs plus its end event's
+  // outputs. The one picked in the event log, else the latest.
+  const calls = invocations(state.events);
+  let callIdx = calls.length - 1;
+  if (pickedSeq !== null) {
+    const i = calls.findIndex((c) => c.some((e) => e.seq === pickedSeq));
+    if (i >= 0) callIdx = i;
+  }
+  const inv = calls[callIdx];
   const merged: Record<string, unknown> = {};
   for (const ev of inv) Object.assign(merged, ev.data);
-  const last = evs[lastIdx];
+  const last = inv[inv.length - 1];
   const T = run?.events.find((e) => e.step === "request")?.data.T_ms;
   return (
     <div key={`${step}-${last.seq}`} className="dev-in flex min-h-0 flex-1 flex-col">
@@ -1163,14 +1185,48 @@ function Inspector({
           {state.count > 1 && (
             <span className="rounded-full bg-[var(--dev-accent-soft)] px-2 py-0.5 text-[var(--dev-accent-text)]">ran ×{state.count}</span>
           )}
+          {last.ms != null && calls.length > 1 && (
+            <span className="rounded-full bg-[var(--dev-chip)] px-2 py-0.5 text-[var(--dev-text-2)]">
+              this call ⏱ {last.ms >= 1000 ? `${(last.ms / 1000).toFixed(2)} s` : `${Math.round(last.ms)} ms`}
+            </span>
+          )}
           {typeof T === "number" && (
             <span className="rounded-full bg-[var(--dev-warn-soft)] px-2 py-0.5 text-[var(--dev-warn)]">T = {fmtMs(T)}</span>
           )}
         </div>
       </div>
+      {calls.length > 1 && (
+        <div className="flex flex-wrap gap-1 border-b border-[var(--dev-border)] px-4 py-2">
+          {calls.map((c, i) => (
+            <button
+              key={c[0].seq}
+              type="button"
+              onClick={() => onPickSeq?.(c[0].seq)}
+              title={c[0].title}
+              className={`rounded px-2 py-0.5 text-[11px] font-medium ${
+                i === callIdx
+                  ? "bg-[var(--dev-accent-soft)] text-[var(--dev-accent-text)]"
+                  : "bg-[var(--dev-chip)] text-[var(--dev-text-2)] hover:text-[var(--dev-strong)]"
+              }`}
+            >
+              Call {i + 1}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         <DataView data={merged} T={typeof T === "number" ? T : undefined} />
       </div>
     </div>
   );
+}
+
+/** A step's events split into calls: each begins at a "start" event. */
+function invocations(evs: TraceEvent[]): TraceEvent[][] {
+  const out: TraceEvent[][] = [];
+  for (const ev of evs) {
+    if (ev.phase === "start" || out.length === 0) out.push([ev]);
+    else out[out.length - 1].push(ev);
+  }
+  return out;
 }

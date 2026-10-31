@@ -3,8 +3,9 @@
 Every ingest, chat answer and quiz is a *run*: a sequence of step events
 ("transcribe started", "retrieved 8 passages", "citations validated") that the
 web app's developer window polls and animates. The events describe what the
-pipeline did and the data it carried -- ids, timestamps, counts, short text
-previews -- never keys, prompts in full, or anything from ``.env``.
+pipeline did and the data it carried -- ids, timestamps, counts, the request
+as sent, and each model call's full prompt and reply -- never keys or anything
+from ``.env``.
 
 Recording is a courtesy, like ingest progress: no call in this module may
 raise into the pipeline it is observing. Events live in a bounded in-process
@@ -43,6 +44,18 @@ class Run:
 
 
 _RUN: contextvars.ContextVar[Run | None] = contextvars.ContextVar("devtrace_run", default=None)
+#: The request body as the route received it, shown on the run's first event.
+_REQUEST: contextvars.ContextVar[dict | None] = contextvars.ContextVar("devtrace_request", default=None)
+
+
+def set_request(body: dict | None) -> contextvars.Token:
+    """Attach the incoming request body to the next run started here."""
+    return _REQUEST.set(body)
+
+
+def reset_request(token: contextvars.Token) -> None:
+    with contextlib.suppress(Exception):
+        _REQUEST.reset(token)
 
 
 def enabled() -> bool:
@@ -162,7 +175,8 @@ def start_run(flow: str, course_id: str | None, *, run_id: str | None = None,
     """Make a new run current in this context and emit its opening event."""
     run = Run(run_id=run_id or f"{flow}_{uuid.uuid4().hex[:10]}", flow=flow, course_id=course_id)
     token = _RUN.set(run)
-    emit("request", "start", title=title, data=data)
+    body = _REQUEST.get()
+    emit("request", "start", title=title, data={**(data or {}), **({"request": body} if body else {})})
     return token
 
 

@@ -112,3 +112,17 @@ def test_done_video_till_watched_is_gated_at_its_limit(chroma_store, embedder):
         resource_limits_ms={"res_done": 1_000_000},
     ))
     assert "done_late" not in llm.seen  # ends at 3_000_000 > the 1_000_000 limit
+
+
+def test_agent_prompt_without_a_player_has_no_playhead():
+    """A Malai chat (no video open, T=0) must not tell the model the learner
+    paused at 0:00: it then refused the done-video passages it was handed."""
+    from app.chat.agent import build_agent_system
+    from app.chat.prompts import LANGUAGE_RULE
+
+    system = build_agent_system(0, "qa", has_done=True, has_player=False)
+    assert "paused" not in system
+    assert "watched range is 0 to 0" not in system
+    assert "No lesson video is open" in system
+    assert LANGUAGE_RULE in system
+    assert "paused the lesson video at 1:00" in build_agent_system(60_000, "qa")

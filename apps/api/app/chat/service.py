@@ -315,11 +315,16 @@ class ChatService:
             session.course_id if session is not None else None,
             title="Learner asks the AI tutor",
             data={
-                "question": devtrace.preview(message, 300),
+                "question": message,
                 "T_ms": current_time_ms,
                 "mode": mode,
                 "open_material": focus_resource_id,
-                "materials_done": list(completed_resource_ids)[:8],
+                "materials_done": list(completed_resource_ids),
+                "chat_scope": None if scope_resource_ids is None else list(scope_resource_ids),
+                "limits_ms": resource_limits_ms or {},
+                "general": general,
+                "ask_first": ask_first,
+                "fast": fast,
                 "live_frame": live_frame is not None,
             },
         )
@@ -350,7 +355,7 @@ class ChatService:
                 "refused": resp.refused,
                 "mode": resp.mode,
                 "grounded": resp.grounded,
-                "answer": devtrace.preview(resp.answer, 400),
+                "answer": resp.answer,
                 "citations": [
                     {
                         "chunk_id": c.chunk_id,

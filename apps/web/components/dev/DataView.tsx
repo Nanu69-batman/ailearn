@@ -18,7 +18,13 @@ const LABELS: Record<string, string> = {
   query: "Query",
   reply: "Model reply",
   answer: "Answer",
-  prompt_tail: "End of prompt",
+  prompt: "Prompt sent to the model",
+  request: "Request as sent",
+  result: "Tool result",
+  system: "System prompt",
+  user: "User message",
+  content: "Content",
+  tool_calls: "Tool calls",
   rule: "Rule",
   filter: "Filter",
   verdict: "Verdict",
@@ -89,7 +95,11 @@ function Value({
       );
     }
     if (v.length > 60)
-      return <p className="rounded-md border border-[var(--dev-border-soft)] bg-[var(--dev-inset)] p-2 text-[12.5px] leading-relaxed text-[var(--dev-text)]">{v}</p>;
+      return (
+        <p className="max-h-96 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-[var(--dev-border-soft)] bg-[var(--dev-inset)] p-2 text-[12.5px] leading-relaxed text-[var(--dev-text)]">
+          {v}
+        </p>
+      );
     return <span className="text-sm text-[var(--dev-text)]">{v}</span>;
   }
   if (Array.isArray(v)) {
