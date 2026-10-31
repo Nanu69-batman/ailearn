@@ -229,6 +229,11 @@ def create_lms_session(
     )
 
 
+def _user_id(request: Request) -> str | None:
+    user = get_current_user(request)
+    return user.id if user is not None else None
+
+
 def _check_owner(session, request: Request) -> None:
     """404 when the session belongs to a different signed-in user.
 
@@ -243,8 +248,18 @@ def _check_owner(session, request: Request) -> None:
 
 
 def _require_session_token(
-    *, secret: str, session_id: str, learner_id: str, token: str | None
+    *,
+    secret: str,
+    session_id: str,
+    learner_id: str,
+    token: str | None,
+    owner_id: str | None = None,
+    user_id: str | None = None,
 ) -> None:
+    # A signed-in learner (Google or email) reaches their own sessions by login
+    # alone; the launch token is only for sessions with no owner (signed out).
+    if owner_id is not None and owner_id == user_id:
+        return
     if not verify_session_token(secret, session_id, learner_id, token):
         log.warning("session token verification failed")
         raise HTTPException(status_code=401, detail="invalid launch")
@@ -264,6 +279,8 @@ def _authorize_chat(body: ChatRequest, request: Request) -> None:
         secret=settings.lms_launch_secret,
         session_id=session.id,
         learner_id=session.learner_id,
+        owner_id=getattr(session, "owner_id", None),
+        user_id=_user_id(request),
         token=body.session_token,
     )
     _use_thread(session.id, body.thread_id)
@@ -482,6 +499,8 @@ def _authed_session(session_id: str, request: Request, session_token: str | None
         secret=settings.lms_launch_secret,
         session_id=session.id,
         learner_id=session.learner_id,
+        owner_id=getattr(session, "owner_id", None),
+        user_id=_user_id(request),
         token=token,
     )
     return session
@@ -658,6 +677,8 @@ async def post_chat_live_frame(
         secret=settings.lms_launch_secret,
         session_id=session.id,
         learner_id=session.learner_id,
+        owner_id=getattr(session, "owner_id", None),
+        user_id=_user_id(request),
         token=token,
     )
     _use_thread(session.id, thread_id)

@@ -124,7 +124,9 @@ function ChatMenu({
     onDeleted();
   }
 
-  return (
+  // Portalled to <body>: opening to the right puts it over the page, which
+  // would otherwise sit above the sidebar's layer and take the clicks.
+  return createPortal(
     <div
       ref={ref}
       role="menu"
@@ -236,7 +238,8 @@ function ChatMenu({
           </div>
         </div>
       )}
-    </div>
+    </div>,
+    document.body,
   );
 }
 

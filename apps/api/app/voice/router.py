@@ -172,6 +172,8 @@ async def _authorize(ws: WebSocket, start: _StartBase, *, thread_id: str | None 
             session_id=session.id,
             learner_id=session.learner_id,
             token=start.session_token,
+            owner_id=owner,
+            user_id=user.id if user is not None else None,
         )
     except HTTPException:
         await _close(ws, 4401, "invalid launch")
