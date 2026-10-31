@@ -182,6 +182,8 @@ export interface ChatRequest {
   suggest_resource_ids?: string[];
   /** Ask before answering from general knowledge (see offer_general). */
   ask_first?: boolean;
+  /** Materials the message names ("the pdf", "the video"). */
+  referenced_resource_ids?: string[];
 }
 
 export type CitationSourceType =

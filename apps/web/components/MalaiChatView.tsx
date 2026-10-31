@@ -22,6 +22,7 @@ import {
   draftAllowanceKey,
   effectiveAllowance,
   mentionedResourceIds,
+  referencedResourceIds,
   setChatAllowed,
   setSubjectCompletion,
   useChatAllowances,
@@ -526,7 +527,13 @@ export default function MalaiChatView() {
           // A subject chat asks before answering from general knowledge
           // (unless the learner just said yes to that).
           ...(subject
-            ? { suggest_resource_ids: subjectIds.filter((id) => !allowed.includes(id)), ask_first: !allowGeneral }
+            ? {
+                suggest_resource_ids: subjectIds.filter((id) => !allowed.includes(id)),
+                ask_first: !allowGeneral,
+                // "the pdf", "the Pravin Chandra notes": answered from those,
+                // or the server asks for access at once.
+                referenced_resource_ids: referencedResourceIds(text, subjectResources).slice(0, 64),
+              }
             : {}),
         };
         return streamChat(req, {

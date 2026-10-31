@@ -243,6 +243,23 @@ def build_agent_system(t_ms: int, mode: str, *, has_done: bool = False) -> str:
     )
 
 
+#: The agent's tool names, for spotting a call written out as the reply.
+TOOL_NAMES = ("search_lesson", "get_lesson_content")
+
+
+def looks_like_tool_text(text: str) -> bool:
+    """True for a reply that is really a tool call: a bare tool name, a call
+    like ``search_lesson(query=...)``, or a JSON object naming a tool."""
+    t = text.strip().strip("`*\"' \n").lower()
+    if not t or len(t) > 400:
+        return False
+    if any(t.startswith(n) for n in TOOL_NAMES):
+        return True
+    return bool(re.fullmatch(r"\{.*\"(?:name|tool|function)\"\s*:.*\}", t, re.DOTALL)) and any(
+        n in t for n in TOOL_NAMES
+    )
+
+
 class LessonAgent:
     """One agent turn over time-gated tools. Stateless across turns."""
 
@@ -645,6 +662,11 @@ class LessonAgent:
 
         if not text:
             raise AgentUnavailableError("agent produced no answer")
+        if looks_like_tool_text(text):
+            # Some models write the call ("search_lesson", a JSON blob) as the
+            # reply instead of making it. Never shown: the classic path answers.
+            log.warning("agent: wrote a tool call as its reply; falling back")
+            raise AgentUnavailableError("agent wrote a tool call as text")
         with devtrace.span(
             "validate", title="Validate citations",
             data={"retrieved_ids": list(seen)[:20], "retrieved": len(seen)},

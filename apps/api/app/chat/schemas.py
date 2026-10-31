@@ -99,6 +99,14 @@ class ChatRequest(BaseModel):
     #: an answer from general knowledge (``offer_general``). Sending the same
     #: question again without this flag is the learner's "yes".
     ask_first: bool = False
+    #: Materials the message refers to by name or kind ("the Pravin Chandra
+    #: pdf", "the video"), resolved by the client from the subject's list.
+    #: None readable here -> ask for access straight away; some readable ->
+    #: the answer is drawn from those only. Intersected with the session
+    #: grant like every other id list: it can narrow, never widen.
+    referenced_resource_ids: list[Annotated[str, Field(max_length=64)]] = Field(
+        default_factory=list, max_length=64
+    )
     #: The learner's personalization, applied as a style note to the prompt.
     personalization: Personalization | None = None
 

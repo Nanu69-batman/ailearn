@@ -1009,6 +1009,7 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
           malai && chatKey ? resources.map((r) => r.id).filter((id) => id !== resourceId && !completedIds.includes(id)) : []
         }
         resourceTitle={(id) => resources.find((r) => r.id === id)?.title ?? id}
+        subjectMaterials={resources}
         subjectName={subject?.name ?? "this subject"}
         onAllowAccess={
           malai && chatKey && subjectId

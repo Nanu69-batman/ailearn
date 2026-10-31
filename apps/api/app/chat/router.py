@@ -255,6 +255,15 @@ async def _answer(body: ChatRequest, *, voice: bool = False) -> ChatResponse:
     images = prompt_note(body.session_id, _resolve_thread(body.session_id, body.thread_id))
     style = "\n\n".join(p for p in (style_for(body.personalization, voice=voice), images) if p)
     note = style_note.set(style)
+    # The message names materials ("the pdf", "the video"): answer from those,
+    # or ask for access when this chat cannot read any of them.
+    locked_refs: list[str] = []
+    if body.referenced_resource_ids:
+        early, body, locked_refs = _apply_references(body)
+        if early is not None:
+            style_note.reset(note)
+            service._persist(body.session_id, body.message, early.answer, [])
+            return early
     # Ask-first: hold this turn's saving until we know whether the refusal is
     # replaced by a question to the learner.
     held = deferred_turns.set([]) if body.ask_first and not voice else None
@@ -285,6 +294,9 @@ async def _answer(body: ChatRequest, *, voice: bool = False) -> ChatResponse:
             if resp.refused and not resp.scope_empty and not resp.processing_pending:
                 resp = await _ask_learner(body)
                 turns = [(body.session_id, body.message, resp.answer, [])]
+            elif locked_refs:
+                # Answered from the readable ones; offer the rest it named.
+                resp.suggested_resource_ids = locked_refs[:3]
             for sid, user_text, answer, cites in turns:
                 service._persist(sid, user_text, answer, cites)
             return resp
@@ -312,6 +324,46 @@ async def _answer(body: ChatRequest, *, voice: bool = False) -> ChatResponse:
         if held is not None:
             deferred_turns.reset(held)
         style_note.reset(note)
+
+
+def _apply_references(body: ChatRequest) -> tuple[ChatResponse | None, ChatRequest, list[str]]:
+    """Act on the materials the message names.
+
+    Returns (an immediate "give access?" reply or None, the request to answer
+    -- narrowed to the named readable materials when it has a subject scope --,
+    the named materials this chat cannot read).
+    """
+    session = session_store.get(body.session_id)
+    if session is None:
+        return None, body, []
+    granted = set(session.resource_scope)
+    refs = [r for r in dict.fromkeys(body.referenced_resource_ids) if r in granted]
+    if body.scope_resource_ids is not None:
+        readable = set(body.scope_resource_ids)
+    else:
+        readable = set(body.completed_resource_ids) | ({body.video_id} if body.video_id else set())
+    ref_readable = [r for r in refs if r in readable]
+    ref_locked = [r for r in refs if r not in readable]
+    if ref_locked and not ref_readable and body.ask_first:
+        return (
+            ChatResponse(
+                answer=(
+                    "That's in a material this chat can't read yet. Want to give it access? "
+                    "Then I'll answer from it."
+                ),
+                refused=False, mode="conversational", grounded=False,
+                suggested_resource_ids=ref_locked[:3],
+            ),
+            body,
+            ref_locked,
+        )
+    if ref_readable and body.scope_resource_ids is not None:
+        keep = set(ref_readable)
+        body = body.model_copy(update={
+            "scope_resource_ids": ref_readable,
+            "completed_resource_ids": [r for r in body.completed_resource_ids if r in keep],
+        })
+    return None, body, ref_locked
 
 
 async def _ask_learner(body: ChatRequest) -> ChatResponse:

@@ -358,3 +358,31 @@ export function mentionedResourceIds(
   }
   return out;
 }
+
+/** Words that refer to a kind of material ("the pdf", "that video"). */
+const KIND_WORDS: ReadonlyArray<{ kind: "video" | "pdf" | "pptx" | "image"; re: RegExp }> = [
+  { kind: "video", re: /\b(videos?|clips?|recordings?|youtube|lecture videos?)\b/i },
+  { kind: "pdf", re: /\b(pdfs?|documents?|docs?|textbooks?|books?|notes)\b/i },
+  { kind: "pptx", re: /\b(slides?|ppts?|pptx|presentations?|decks?)\b/i },
+  { kind: "image", re: /\b(images?|pictures?|photos?|diagrams?|screenshots?)\b/i },
+];
+
+function kindOf(r: { type?: string | null; provider?: string | null }): string | null {
+  if (r.provider === "youtube") return "video";
+  return r.type ?? null;
+}
+
+/**
+ * The materials a message refers to: by title first ("the Pravin Chandra
+ * pdf"); failing that, by kind ("the video" -> the subject's videos).
+ */
+export function referencedResourceIds(
+  message: string,
+  resources: ReadonlyArray<{ id: string; title?: string | null; type?: string | null; provider?: string | null }>,
+): string[] {
+  const byTitle = mentionedResourceIds(message, resources);
+  if (byTitle.length) return byTitle;
+  const kinds = KIND_WORDS.filter((k) => k.re.test(message)).map((k) => k.kind);
+  if (kinds.length === 0) return [];
+  return resources.filter((r) => kinds.includes(kindOf(r) as (typeof kinds)[number])).map((r) => r.id);
+}

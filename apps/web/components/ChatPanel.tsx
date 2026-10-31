@@ -19,7 +19,7 @@ import { mockChatAnswer, mockHistory } from "../lib/fixtures";
 import { LEARNER_NAME } from "../lib/learn";
 import MessageList from "./MessageList";
 import { AccessPrompt, GeneralPrompt } from "./ResourceChecklist";
-import { mentionedResourceIds } from "../lib/progress";
+import { mentionedResourceIds, referencedResourceIds } from "../lib/progress";
 import type { CitationBadgeProps } from "./CitationBadge";
 import {
   SlashMenuList,
@@ -76,6 +76,8 @@ interface ChatPanelProps {
   resourceTitle?: (id: string) => string;
   subjectName?: string;
   onAllowAccess?: (ids: string[], forSubject: boolean) => void;
+  /** The subject's materials (title and kind), to tell which ones a question names. */
+  subjectMaterials?: ReadonlyArray<{ id: string; title?: string | null; type?: string | null; provider?: string | null }>;
   offline: boolean;
   onRejoin?: () => void;
   /**
@@ -172,6 +174,7 @@ export default function ChatPanel({
   resourceTitle = (id: string) => id,
   subjectName = "this subject",
   onAllowAccess,
+  subjectMaterials = [],
   offline,
   onRejoin,
   fill = false,
@@ -503,7 +506,13 @@ export default function ChatPanel({
                 completed_resource_ids: completedResourceIds,
                 // In a Malai lesson chat, ask before answering from general
                 // knowledge (unless the learner just said yes to that).
-                ...(onAllowAccess ? { suggest_resource_ids: suggestResourceIds, ask_first: !allowGeneral } : {}),
+                ...(onAllowAccess
+                  ? {
+                      suggest_resource_ids: suggestResourceIds,
+                      ask_first: !allowGeneral,
+                      referenced_resource_ids: referencedResourceIds(text, subjectMaterials).slice(0, 64),
+                    }
+                  : {}),
               },
               {
                 onStatus: (status) => setPreview((p) => ({ status, text: p?.text ?? "" })),
