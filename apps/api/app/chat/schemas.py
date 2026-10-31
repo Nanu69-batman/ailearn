@@ -107,6 +107,11 @@ class ChatRequest(BaseModel):
     referenced_resource_ids: list[Annotated[str, Field(max_length=64)]] = Field(
         default_factory=list, max_length=64
     )
+    #: Videos among ``completed_resource_ids`` granted only "till you've
+    #: watched": read through the strict gate at this ms instead of in full.
+    resource_limits_ms: dict[
+        Annotated[str, Field(max_length=64)], Annotated[int, Field(ge=0, le=MAX_CURRENT_TIME_MS)]
+    ] = Field(default_factory=dict, max_length=256)
     #: The learner's personalization, applied as a style note to the prompt.
     personalization: Personalization | None = None
 

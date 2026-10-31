@@ -101,3 +101,14 @@ def test_malai_chat_without_a_player_reads_done_videos(chroma_store, embedder):
     assert "done_late" in llm.seen
     assert "done_noend" not in llm.seen  # unknown end: still excluded
     assert "open_early" not in llm.seen  # not in this chat's scope
+
+
+def test_done_video_till_watched_is_gated_at_its_limit(chroma_store, embedder):
+    """A video granted "till you've watched" reads only up to that point."""
+    service, sid, llm = _setup(chroma_store, embedder)
+    asyncio.run(service.chat(
+        session_id=sid, current_time_ms=0, message="what is a partial derivative",
+        completed_resource_ids=["res_done"], scope_resource_ids=["res_done"],
+        resource_limits_ms={"res_done": 1_000_000},
+    ))
+    assert "done_late" not in llm.seen  # ends at 3_000_000 > the 1_000_000 limit

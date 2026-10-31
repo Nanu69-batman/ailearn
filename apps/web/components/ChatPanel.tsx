@@ -75,7 +75,11 @@ interface ChatPanelProps {
   /** Title of a suggested material, for the access prompt. */
   resourceTitle?: (id: string) => string;
   subjectName?: string;
-  onAllowAccess?: (ids: string[], forSubject: boolean) => void;
+  onAllowAccess?: (ids: string[], forSubject: boolean, tillWatched: boolean) => void;
+  /** Videos granted "till you've watched": read limits (ms) for the request. */
+  getResourceLimits?: () => Record<string, number>;
+  /** How far the first suggested video has been watched; null when none is a video. */
+  videoWatchedMs?: (ids: string[]) => number | null;
   /** The subject's materials (title and kind), to tell which ones a question names. */
   subjectMaterials?: ReadonlyArray<{ id: string; title?: string | null; type?: string | null; provider?: string | null }>;
   offline: boolean;
@@ -175,6 +179,8 @@ export default function ChatPanel({
   subjectName = "this subject",
   onAllowAccess,
   subjectMaterials = [],
+  getResourceLimits,
+  videoWatchedMs,
   offline,
   onRejoin,
   fill = false,
@@ -520,6 +526,7 @@ export default function ChatPanel({
                       suggest_resource_ids: suggestResourceIds,
                       ask_first: !allowGeneral,
                       referenced_resource_ids: referencedResourceIds(text, subjectMaterials).slice(0, 64),
+                      resource_limits_ms: getResourceLimits?.() ?? {},
                     }
                   : {}),
               },
@@ -824,13 +831,14 @@ export default function ChatPanel({
                     <AccessPrompt
                       titles={accessAsk.ids.map(resourceTitle)}
                       subjectName={subjectName}
-                      onAllowChat={() => {
-                        onAllowAccess(accessAsk.ids, false);
+                      videoWatchedMs={videoWatchedMs?.(accessAsk.ids) ?? null}
+                      onAllowChat={(till) => {
+                        onAllowAccess(accessAsk.ids, false, till);
                         setResend({ text: accessAsk.text, allowGeneral: false });
                         setAccessAsk(null);
                       }}
-                      onAllowSubject={() => {
-                        onAllowAccess(accessAsk.ids, true);
+                      onAllowSubject={(till) => {
+                        onAllowAccess(accessAsk.ids, true, till);
                         setResend({ text: accessAsk.text, allowGeneral: false });
                         setAccessAsk(null);
                       }}

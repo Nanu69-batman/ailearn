@@ -12,9 +12,9 @@ from app import devtrace
 from app.chat import streaming
 from app.chat.completed import (
     COMPLETED_K,
-    COMPLETED_T_MS,
     completed_scope,
     merge_completed,
+    retrieve_done,
 )
 from app.chat.intent import (
     COVERAGE_QUERY,
@@ -292,6 +292,7 @@ class ChatService:
         general: bool = False,
         fast: bool = False,
         ask_first: bool = False,
+        resource_limits_ms: dict[str, int] | None = None,
     ) -> ChatResponse:
         """Answer one learner question; flags ``visual_pending`` when visuals lag.
 
@@ -337,6 +338,7 @@ class ChatService:
                 general=general,
                 fast=fast,
                 ask_first=ask_first,
+                resource_limits_ms=resource_limits_ms,
             )
         except BaseException as exc:
             devtrace.end_run(token, "error", data={"error": type(exc).__name__})
@@ -382,6 +384,7 @@ class ChatService:
         general: bool = False,
         fast: bool = False,
         ask_first: bool = False,
+        resource_limits_ms: dict[str, int] | None = None,
     ) -> ChatResponse:
         """Answer one learner question.
 
@@ -497,7 +500,9 @@ class ChatService:
             and intent != SMALLTALK
             and has_subject_content(message)
             and not is_supplemental_request(message)
-            and not await self._anything_readable(session, message, allowed, done, t_ms, focus_resource_id)
+            and not await self._anything_readable(
+                session, message, allowed, done, t_ms, focus_resource_id, resource_limits_ms
+            )
         ):
             # Nothing this chat can read matches: the route asks the learner
             # now, instead of after an agent run that ends in a general
@@ -533,6 +538,7 @@ class ChatService:
                 no_frame_note=no_frame_note,
                 intent=intent,
                 ask_first=ask_first,
+                limits=resource_limits_ms,
             )
             if resp is not None:
                 return resp
@@ -610,8 +616,8 @@ class ChatService:
         if done:
             # Its own retrieval, so the open material's gate and ranking are
             # untouched; `retrieve` asserts no leakage at COMPLETED_T_MS.
-            extra = await retrieval.retrieve(
-                rewritten, session.course_id, done, COMPLETED_T_MS, k=COMPLETED_K
+            extra = await retrieve_done(
+                retrieval, rewritten, session.course_id, done, resource_limits_ms, k=COMPLETED_K
             )
             passages = merge_completed(passages, extra)
 
@@ -898,6 +904,7 @@ class ChatService:
         done: Sequence[str] = (),
         intent: str | None = None,
         ask_first: bool = False,
+        limits: dict[str, int] | None = None,
     ) -> ChatResponse | None:
         """One agentic turn, or ``None`` to fall back to the classic pipeline.
 
@@ -926,6 +933,7 @@ class ChatService:
                     course_id=session.course_id,
                     allowed=allowed,
                     done=list(done),
+                    limits=limits,
                     focus_resource_id=focus_resource_id,
                     store=self._store,
                     retrieval=self._retrieval(),
@@ -969,7 +977,7 @@ class ChatService:
 
     async def _anything_readable(
         self, session, message: str, allowed: list[str], done: Sequence[str],
-        t_ms: int, focus_resource_id: str | None,
+        t_ms: int, focus_resource_id: str | None, limits: dict[str, int] | None = None,
     ) -> bool:
         """Does any passage this request may read match the question at all?
 
@@ -985,8 +993,8 @@ class ChatService:
             if apply_strict_timestamp(found, t_ms, "qa"):
                 return True
             if done:
-                extra = await retrieval.retrieve(
-                    message, session.course_id, list(done), COMPLETED_T_MS, k=4
+                extra = await retrieve_done(
+                    retrieval, message, session.course_id, list(done), limits, k=4
                 )
                 return bool(extra)
             return False

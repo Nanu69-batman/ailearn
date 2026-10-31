@@ -22,7 +22,11 @@ import {
   draftAllowanceKey,
   effectiveAllowance,
   mentionedResourceIds,
+  readLimitsMs,
+  readWatch,
   referencedResourceIds,
+  setWatchLimited,
+  subjectLimitKey,
   setChatAllowed,
   setSubjectCompletion,
   useChatAllowances,
@@ -537,6 +541,8 @@ export default function MalaiChatView() {
           // (unless the learner just said yes to that).
           ...(subject
             ? {
+                // Videos granted "till you've watched": read up to that point.
+                resource_limits_ms: readLimitsMs(c.id, subject.id, allowed),
                 suggest_resource_ids: subjectIds.filter((id) => !allowed.includes(id)),
                 ask_first: !allowGeneral,
                 // "the pdf", "the Pravin Chandra notes": answered from those,
@@ -664,10 +670,17 @@ export default function MalaiChatView() {
     void send(resend.text, resend.allowGeneral, true);
   }, [resend, send]);
 
-  const allowAccess = (forSubject: boolean): void => {
+  const allowAccess = (forSubject: boolean, tillWatched: boolean): void => {
     if (!accessAsk || !subject) return;
     if (forSubject) setSubjectCompletion(subject.id, accessAsk.ids, true);
     for (const id of accessAsk.ids) setChatAllowed(accessAsk.chatId, subject.id, id, true);
+    // Videos: up to the watched point, or in full (which also lifts an
+    // earlier "till watched" for this chat / the subject).
+    const videos = accessAsk.ids.filter((id) => isVideoResource(subjectResources.find((r) => r.id === id)));
+    if (videos.length) {
+      setWatchLimited(forSubject ? subjectLimitKey(subject.id) : accessAsk.chatId, videos, tillWatched);
+      if (!tillWatched && forSubject) setWatchLimited(accessAsk.chatId, videos, false);
+    }
     setResend({ text: accessAsk.text, allowGeneral: false });
     setAccessAsk(null);
   };
@@ -861,8 +874,9 @@ export default function MalaiChatView() {
                     <AccessPrompt
                       titles={accessAsk.ids.map((id) => subjectResources.find((r) => r.id === id)?.title ?? id)}
                       subjectName={subject.name}
-                      onAllowChat={() => allowAccess(false)}
-                      onAllowSubject={() => allowAccess(true)}
+                      onAllowChat={(till) => allowAccess(false, till)}
+                      onAllowSubject={(till) => allowAccess(true, till)}
+                      videoWatchedMs={firstVideoWatched(accessAsk.ids, subjectResources)}
                       onDismiss={() => setAccessAsk(null)}
                     />
                   </div>
@@ -1046,4 +1060,14 @@ function SubjectHome({
       </div>
     </div>
   );
+}
+
+function isVideoResource(r: { type?: string | null; provider?: string | null } | undefined): boolean {
+  return Boolean(r && (r.type === "video" || r.provider === "youtube"));
+}
+
+/** How far the first suggested video has been watched (ms); null if none is a video. */
+function firstVideoWatched(ids: string[], resources: ReadonlyArray<{ id: string; type?: string | null; provider?: string | null }>): number | null {
+  const v = ids.find((id) => isVideoResource(resources.find((r) => r.id === id)));
+  return v ? readWatch(v)?.ms ?? 0 : null;
 }

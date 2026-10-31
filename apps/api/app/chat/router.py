@@ -277,6 +277,7 @@ async def _answer(body: ChatRequest, *, voice: bool = False) -> ChatResponse:
             # (gated at the playhead), plus whatever was marked done.
             focus_resource_id=body.video_id,
             completed_resource_ids=body.completed_resource_ids,
+            **({"resource_limits_ms": body.resource_limits_ms} if body.resource_limits_ms else {}),
             # Only sent when narrowing, so services without the option still work.
             **(
                 {"scope_resource_ids": body.scope_resource_ids}

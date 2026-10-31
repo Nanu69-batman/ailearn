@@ -386,3 +386,42 @@ export function referencedResourceIds(
   if (kinds.length === 0) return [];
   return resources.filter((r) => kinds.includes(kindOf(r) as (typeof kinds)[number])).map((r) => r.id);
 }
+
+// ---------------------------------------------------------------------------
+// Videos granted "till you've watched" (from the access prompt).
+// ---------------------------------------------------------------------------
+
+/** Key: a chat's key, or `subject:<id>` for a grant to the whole subject. */
+const watchLimitStore = jsonStore<string[]>("ailearn.watch_limited.v1");
+
+export function subjectLimitKey(subjectId: string): string {
+  return `subject:${subjectId}`;
+}
+
+/** Grant these videos up to the watched point (`limited`), or in full. */
+export function setWatchLimited(key: string, ids: string[], limited: boolean): void {
+  const all = watchLimitStore.read();
+  const cur = new Set(all[key] ?? []);
+  for (const id of ids) {
+    if (limited) cur.add(id);
+    else cur.delete(id);
+  }
+  watchLimitStore.write({ ...all, [key]: [...cur] });
+}
+
+export function useWatchLimited(): Record<string, string[]> {
+  return watchLimitStore.use();
+}
+
+/**
+ * Per-video read limits (ms) for a request: each allowed video granted only
+ * "till you've watched" is read up to how far it has been watched now, so
+ * the limit grows as the learner watches more.
+ */
+export function readLimitsMs(chatKey: string | null, subjectId: string | null, allowed: readonly string[]): Record<string, number> {
+  const all = watchLimitStore.read();
+  const limited = new Set([...(chatKey ? all[chatKey] ?? [] : []), ...(subjectId ? all[subjectLimitKey(subjectId)] ?? [] : [])]);
+  const out: Record<string, number> = {};
+  for (const id of allowed) if (limited.has(id)) out[id] = Math.round(readWatch(id)?.ms ?? 0);
+  return out;
+}

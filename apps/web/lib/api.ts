@@ -184,6 +184,8 @@ export interface ChatRequest {
   ask_first?: boolean;
   /** Materials the message names ("the pdf", "the video"). */
   referenced_resource_ids?: string[];
+  /** Videos granted "till you've watched": read up to this ms. */
+  resource_limits_ms?: Record<string, number>;
 }
 
 export type CitationSourceType =

@@ -47,3 +47,26 @@ def merge_completed(primary: Sequence, extra: Sequence) -> list:
     """The open material's passages first, then new ones from completed ones."""
     have = {p.chunk_id for p in primary}
     return [*primary, *(p for p in extra if p.chunk_id not in have)]
+
+
+def done_limit(resource_id: str, limits: dict[str, int] | None) -> int:
+    """The T a done material is read at: its own limit, else the end of time."""
+    if limits and resource_id in limits:
+        return max(0, min(int(limits[resource_id]), COMPLETED_T_MS))
+    return COMPLETED_T_MS
+
+
+async def retrieve_done(retrieval, query: str, course_id: str, done, limits, *, k: int) -> list:
+    """Retrieve from the done materials, each through the strict gate at its T.
+
+    A video granted only "till you've watched" carries a limit (ms): it is
+    read through ``end_ms <= limit`` like any playhead. The rest are read at
+    COMPLETED_T_MS. One retrieval per distinct T, merged in order.
+    """
+    groups: dict[int, list[str]] = {}
+    for r in done:
+        groups.setdefault(done_limit(r, limits), []).append(r)
+    out: list = []
+    for t, ids in sorted(groups.items(), key=lambda g: -g[0]):
+        out = merge_completed(out, await retrieval.retrieve(query, course_id, ids, t, k=k))
+    return out

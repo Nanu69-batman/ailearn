@@ -33,7 +33,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from app import devtrace
-from app.chat.completed import COMPLETED_K, COMPLETED_T_MS, merge_completed
+from app.chat.completed import COMPLETED_K, done_limit, merge_completed, retrieve_done
 from app.chat.intent import (
     OVERVIEW,
     SMALLTALK,
@@ -398,6 +398,7 @@ class LessonAgent:
         store,
         retrieval,
         done: Sequence[str] = (),
+        limits: dict[str, int] | None = None,
         history: Sequence[str] = (),
         live_passage=None,
         intent: str | None | object = _UNSET,
@@ -416,7 +417,7 @@ class LessonAgent:
                 # Belt and braces over the store's own gate: nothing that ends
                 # after T, or has no end, reaches the model. A material marked
                 # done is read at the end of time, so only "no end" drops it.
-                limit = COMPLETED_T_MS if p.resource_id in completed else t_ms
+                limit = done_limit(p.resource_id, limits) if p.resource_id in completed else t_ms
                 if p.source_type in TIME_GATED_SOURCE_TYPES and (
                     p.end_ms is None or int(p.end_ms) > limit
                 ):
@@ -453,8 +454,8 @@ class LessonAgent:
                     if completed:
                         found = merge_completed(
                             found,
-                            await retrieval.retrieve(
-                                query, course_id, list(completed), COMPLETED_T_MS,
+                            await retrieve_done(
+                                retrieval, query, course_id, list(completed), limits,
                                 k=COMPLETED_K,
                             ),
                         )

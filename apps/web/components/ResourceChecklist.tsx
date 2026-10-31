@@ -419,14 +419,29 @@ export function AccessPrompt({
   onAllowChat,
   onAllowSubject,
   onDismiss,
+  videoWatchedMs = null,
 }: {
   /** Titles of the suggested materials. */
   titles: string[];
   subjectName: string;
-  onAllowChat: () => void;
-  onAllowSubject: () => void;
+  /** `tillWatched`: a video is granted only up to how far it has been watched. */
+  onAllowChat: (tillWatched: boolean) => void;
+  onAllowSubject: (tillWatched: boolean) => void;
   onDismiss: () => void;
+  /**
+   * Set when a suggested material is a video: how far it has been watched
+   * (ms). After "this chat" / "whole subject" the learner then picks "till
+   * you've watched <time>" or "whole video".
+   */
+  videoWatchedMs?: number | null;
 }) {
+  const [scope, setScope] = useState<"chat" | "subject" | null>(null);
+  const allow = (s: "chat" | "subject", tillWatched: boolean): void =>
+    s === "chat" ? onAllowChat(tillWatched) : onAllowSubject(tillWatched);
+  const pick = (s: "chat" | "subject"): void => {
+    if (videoWatchedMs === null) allow(s, false);
+    else setScope(s);
+  };
   const named =
     titles.length === 1
       ? `“${titles[0]}”`
@@ -437,17 +452,49 @@ export function AccessPrompt({
         This looks covered in <span className="font-medium text-gray-900">{named}</span>, which this chat can&apos;t read
         yet. Give it access?
       </p>
+      {scope && videoWatchedMs !== null ? (
+        <div className="mt-2.5">
+          <p className="text-xs text-gray-600">
+            {scope === "chat" ? "For this chat" : `For all of ${subjectName}`}: how much of the video may Malai read?
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button
+              type="button"
+              autoFocus
+              onClick={() => allow(scope, true)}
+              title="Grows as you watch more"
+              className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-violet-700 ring-1 ring-violet-200 transition hover:bg-violet-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
+            >
+              Till you&apos;ve watched ({formatClock(videoWatchedMs / 1000)})
+            </button>
+            <button
+              type="button"
+              onClick={() => allow(scope, false)}
+              className="rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
+            >
+              Whole video
+            </button>
+            <button
+              type="button"
+              onClick={() => setScope(null)}
+              className="rounded-lg px-3 py-1.5 text-xs font-medium text-gray-500 transition hover:bg-white hover:text-gray-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
+            >
+              Back
+            </button>
+          </div>
+        </div>
+      ) : (
       <div className="mt-2.5 flex flex-wrap gap-2">
         <button
           type="button"
-          onClick={onAllowChat}
+          onClick={() => pick("chat")}
           className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-violet-700 ring-1 ring-violet-200 transition hover:bg-violet-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
         >
           Allow for this chat
         </button>
         <button
           type="button"
-          onClick={onAllowSubject}
+          onClick={() => pick("subject")}
           title={`Marks it completed for ${subjectName}: every chat in it can read it`}
           className="rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
         >
@@ -461,6 +508,7 @@ export function AccessPrompt({
           Don&apos;t allow
         </button>
       </div>
+      )}
     </div>
   );
 }

@@ -57,8 +57,12 @@ import {
   adoptDraftAllowance,
   draftAllowanceKey,
   effectiveAllowance,
+  readLimitsMs,
+  readWatch,
   recordWatch,
   setChatAllowed,
+  setWatchLimited,
+  subjectLimitKey,
   setSubjectCompletion,
   useChatAllowances,
   useSubjectCompletion,
@@ -1013,12 +1017,28 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
         subjectName={subject?.name ?? "this subject"}
         onAllowAccess={
           malai && chatKey && subjectId
-            ? (ids, forSubject) => {
+            ? (ids, forSubject, tillWatched) => {
                 if (forSubject) setSubjectCompletion(subjectId, ids, true);
                 for (const id of ids) setChatAllowed(chatKey, subjectId, id, true);
+                const videos = ids.filter((id) => {
+                  const r = resources.find((x) => x.id === id);
+                  return r?.type === "video" || r?.provider === "youtube";
+                });
+                if (videos.length) {
+                  setWatchLimited(forSubject ? subjectLimitKey(subjectId) : chatKey, videos, tillWatched);
+                  if (!tillWatched && forSubject) setWatchLimited(chatKey, videos, false);
+                }
               }
             : undefined
         }
+        getResourceLimits={() => (chatKey && subjectId ? readLimitsMs(chatKey, subjectId, completedForChat) : {})}
+        videoWatchedMs={(ids) => {
+          const v = ids.find((id) => {
+            const r = resources.find((x) => x.id === id);
+            return r?.type === "video" || r?.provider === "youtube";
+          });
+          return v ? readWatch(v)?.ms ?? 0 : null;
+        }}
         offline={offline}
         onRejoin={reset}
         openThreadId={openThreadId}
