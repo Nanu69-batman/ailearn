@@ -464,3 +464,30 @@ export function AccessPrompt({
     </div>
   );
 }
+
+
+/**
+ * Nothing the learner has covers the question: offer an answer from general
+ * knowledge. Saying yes asks the same question again, allowing it.
+ */
+export function GeneralPrompt({ onYes, onNo }: { onYes: () => void; onNo: () => void }) {
+  return (
+    <div role="group" aria-label="Answer from general knowledge?" className="flex flex-wrap items-center gap-2 rounded-2xl border border-amber-200 bg-amber-50/70 px-4 py-3 text-sm text-gray-700 shadow-sm">
+      <span className="mr-auto">Not in your materials. Answer from general knowledge?</span>
+      <button
+        type="button"
+        onClick={onYes}
+        className="rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
+      >
+        Answer from general knowledge
+      </button>
+      <button
+        type="button"
+        onClick={onNo}
+        className="rounded-lg px-3 py-1.5 text-xs font-medium text-gray-500 transition hover:bg-white hover:text-gray-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
+      >
+        No thanks
+      </button>
+    </div>
+  );
+}

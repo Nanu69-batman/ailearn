@@ -39,7 +39,7 @@ from app.chat.schemas import (
     ThreadRenameRequest,
     ThreadsResponse,
 )
-from app.chat.service import ChatService, SessionNotFoundError
+from app.chat.service import ChatService, SessionNotFoundError, deferred_turns
 from app.chat.sessions import (
     MAIN_THREAD,
     ChatThread,
@@ -255,6 +255,9 @@ async def _answer(body: ChatRequest, *, voice: bool = False) -> ChatResponse:
     images = prompt_note(body.session_id, _resolve_thread(body.session_id, body.thread_id))
     style = "\n\n".join(p for p in (style_for(body.personalization, voice=voice), images) if p)
     note = style_note.set(style)
+    # Ask-first: hold this turn's saving until we know whether the refusal is
+    # replaced by a question to the learner.
+    held = deferred_turns.set([]) if body.ask_first and not voice else None
     try:
         resp = await service.chat(
             session_id=body.session_id,
@@ -273,7 +276,18 @@ async def _answer(body: ChatRequest, *, voice: bool = False) -> ChatResponse:
             ),
             **({"general": True} if body.general else {}),
             **({"fast": True} if voice else {}),
+            **({"ask_first": True} if held is not None else {}),
         )
+        if held is not None:
+            turns = deferred_turns.get() or []
+            deferred_turns.reset(held)
+            held = None
+            if resp.refused and not resp.scope_empty and not resp.processing_pending:
+                resp = await _ask_learner(body)
+                turns = [(body.session_id, body.message, resp.answer, [])]
+            for sid, user_text, answer, cites in turns:
+                service._persist(sid, user_text, answer, cites)
+            return resp
         # Refused, not covered, or answered from general knowledge: the
         # materials outside this chat's reach may cover it. A greeting
         # ("conversational") or a grounded answer needs nothing more.
@@ -295,7 +309,34 @@ async def _answer(body: ChatRequest, *, voice: bool = False) -> ChatResponse:
         log.error("chat provider error: %s", f"{name}: {exc}")
         raise HTTPException(status_code=502, detail="upstream provider error") from exc
     finally:
+        if held is not None:
+            deferred_turns.reset(held)
         style_note.reset(note)
+
+
+async def _ask_learner(body: ChatRequest) -> ChatResponse:
+    """The readable materials do not cover this: ask instead of answering.
+
+    Another of the subject's materials covers it -> offer access to it.
+    Nothing does -> offer an answer from general knowledge.
+    """
+    suggested = await _suggest(body) if body.suggest_resource_ids else []
+    if suggested:
+        return ChatResponse(
+            answer=(
+                "I couldn't find this in the materials this chat can read, but another "
+                "material in this subject seems to cover it. Want to give this chat access?"
+            ),
+            refused=False, mode="conversational", grounded=False,
+            suggested_resource_ids=suggested,
+        )
+    return ChatResponse(
+        answer=(
+            "I couldn't find this in your materials. Want me to answer from general "
+            "knowledge instead?"
+        ),
+        refused=False, mode="conversational", grounded=False, offer_general=True,
+    )
 
 
 async def _suggest(body: ChatRequest) -> list[str]:

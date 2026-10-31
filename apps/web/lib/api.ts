@@ -180,6 +180,8 @@ export interface ChatRequest {
    * or not covered, the ones that match come back as suggested_resource_ids.
    */
   suggest_resource_ids?: string[];
+  /** Ask before answering from general knowledge (see offer_general). */
+  ask_first?: boolean;
 }
 
 export type CitationSourceType =
@@ -267,6 +269,8 @@ export interface ChatResponse {
   scope_empty?: boolean;
   /** Materials this chat cannot read that would answer the question (ids). */
   suggested_resource_ids?: string[];
+  /** Nothing the learner has covers it: offer an answer from general knowledge. */
+  offer_general?: boolean;
   /** True when the question is past the processed part of a stream-mode video. */
   processing_pending?: boolean;
   processed_through_ms?: number | null;

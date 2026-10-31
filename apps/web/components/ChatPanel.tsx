@@ -18,7 +18,7 @@ import {
 import { mockChatAnswer, mockHistory } from "../lib/fixtures";
 import { LEARNER_NAME } from "../lib/learn";
 import MessageList from "./MessageList";
-import { AccessPrompt } from "./ResourceChecklist";
+import { AccessPrompt, GeneralPrompt } from "./ResourceChecklist";
 import { mentionedResourceIds } from "../lib/progress";
 import type { CitationBadgeProps } from "./CitationBadge";
 import {
@@ -236,8 +236,10 @@ export default function ChatPanel({
   const threadRef = useRef("");
   threadRef.current = threadId;
   /** The answer needed materials this chat cannot read; `resend` asks again once allowed. */
-  const [accessAsk, setAccessAsk] = useState<{ ids: string[]; text: string } | null>(null);
-  const [resend, setResend] = useState<string | null>(null);
+  const [accessAsk, setAccessAsk] = useState<{ ids: string[]; text: string; general?: boolean } | null>(null);
+  const [resend, setResend] = useState<{ text: string; allowGeneral: boolean } | null>(null);
+  /** The next send may answer from general knowledge (the learner said yes). */
+  const allowGeneralRef = useRef(false);
   useEffect(() => setAccessAsk(null), [threadId]);
 
   // Images attached in the bar: context for this chat, never resources.
@@ -404,6 +406,8 @@ export default function ChatPanel({
     const typed = raw.trim();
     if (!typed || !threadId || sending || images.uploading) return;
     setAccessAsk(null);
+    const allowGeneral = allowGeneralRef.current;
+    allowGeneralRef.current = false;
     dictation.stop();
     // A slash command sets the answer style, or opens a quiz; so does a
     // message that asks for a quiz in so many words ("quiz me on this").
@@ -497,7 +501,9 @@ export default function ChatPanel({
                 mode,
                 thread_id: threadId,
                 completed_resource_ids: completedResourceIds,
-                ...(onAllowAccess && suggestResourceIds.length ? { suggest_resource_ids: suggestResourceIds } : {}),
+                // In a Malai lesson chat, ask before answering from general
+                // knowledge (unless the learner just said yes to that).
+                ...(onAllowAccess ? { suggest_resource_ids: suggestResourceIds, ask_first: !allowGeneral } : {}),
               },
               {
                 onStatus: (status) => setPreview((p) => ({ status, text: p?.text ?? "" })),
@@ -527,13 +533,16 @@ export default function ChatPanel({
       if (res.thread_title) onTitled?.(threadId, res.thread_title);
       // Content matches from the server, plus materials the question names by title.
       const named =
-        res.mode === "conversational"
+        // A plain conversational reply (a greeting) names nothing; the
+        // server's own ask (offer_general / suggestions) may.
+        res.mode === "conversational" && !res.offer_general && !res.suggested_resource_ids?.length
           ? []
           : mentionedResourceIds(text, suggestResourceIds.map((id) => ({ id, title: resourceTitle(id) })));
       const suggested = [...new Set([...named, ...(res.suggested_resource_ids ?? [])])].filter((id) =>
         suggestResourceIds.includes(id),
       );
       if (onAllowAccess && suggested.length) setAccessAsk({ ids: suggested, text });
+      else if (onAllowAccess && res.offer_general) setAccessAsk({ ids: [], text, general: true });
     } catch (err) {
       if (isFatalSessionError(err)) {
         // 401 = session binding rejected, 404 = session gone server-side.
@@ -583,7 +592,8 @@ export default function ChatPanel({
   useEffect(() => {
     if (resend === null) return;
     setResend(null);
-    void send(resend);
+    allowGeneralRef.current = resend.allowGeneral;
+    void send(resend.text);
     // `send` is recreated every render; only a new `resend` should fire this.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resend]);
@@ -779,19 +789,30 @@ export default function ChatPanel({
                   suggestDisabled={sending || sessionExpired}
                   fill
                 />
-                {accessAsk && onAllowAccess && !sending && (
+                {accessAsk?.general && onAllowAccess && !sending && (
+                  <div className="mt-3">
+                    <GeneralPrompt
+                      onYes={() => {
+                        setResend({ text: accessAsk.text, allowGeneral: true });
+                        setAccessAsk(null);
+                      }}
+                      onNo={() => setAccessAsk(null)}
+                    />
+                  </div>
+                )}
+                {accessAsk && accessAsk.ids.length > 0 && onAllowAccess && !sending && (
                   <div className="mt-3">
                     <AccessPrompt
                       titles={accessAsk.ids.map(resourceTitle)}
                       subjectName={subjectName}
                       onAllowChat={() => {
                         onAllowAccess(accessAsk.ids, false);
-                        setResend(accessAsk.text);
+                        setResend({ text: accessAsk.text, allowGeneral: false });
                         setAccessAsk(null);
                       }}
                       onAllowSubject={() => {
                         onAllowAccess(accessAsk.ids, true);
-                        setResend(accessAsk.text);
+                        setResend({ text: accessAsk.text, allowGeneral: false });
                         setAccessAsk(null);
                       }}
                       onDismiss={() => setAccessAsk(null)}

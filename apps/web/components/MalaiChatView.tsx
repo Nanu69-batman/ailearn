@@ -27,7 +27,7 @@ import {
   useChatAllowances,
   useSubjectCompletion,
 } from "@/lib/progress";
-import { AccessPrompt, ResourceChooser, SubjectChecklist } from "@/components/ResourceChecklist";
+import { AccessPrompt, GeneralPrompt, ResourceChooser, SubjectChecklist } from "@/components/ResourceChecklist";
 import SubjectAnalytics from "@/components/SubjectAnalytics";
 import {
   addChat,
@@ -292,8 +292,8 @@ export default function MalaiChatView() {
    * access. Allowing asks the question again once the new allowance is in
    * (`resend`, picked up by an effect after the re-render).
    */
-  const [accessAsk, setAccessAsk] = useState<{ chatId: string; ids: string[]; text: string } | null>(null);
-  const [resend, setResend] = useState<string | null>(null);
+  const [accessAsk, setAccessAsk] = useState<{ chatId: string; ids: string[]; text: string; general?: boolean } | null>(null);
+  const [resend, setResend] = useState<{ text: string; allowGeneral: boolean } | null>(null);
   useEffect(() => setAccessAsk((a) => (a && a.chatId === chatId ? a : null)), [chatId]);
 
   // Load the open chat's history whenever the chat changes.
@@ -451,7 +451,7 @@ export default function MalaiChatView() {
     if (voiceChat) updateChat(voiceChat.id, { updatedAt: Date.now() });
   };
 
-  const send = useCallback(async (override?: string) => {
+  const send = useCallback(async (override?: string, allowGeneral = false) => {
     const typed = (override ?? draft).trim();
     if (!typed || loading) return;
     stopDictation();
@@ -523,7 +523,11 @@ export default function MalaiChatView() {
           mode,
           // No subject: a general chat; materials are read only when asked for.
           ...readScope(),
-          ...(subject ? { suggest_resource_ids: subjectIds.filter((id) => !allowed.includes(id)) } : {}),
+          // A subject chat asks before answering from general knowledge
+          // (unless the learner just said yes to that).
+          ...(subject
+            ? { suggest_resource_ids: subjectIds.filter((id) => !allowed.includes(id)), ask_first: !allowGeneral }
+            : {}),
         };
         return streamChat(req, {
           onStatus: (status) => setPreview((p) => ({ status, text: p?.text ?? "" })),
@@ -563,13 +567,16 @@ export default function MalaiChatView() {
       // The server's matches by content, plus any material the question names
       // by title ("what did the Pravin Chandra pdf say?") that this chat can't read.
       const named =
-        res.mode === "conversational"
+        // A plain conversational reply (a greeting) names nothing; the
+        // server's own ask (offer_general / suggestions) may.
+        res.mode === "conversational" && !res.offer_general && !res.suggested_resource_ids?.length
           ? []
           : mentionedResourceIds(text, subjectResources.filter((r) => !allowed.includes(r.id)));
       const suggested = [...new Set([...named, ...(res.suggested_resource_ids ?? [])])].filter(
         (id) => subjectIds.includes(id) && !allowed.includes(id),
       );
       if (subject && suggested.length) setAccessAsk({ chatId: current.id, ids: suggested, text });
+      else if (subject && res.offer_general) setAccessAsk({ chatId: current.id, ids: [], text, general: true });
     } catch (err) {
       setError(err instanceof ApiError ? formatApiError(err) : err instanceof Error ? err.message : String(err));
     } finally {
@@ -578,7 +585,7 @@ export default function MalaiChatView() {
     }
     // readScope reads `allowed`, derived from the deps below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft, loading, subject, subjects, chat, slashContext, stopDictation, imageNames, clearImages, allowed.join("|")]);
+  }, [draft, loading, subject, subjects, chat, slashContext, stopDictation, imageNames, clearImages, allowed.join("|"), subjectIds.join("|"), subjectResources]);
 
   /** What a quiz from this chat may draw from: the chat's own reach. */
   const quizScope: QuizScope | null = quizChat
@@ -638,14 +645,14 @@ export default function MalaiChatView() {
   useEffect(() => {
     if (resend === null) return;
     setResend(null);
-    void send(resend);
+    void send(resend.text, resend.allowGeneral);
   }, [resend, send]);
 
   const allowAccess = (forSubject: boolean): void => {
     if (!accessAsk || !subject) return;
     if (forSubject) setSubjectCompletion(subject.id, accessAsk.ids, true);
     for (const id of accessAsk.ids) setChatAllowed(accessAsk.chatId, subject.id, id, true);
-    setResend(accessAsk.text);
+    setResend({ text: accessAsk.text, allowGeneral: false });
     setAccessAsk(null);
   };
 
@@ -822,7 +829,18 @@ export default function MalaiChatView() {
                   </p>
                 )}
                 <MessageList fill messages={messages} loading={loading} preview={preview} onSeek={() => {}} />
-                {accessAsk && subject && !loading && (
+                {accessAsk?.general && subject && !loading && (
+                  <div className="mt-4">
+                    <GeneralPrompt
+                      onYes={() => {
+                        setResend({ text: accessAsk.text, allowGeneral: true });
+                        setAccessAsk(null);
+                      }}
+                      onNo={() => setAccessAsk(null)}
+                    />
+                  </div>
+                )}
+                {accessAsk && accessAsk.ids.length > 0 && subject && !loading && (
                   <div className="mt-4">
                     <AccessPrompt
                       titles={accessAsk.ids.map((id) => subjectResources.find((r) => r.id === id)?.title ?? id)}

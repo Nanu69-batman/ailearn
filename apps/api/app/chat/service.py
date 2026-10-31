@@ -56,6 +56,14 @@ voice_turns: ContextVar[list[tuple[str, str]] | None] = ContextVar(
     "voice_turns", default=None
 )
 
+#: Deferred saving. When set (by the chat route in ask-first mode), a turn is
+#: held here instead of being written, so the route can replace a refusal
+#: with its own question ("give access?" / "answer from general knowledge?")
+#: and save that instead. Unset, turns are written as usual.
+deferred_turns: ContextVar[list[tuple[str, str, str, list[dict]]] | None] = ContextVar(
+    "deferred_turns", default=None
+)
+
 PROCESSING_PENDING_TEXT = (
     "This part of the video hasn't been processed yet, so I can't answer "
     "about it reliably. Please try again in a little while, or ask about "
@@ -283,8 +291,15 @@ class ChatService:
         scope_resource_ids: Sequence[str] | None = None,
         general: bool = False,
         fast: bool = False,
+        ask_first: bool = False,
     ) -> ChatResponse:
-        """Answer one learner question; flags ``visual_pending`` when visuals lag."""
+        """Answer one learner question; flags ``visual_pending`` when visuals lag.
+
+        ``ask_first`` (a subject chat): never fall back to general knowledge on
+        its own. Where it would, the answer comes back refused instead, and the
+        route asks the learner (access to another material, or general
+        knowledge).
+        """
         from app.chat.launch import clamp_current_time_ms
 
         visual_through: int | None = None
@@ -321,6 +336,7 @@ class ChatService:
                 scope_resource_ids=scope_resource_ids,
                 general=general,
                 fast=fast,
+                ask_first=ask_first,
             )
         except BaseException as exc:
             devtrace.end_run(token, "error", data={"error": type(exc).__name__})
@@ -365,6 +381,7 @@ class ChatService:
         scope_resource_ids: Sequence[str] | None = None,
         general: bool = False,
         fast: bool = False,
+        ask_first: bool = False,
     ) -> ChatResponse:
         """Answer one learner question.
 
@@ -422,9 +439,16 @@ class ChatService:
                 "route", "end", title="Chat allows no materials (general answer)",
                 data={"path": "general_no_allowance"},
             )
-            if await self._route_intent(message) == SMALLTALK:
+            if await self._route_intent(message) == SMALLTALK or not has_subject_content(message):
                 return await self._conversational_answer(
                     session_id, message, self._user_history(session_id)
+                )
+            if ask_first:
+                # A study question with nothing readable: the route asks.
+                self._persist(session_id, message, REFUSAL_TEXT, [])
+                return ChatResponse(
+                    answer=REFUSAL_TEXT, citations=[], refused=True,
+                    mode="grounded", grounded=False,
                 )
             return await self._general_answer(session_id, message, mode)
         if not allowed:
@@ -489,6 +513,7 @@ class ChatService:
                 live_frame=live_frame,
                 no_frame_note=no_frame_note,
                 intent=intent,
+                ask_first=ask_first,
             )
             if resp is not None:
                 return resp
@@ -610,9 +635,17 @@ class ChatService:
         # nothing to teach: the fallback would have to invent a topic, which is
         # how "who are you" once became an unrequested Chain Rule lesson.
         mode_allows_supplemental = (
-            mode not in SUPPLEMENTAL_DISABLED_MODES and has_subject_content(message)
+            not ask_first
+            and mode not in SUPPLEMENTAL_DISABLED_MODES
+            and has_subject_content(message)
         )
-        explicit_supplemental = mode_allows_supplemental and is_supplemental_request(message)
+        # Asked for in so many words ("answer from general knowledge"): served
+        # even in ask-first mode -- the learner already said yes.
+        explicit_supplemental = (
+            mode not in SUPPLEMENTAL_DISABLED_MODES
+            and has_subject_content(message)
+            and is_supplemental_request(message)
+        )
 
         visual_lag = visual_through is not None
         low_text = VISUAL_PENDING_REFUSAL_TEXT if visual_lag else REFUSAL_TEXT
@@ -845,6 +878,7 @@ class ChatService:
         no_frame_note: str | None,
         done: Sequence[str] = (),
         intent: str | None = None,
+        ask_first: bool = False,
     ) -> ChatResponse | None:
         """One agentic turn, or ``None`` to fall back to the classic pipeline.
 
@@ -888,7 +922,8 @@ class ChatService:
 
         prefix = f"{no_frame_note}\n\n" if no_frame_note else ""
         state = "live" if live_passage is not None else ("document" if no_frame_note else None)
-        if outcome.kind == "refused":
+        if outcome.kind == "refused" or (ask_first and outcome.kind == "supplemental"):
+            # Ask-first: a general-knowledge answer is not served unasked.
             text = prefix + REFUSAL_TEXT
             self._persist(session.id, message, text, [])
             return ChatResponse(
@@ -985,6 +1020,10 @@ class ChatService:
         turns = voice_turns.get()
         if turns is not None:
             turns.extend([("user", user_text), ("assistant", answer)])
+            return
+        held = deferred_turns.get()
+        if held is not None:
+            held.append((session_id, user_text, answer, citations))
             return
         self._messages.append(session_id, "user", user_text, [])
         self._messages.append(session_id, "assistant", answer, citations)

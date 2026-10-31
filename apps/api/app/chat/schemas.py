@@ -93,6 +93,12 @@ class ChatRequest(BaseModel):
     suggest_resource_ids: list[Annotated[str, Field(max_length=64)]] = Field(
         default_factory=list, max_length=256
     )
+    #: A subject chat: when the readable materials do not cover a study
+    #: question, do not answer from general knowledge unasked. Ask instead:
+    #: access to a material that covers it (``suggested_resource_ids``), or
+    #: an answer from general knowledge (``offer_general``). Sending the same
+    #: question again without this flag is the learner's "yes".
+    ask_first: bool = False
     #: The learner's personalization, applied as a style note to the prompt.
     personalization: Personalization | None = None
 
@@ -179,6 +185,9 @@ class ChatResponse(BaseModel):
     #: request named ``suggest_resource_ids`` and the answer was refused or
     #: not covered by the readable materials.
     suggested_resource_ids: list[str] = Field(default_factory=list)
+    #: Ask-first: nothing the learner has covers this; offer to answer from
+    #: general knowledge (the client re-sends the question without ask_first).
+    offer_general: bool = False
     #: What the live-frame path did for this turn, or ``None`` when no frame was
     #: involved. ``"live"``: the learner's captured frame was described and
     #: injected as high-priority evidence. ``"document"``: a frame was asked for

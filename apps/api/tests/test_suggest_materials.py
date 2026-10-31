@@ -134,3 +134,32 @@ def test_stale_grant_still_fails_closed(chroma_store, embedder):
         focus_resource_id="res_not_granted",
     ))
     assert resp.scope_empty and resp.refused
+
+
+def test_ask_first_does_not_answer_generally_unasked(chroma_store, embedder):
+    service, sid, llm = _empty_allowance_service(chroma_store, embedder)
+    resp = asyncio.run(service.chat(
+        session_id=sid, current_time_ms=0, message="what is a partial derivative",
+        scope_resource_ids=[], ask_first=True,
+    ))
+    assert resp.refused and not resp.scope_empty
+    assert llm.passages is None  # no model call: nothing was answered
+
+
+def test_ask_first_still_greets(chroma_store, embedder):
+    service, sid, _llm = _empty_allowance_service(chroma_store, embedder)
+    resp = asyncio.run(service.chat(
+        session_id=sid, current_time_ms=0, message="hi, how are you",
+        scope_resource_ids=[], ask_first=True,
+    ))
+    assert resp.mode == "conversational" and not resp.refused
+
+
+def test_route_offers_general_knowledge_when_nothing_covers_it():
+    from app.chat.router import _ask_learner
+    from app.chat.schemas import ChatRequest
+
+    body = ChatRequest(session_id="s", current_time_ms=0, message="what is entropy", ask_first=True)
+    resp = asyncio.run(_ask_learner(body))
+    assert resp.offer_general and not resp.refused
+    assert resp.suggested_resource_ids == []
