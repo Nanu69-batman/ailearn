@@ -19,6 +19,7 @@ import { mockChatAnswer, mockHistory } from "../lib/fixtures";
 import { LEARNER_NAME } from "../lib/learn";
 import MessageList from "./MessageList";
 import { AccessPrompt } from "./ResourceChecklist";
+import { mentionedResourceIds } from "../lib/progress";
 import type { CitationBadgeProps } from "./CitationBadge";
 import {
   SlashMenuList,
@@ -524,7 +525,14 @@ export default function ChatPanel({
       };
       setMessages((prev) => [...prev, assistantMsg]);
       if (res.thread_title) onTitled?.(threadId, res.thread_title);
-      const suggested = (res.suggested_resource_ids ?? []).filter((id) => suggestResourceIds.includes(id));
+      // Content matches from the server, plus materials the question names by title.
+      const named =
+        res.mode === "conversational"
+          ? []
+          : mentionedResourceIds(text, suggestResourceIds.map((id) => ({ id, title: resourceTitle(id) })));
+      const suggested = [...new Set([...named, ...(res.suggested_resource_ids ?? [])])].filter((id) =>
+        suggestResourceIds.includes(id),
+      );
       if (onAllowAccess && suggested.length) setAccessAsk({ ids: suggested, text });
     } catch (err) {
       if (isFatalSessionError(err)) {

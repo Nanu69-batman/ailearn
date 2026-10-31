@@ -21,6 +21,7 @@ import {
   adoptDraftAllowance,
   draftAllowanceKey,
   effectiveAllowance,
+  mentionedResourceIds,
   setChatAllowed,
   setSubjectCompletion,
   useChatAllowances,
@@ -559,7 +560,15 @@ export default function MalaiChatView() {
         preview: titleFrom(text),
         ...(res.thread_title ? { title: res.thread_title } : {}),
       });
-      const suggested = (res.suggested_resource_ids ?? []).filter((id) => subjectIds.includes(id));
+      // The server's matches by content, plus any material the question names
+      // by title ("what did the Pravin Chandra pdf say?") that this chat can't read.
+      const named =
+        res.mode === "conversational"
+          ? []
+          : mentionedResourceIds(text, subjectResources.filter((r) => !allowed.includes(r.id)));
+      const suggested = [...new Set([...named, ...(res.suggested_resource_ids ?? [])])].filter(
+        (id) => subjectIds.includes(id) && !allowed.includes(id),
+      );
       if (subject && suggested.length) setAccessAsk({ chatId: current.id, ids: suggested, text });
     } catch (err) {
       setError(err instanceof ApiError ? formatApiError(err) : err instanceof Error ? err.message : String(err));

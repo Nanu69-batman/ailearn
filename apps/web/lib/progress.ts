@@ -316,3 +316,45 @@ export function resetChatAllowance(chatKey: string): void {
   const { [chatKey]: _drop, ...rest } = all;
   putAllowances(rest, [], [chatKey]);
 }
+
+// ---------------------------------------------------------------------------
+// Materials named in a question.
+// ---------------------------------------------------------------------------
+
+/** Words that say nothing about which material is meant. */
+const GENERIC_TITLE_WORDS = new Set([
+  "pdf", "ppt", "pptx", "mp4", "mov", "mkv", "webm", "png", "jpg", "jpeg", "webp", "doc", "docx",
+  "video", "lecture", "lec", "notes", "note", "slides", "slide", "chapter", "unit", "part", "lesson",
+  "the", "and", "for", "with", "from", "into", "about", "final", "copy", "new", "file", "youtube",
+]);
+
+function words(text: string): string[] {
+  return text
+    .normalize("NFKD")
+    .toLowerCase()
+    .replace(/\.[a-z0-9]{2,4}$/, "")
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean);
+}
+
+/**
+ * Ids of the materials a message names by title ("what did the Pravin Chandra
+ * pdf say?"). A title matches when the message contains all of its telling
+ * words, or at least two of them for a long title.
+ */
+export function mentionedResourceIds(
+  message: string,
+  resources: ReadonlyArray<{ id: string; title?: string | null }>,
+): string[] {
+  const said = new Set(words(message));
+  const out: string[] = [];
+  for (const r of resources) {
+    const key = [...new Set(words(r.title ?? ""))].filter(
+      (w) => !GENERIC_TITLE_WORDS.has(w) && (w.length >= 3 || /\d/.test(w)),
+    );
+    if (key.length === 0) continue;
+    const hits = key.filter((w) => said.has(w)).length;
+    if (hits === key.length || (key.length >= 3 && hits >= 2)) out.push(r.id);
+  }
+  return out;
+}
