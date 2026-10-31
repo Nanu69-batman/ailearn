@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { ChatMessage, ChatMode, ChatResponse, LiveFrameCapture } from "../lib/api";
 import {
   ApiError,
@@ -12,17 +12,12 @@ import {
   postChatWithFrame,
   postQuizNote,
   streamChat,
-  listThreads,
   createThread,
-  renameThread,
-  deleteThread,
   MAIN_THREAD_ID,
-  type ChatThread,
 } from "../lib/api";
 import { mockChatAnswer, mockHistory } from "../lib/fixtures";
 import { LEARNER_NAME } from "../lib/learn";
 import MessageList from "./MessageList";
-import ChatThreads from "./ChatThreads";
 import type { CitationBadgeProps } from "./CitationBadge";
 import {
   SlashMenuList,
@@ -80,7 +75,10 @@ interface ChatPanelProps {
   headerLead?: ReactNode;
   /** Right end of the header, e.g. window buttons. */
   headerActions?: ReactNode;
-  /** Open this chat (thread) instead of the one last used in this session. */
+  /**
+   * The chat (thread) picked in Malai's sidebar. Chats are managed there
+   * only; without one the panel starts a new chat.
+   */
   openThreadId?: string | null;
   /** A question was sent in `threadId` (before its answer arrives). */
   onAsk?: (threadId: string, question: string) => void;
@@ -140,27 +138,6 @@ function isSessionGoneError(err: unknown): boolean {
 /** Session is unusable (401 or 404) -> explicit rejoin state, never a mock. */
 function isFatalSessionError(err: unknown): boolean {
   return isSessionExpiredError(err) || isSessionGoneError(err);
-}
-
-/** The chat a learner last had open, per session; survives a reload. */
-function threadKey(sessionId: string): string {
-  return `ailearn.chat_thread.${sessionId}`;
-}
-
-function readThread(sessionId: string): string {
-  try {
-    return window.localStorage.getItem(threadKey(sessionId)) || MAIN_THREAD_ID;
-  } catch {
-    return MAIN_THREAD_ID;
-  }
-}
-
-function writeThread(sessionId: string, threadId: string): void {
-  try {
-    window.localStorage.setItem(threadKey(sessionId), threadId);
-  } catch {
-    // Storage unavailable -> the choice lasts for this page only.
-  }
 }
 
 function fmtMs(ms: number): string {
@@ -231,13 +208,14 @@ export default function ChatPanel({
     onFinal: (t) => setInput((prev) => joinText(prev, t)),
   });
 
-  // ---- Chats -------------------------------------------------------------
-  // Several chats per session, each its own history on the server. The
-  // selection is per session and remembered locally; an id that no longer
-  // exists (deleted elsewhere, server restarted) falls back to "main".
-  const [threads, setThreads] = useState<ChatThread[]>([]);
-  const [threadId, setThreadId] = useState<string>(MAIN_THREAD_ID);
-  const [threadBusy, setThreadBusy] = useState(false);
+  // ---- Chat --------------------------------------------------------------
+  // Which chat this is comes from Malai's sidebar (`openThreadId`); chats are
+  // created, renamed and deleted there only. Without one, a new server thread
+  // is made here, and the first question files it in the sidebar (onAsk).
+  // "" while that thread is being made: nothing loads or sends until then.
+  const [threadId, setThreadId] = useState<string>("");
+  const threadRef = useRef("");
+  threadRef.current = threadId;
 
   // Images attached in the bar: context for this chat, never resources.
   const images = useChatImages(async () =>
@@ -247,82 +225,38 @@ export default function ChatPanel({
   const drop = useImageDrop((f) => void images.add(f), !offline && !sessionExpired);
   // Another chat: its attachments are its own.
   useEffect(() => clearImages(), [threadId, clearImages]);
-  const [threadError, setThreadError] = useState<string | null>(null);
-
   useEffect(() => {
-    if (openThreadId) writeThread(sessionId, openThreadId);
-    setThreadId(openThreadId || readThread(sessionId));
-  }, [sessionId, openThreadId]);
-
-  const selectThread = useCallback(
-    (id: string): void => {
-      setThreadId(id);
-      writeThread(sessionId, id);
-      setSendError(null);
-      setFrameError(null);
-    },
-    [sessionId],
-  );
-
-  const refreshThreads = useCallback(async (): Promise<ChatThread[] | null> => {
-    if (offline) return null;
-    try {
-      const list = await listThreads(sessionId, sessionToken);
-      setThreads(list);
-      return list;
-    } catch {
-      return null; // the history load reports session problems
-    }
-  }, [offline, sessionId, sessionToken]);
-
-  useEffect(() => {
-    void refreshThreads().then((list) => {
-      if (list && !list.some((t) => t.id === readThread(sessionId))) {
-        selectThread(MAIN_THREAD_ID);
+    if (openThreadId) {
+      // The chat this panel just started comes back as openThreadId once its
+      // first question puts it in the address: keep going, nothing to reset.
+      if (openThreadId !== threadRef.current) {
+        setThreadId(openThreadId);
+        setSendError(null);
+        setFrameError(null);
       }
-    });
-  }, [refreshThreads, selectThread, sessionId]);
-
-  async function handleCreateThread(): Promise<void> {
-    setThreadBusy(true);
-    setThreadError(null);
-    try {
-      const t = await createThread(sessionId, sessionToken);
-      setThreads((prev) => [t, ...prev]);
-      selectThread(t.id);
-      inputRef.current?.focus();
-    } catch (err) {
-      setThreadError(formatApiError(err));
-    } finally {
-      setThreadBusy(false);
+      return;
     }
-  }
-
-  async function handleRenameThread(id: string, title: string): Promise<void> {
-    setThreadError(null);
-    try {
-      const t = await renameThread(sessionId, id, title, sessionToken);
-      setThreads((prev) => prev.map((x) => (x.id === id ? t : x)));
-    } catch (err) {
-      setThreadError(formatApiError(err));
+    if (offline) {
+      setThreadId(MAIN_THREAD_ID);
+      return;
     }
-  }
-
-  async function handleDeleteThread(id: string): Promise<void> {
-    setThreadError(null);
-    try {
-      await deleteThread(sessionId, id, sessionToken);
-      if (id === threadId) {
-        if (id === MAIN_THREAD_ID) setMessages([]);
-        else selectThread(MAIN_THREAD_ID);
-      }
-      await refreshThreads();
-    } catch (err) {
-      setThreadError(formatApiError(err));
-    }
-  }
+    let cancelled = false;
+    setThreadId("");
+    createThread(sessionId, sessionToken)
+      .then((t) => {
+        if (!cancelled) setThreadId(t.id);
+      })
+      .catch(() => {
+        // The history load reports a lost session; otherwise chat in "main".
+        if (!cancelled) setThreadId(MAIN_THREAD_ID);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, sessionToken, offline, openThreadId]);
 
   useEffect(() => {
+    if (!threadId) return;
     let cancelled = false;
     async function load(): Promise<void> {
       setHistoryState("loading");
@@ -406,7 +340,6 @@ export default function ChatPanel({
         kind: res.mode,
       },
     ]);
-    void refreshThreads();
   }
 
   /** The same scope fields the typed question sends to streamChat. */
@@ -448,7 +381,7 @@ export default function ChatPanel({
 
   async function send(raw: string): Promise<void> {
     const typed = raw.trim();
-    if (!typed || sending || images.uploading) return;
+    if (!typed || !threadId || sending || images.uploading) return;
     dictation.stop();
     // A slash command sets the answer style, or opens a quiz; so does a
     // message that asks for a quiz in so many words ("quiz me on this").
@@ -571,9 +504,6 @@ export default function ChatPanel({
       };
       setMessages((prev) => [...prev, assistantMsg]);
       if (res.thread_title) onTitled?.(threadId, res.thread_title);
-      // Titles come from a chat's first question, and the list is ordered by
-      // activity, so both may have changed.
-      void refreshThreads();
     } catch (err) {
       if (isFatalSessionError(err)) {
         // 401 = session binding rejected, 404 = session gone server-side.
@@ -647,7 +577,6 @@ export default function ChatPanel({
       );
       // The learner's line is already on screen.
       setMessages((prev) => [...prev, ...lines.filter((m) => m.role === "assistant")]);
-      void refreshThreads();
     } catch {
       localNote(fallback);
     }
@@ -673,7 +602,6 @@ export default function ChatPanel({
         sessionToken,
       );
       setMessages((prev) => [...prev, ...lines]);
-      void refreshThreads();
     } catch {
       localNote(fallback);
     }
@@ -683,7 +611,7 @@ export default function ChatPanel({
   const starters = isVideo ? VIDEO_STARTERS : DOCUMENT_STARTERS;
   const showGreeting =
     tab === "chat" && historyState === "ready" && messages.length === 0 && !sending && !sessionExpired;
-  const canSend = !sending && !images.uploading && input.trim().length > 0;
+  const canSend = Boolean(threadId) && !sending && !images.uploading && input.trim().length > 0;
   const notice = "rounded-xl border px-3 py-2.5 text-sm";
 
   return (
@@ -693,7 +621,7 @@ export default function ChatPanel({
       {...drop.bind}
     >
       <DropOverlay show={drop.dragging} />
-      {/* Header: Chat/Quiz, then the chat picker and New chat */}
+      {/* Header: Chat/Quiz. Chats themselves are managed in Malai's sidebar. */}
       <div className="flex shrink-0 items-center gap-2 border-b border-gray-100 px-3 py-2.5">
         {headerLead}
         <div className="flex shrink-0 rounded-full bg-gray-100 p-0.5" role="tablist" aria-label="Tutor view">
@@ -712,35 +640,10 @@ export default function ChatPanel({
             </button>
           ))}
         </div>
-        {!offline && !sessionExpired ? (
-          <ChatThreads
-            className="min-w-0 flex-1"
-            threads={threads}
-            currentId={threadId}
-            disabled={sending}
-            busy={threadBusy}
-            onSelect={(id) => {
-              selectThread(id);
-              setTab("chat");
-            }}
-            onCreate={() => {
-              void handleCreateThread();
-              setTab("chat");
-            }}
-            onRename={(id, title) => void handleRenameThread(id, title)}
-            onDelete={(id) => void handleDeleteThread(id)}
-          />
-        ) : (
-          <span className="flex-1" />
-        )}
+        <span className="flex-1" />
         {offline && <span className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-xs text-amber-600">offline mock</span>}
         {headerActions}
       </div>
-      {threadError && (
-        <p className="mx-4 mt-2 rounded-lg bg-red-50 px-3 py-1.5 text-xs text-red-600" role="alert">
-          {threadError}
-        </p>
-      )}
 
       {/* Both stay mounted so switching tabs keeps the chat and an unfinished quiz. */}
       <div
