@@ -1,14 +1,16 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 
 /**
  * Which models answer the learner, picked under the chat input. The four
  * modes are free models on the app's key; under Advanced the learner can
  * instead use their own key for any provider and one of its models
- * ("custom"). Everything stays in this browser and goes to the API as
- * request headers (apps/api/app/chat/models.py); the key is never stored on
- * the server.
+ * ("custom"). It goes to the API as request headers
+ * (apps/api/app/chat/models.py); the API never stores the key. For a
+ * signed-in learner the settings (key included) are also saved to their own
+ * Supabase row (`user_settings`, owner-only RLS) so they follow the account.
  */
 export type ModelMode = "auto" | "fast" | "balanced" | "powerful" | "custom";
 
@@ -82,6 +84,65 @@ export function saveModelSettings(patch: Partial<ModelSettings>): void {
     // The choice lasts for this page only.
   }
   for (const fn of listeners) fn(next);
+  void pushSettings();
+}
+
+// ---------------------------------------------------------------------------
+// Account sync (supabase/migrations/0005_user_settings.sql).
+// ---------------------------------------------------------------------------
+
+async function signedIn() {
+  const supabase = getSupabaseBrowserClient();
+  if (!supabase) return null;
+  try {
+    const { data } = await supabase.auth.getSession();
+    const userId = data.session?.user.id;
+    return userId ? { supabase, userId } : null;
+  } catch {
+    return null;
+  }
+}
+
+async function pushSettings(): Promise<void> {
+  const s = await signedIn();
+  if (!s) return;
+  const { error } = await s.supabase.from("user_settings").upsert(
+    { owner_id: s.userId, model: loadModelSettings(), quiz_model: loadQuizModel(), updated_at: new Date().toISOString() },
+    { onConflict: "owner_id" },
+  );
+  if (error) console.warn("settings sync failed", error);
+}
+
+let pulled = false;
+
+/** The account's saved settings replace this browser's; none saved yet: upload these. */
+export async function pullSettings(): Promise<void> {
+  if (pulled) return;
+  pulled = true;
+  const s = await signedIn();
+  if (!s) return;
+  const { data, error } = await s.supabase
+    .from("user_settings")
+    .select("model, quiz_model")
+    .eq("owner_id", s.userId)
+    .maybeSingle();
+  if (error) {
+    console.warn("settings pull failed", error);
+    return;
+  }
+  if (!data) {
+    void pushSettings();
+    return;
+  }
+  const next = clean(data.model);
+  cache = next;
+  try {
+    window.localStorage.setItem(STORE_KEY, JSON.stringify(next));
+    window.localStorage.setItem(QUIZ_STORE_KEY, String(data.quiz_model || "default"));
+  } catch {
+    // This page keeps the pulled copy.
+  }
+  for (const fn of listeners) fn(next);
 }
 
 /** Headers that tell the API which models to use. */
@@ -122,6 +183,7 @@ export function saveQuizModel(model: QuizModel): void {
   } catch {
     // The choice lasts for this page only.
   }
+  void pushSettings();
 }
 
 export function useModelSettings(): ModelSettings {
@@ -130,6 +192,7 @@ export function useModelSettings(): ModelSettings {
   useEffect(() => {
     setS(loadModelSettings());
     listeners.add(setS);
+    void pullSettings();
     return () => {
       listeners.delete(setS);
     };
