@@ -3,6 +3,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { formatApiError, listProviderModels, type ProviderModel } from "@/lib/api";
 import { MODEL_MODES, PROVIDERS, saveModelSettings, useModelSettings } from "@/lib/modelMode";
+import Select from "@/components/Select";
 
 const CHECK = "M5 12l5 5L20 7";
 
@@ -21,9 +22,10 @@ function Check({ on }: { on: boolean }) {
 /**
  * The model chooser under the chat input: the four free modes, and an
  * Advanced section to use your own key for any provider and pick one of the
- * models on it. Opens upward, over the composer.
+ * models on it. Opens upward over the composer, or downward (`down`) when the
+ * composer sits high on the page.
  */
-export default function ModelModePicker({ className = "" }: { className?: string }) {
+export default function ModelModePicker({ className = "", down = false }: { className?: string; down?: boolean }) {
   const settings = useModelSettings();
   const { mode } = settings;
   const [open, setOpen] = useState(false);
@@ -37,7 +39,6 @@ export default function ModelModePicker({ className = "" }: { className?: string
   const rootRef = useRef<HTMLDivElement | null>(null);
   const menuId = useId();
   const keyId = useId();
-  const providerId = useId();
 
   const label =
     mode === "custom"
@@ -123,7 +124,7 @@ export default function ModelModePicker({ className = "" }: { className?: string
         <div
           id={menuId}
           role="menu"
-          className="absolute bottom-full left-0 z-40 mb-2 flex max-h-[min(34rem,70dvh)] w-80 max-w-[calc(100vw-2rem)] flex-col rounded-2xl border border-gray-200 bg-white p-1.5 shadow-xl"
+          className={`absolute left-0 z-40 ${down ? "top-full mt-2" : "bottom-full mb-2"} flex max-h-[min(34rem,70dvh)] w-80 max-w-[calc(100vw-2rem)] flex-col rounded-2xl border border-gray-200 bg-white p-1.5 shadow-xl`}
         >
           <div className="min-h-0 overflow-y-auto">
             {MODEL_MODES.map((m) => (
@@ -165,21 +166,17 @@ export default function ModelModePicker({ className = "" }: { className?: string
               {advanced && (
                 <div className="flex flex-col gap-2 px-3 pb-2 pt-1">
                   <div className="flex gap-2">
-                    <label htmlFor={providerId} className="sr-only">Provider</label>
-                    <select
-                      id={providerId}
+                    <Select
+                      label="Provider"
                       value={provider}
-                      onChange={(e) => {
-                        setProvider(e.target.value);
+                      onChange={(v) => {
+                        setProvider(v);
                         setModels(null);
                         setError(null);
                       }}
-                      className="w-32 shrink-0 rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-xs text-gray-900 outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-100"
-                    >
-                      {PROVIDERS.map((p) => (
-                        <option key={p.id} value={p.id}>{p.label}</option>
-                      ))}
-                    </select>
+                      options={PROVIDERS.map((p) => ({ value: p.id, label: p.label }))}
+                      className="w-36 shrink-0"
+                    />
                     <label htmlFor={keyId} className="sr-only">API key</label>
                     <input
                       id={keyId}

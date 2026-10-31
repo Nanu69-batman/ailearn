@@ -854,7 +854,11 @@ async def post_quiz_grade(body: GradeRequest, request: Request) -> GradeResponse
     """Grade one subjective answer. MCQ and numerical are graded client-side."""
     if not _check_rate_limit(_client_ip(request)):
         raise HTTPException(status_code=429, detail="rate limit exceeded")
-    _authed_session(body.session_id, request, body.session_token)
+    # A signed-in learner needs no launch session; anyone else does.
+    if get_current_user(request) is None:
+        if not body.session_id:
+            raise HTTPException(status_code=401, detail="sign in to grade answers")
+        _authed_session(body.session_id, request, body.session_token)
     try:
         return await get_quiz_service().grade(body)
     except QuotaExhaustedError:

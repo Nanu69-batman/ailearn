@@ -104,8 +104,12 @@ function ChatMenu({
   }, [onClose]);
 
   // Fixed, so the scrolling sidebar never clips it.
-  const top = Math.min(anchor.bottom + 4, window.innerHeight - 280);
-  const left = Math.min(anchor.right - 224, window.innerWidth - 232);
+  // Opens to the right of the ⋯ button; flips left only when it cannot fit.
+  const top = Math.max(8, Math.min(anchor.top, window.innerHeight - 296));
+  const left = anchor.right + 6 + 224 <= window.innerWidth - 8 ? anchor.right + 6 : anchor.left - 230;
+  const router = useRouter();
+  // A chat in no subject lists its quizzes here (a subject's go under Resources).
+  const quizzes = useSavedQuizzes().filter((q) => q.chatId === chat.id && !chat.subjectId);
   const item = "flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition focus:outline-none";
 
   async function confirmDelete() {
@@ -140,6 +144,27 @@ function ChatMenu({
               Move to subject
               <Icon d={EXPAND_ICON} className="ml-auto h-4 w-4 text-gray-400" />
             </button>
+          )}
+          {quizzes.length > 0 && (
+            <div className="my-1 border-y border-gray-100 py-1">
+              <p className="px-3 pb-0.5 pt-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">Quizzes</p>
+              {quizzes.map((q) => (
+                <button
+                  key={q.id}
+                  type="button"
+                  role="menuitem"
+                  className={`${item} hover:bg-gray-50 focus:bg-gray-50`}
+                  onClick={() => {
+                    onClose();
+                    router.push(quizPath(q.id));
+                  }}
+                >
+                  <span aria-hidden="true">📝</span>
+                  <span className="min-w-0 flex-1 truncate">{q.title}</span>
+                  <span className="shrink-0 text-[11px] tabular-nums text-gray-400">{q.attempts.length}×</span>
+                </button>
+              ))}
+            </div>
           )}
           <button type="button" role="menuitem" className={`${item} text-red-600 hover:bg-red-50 focus:bg-red-50`} onClick={() => setView("delete")}>
             <Icon d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" className="h-4 w-4" />

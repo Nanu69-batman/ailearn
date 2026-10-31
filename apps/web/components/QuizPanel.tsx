@@ -16,6 +16,7 @@ import CitationBadge, { type CitationBadgeProps } from "./CitationBadge";
 import { pushQuizAttempt } from "@/lib/activitySync";
 import { addAttempt, saveQuiz, type SavedQuiz } from "@/lib/quizStore";
 import MarkdownBody from "./MarkdownBody";
+import Select from "./Select";
 import {
   MODEL_MODES,
   loadModelSettings,
@@ -66,6 +67,8 @@ interface QuizPanelProps {
   onFinished?: (outcome: QuizOutcome) => void;
   /** The subject a new quiz is saved under (Resources > Quizzes). */
   subjectId?: string | null;
+  /** The Malai chat it is taken in; a quiz with no subject is listed in its menu. */
+  chatId?: string | null;
   /** Re-attempt this saved quiz: no form, attempts are added to it. */
   saved?: SavedQuiz;
 }
@@ -149,6 +152,7 @@ export default function QuizPanel({
   onFailed,
   onFinished,
   subjectId = null,
+  chatId = null,
   saved,
 }: QuizPanelProps) {
   // The form. The count is kept as typed so the box can be cleared and retyped.
@@ -248,8 +252,7 @@ export default function QuizPanel({
         setWritten(settings);
         savedId.current = saveQuiz({
           subjectId,
-          sessionId,
-          sessionToken,
+          chatId,
           questions: res.questions,
           title: settings.prompt.trim() || res.questions[0]?.prompt.slice(0, 80) || "Quiz",
         });
@@ -416,25 +419,20 @@ export default function QuizPanel({
             />
           </label>
 
-          <label className="mt-4 block">
+          <div className="mt-4">
             <span className="mb-1.5 block text-xs font-medium text-gray-700">Model</span>
-            <select
+            <Select<QuizModel>
+              label="Model"
               value={quizModel === "custom" && !hasOwnKey ? "default" : quizModel}
-              onChange={(e) => chooseModel(e.target.value as QuizModel)}
-              disabled={loading}
-              className={field}
-            >
-              <option value="default">Default (fastest)</option>
-              {MODEL_MODES.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label} · {m.hint}
-                </option>
-              ))}
-              {hasOwnKey && (
-                <option value="custom">Own key · {modelSettings.modelName || modelSettings.model}</option>
-              )}
-            </select>
-          </label>
+              onChange={chooseModel}
+              options={[
+                { value: "default", label: "Default (fastest)" },
+                ...MODEL_MODES.map((m) => ({ value: m.id as QuizModel, label: `${m.label} · ${m.hint}` })),
+                ...(hasOwnKey ? [{ value: "custom" as QuizModel, label: `Own key · ${modelSettings.modelName || modelSettings.model}` }] : []),
+              ]}
+              className={loading ? "pointer-events-none opacity-60" : ""}
+            />
+          </div>
 
           <div className="mt-4 flex items-center justify-end gap-2">
             {quiz && (

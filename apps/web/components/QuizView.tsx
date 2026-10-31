@@ -146,8 +146,8 @@ export default function QuizView() {
             <QuizPanel
               key={run}
               saved={quiz}
-              sessionId={quiz.sessionId}
-              sessionToken={quiz.sessionToken}
+              sessionId=""
+              sessionToken=""
               getCurrentTimeMs={() => 0}
               scope={{}}
               sourceNote=""

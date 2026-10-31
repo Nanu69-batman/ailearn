@@ -141,7 +141,8 @@ class QuizResponse(BaseModel):
 class GradeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    session_id: str = Field(min_length=1, max_length=256)
+    # Optional for a signed-in learner: grading reads only the question and answer.
+    session_id: str | None = Field(default=None, min_length=1, max_length=256)
     session_token: str | None = Field(default=None, max_length=512)
     prompt: str = Field(min_length=1, max_length=1000)
     model_answer: str = Field(min_length=1, max_length=2000)

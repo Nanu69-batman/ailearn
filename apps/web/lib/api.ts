@@ -1323,13 +1323,14 @@ export function gradeQuizAnswer(
   return apiFetch<QuizGrade>("/quiz/grade", {
     method: "POST",
     body: JSON.stringify({
-      session_id: sessionId,
+      // A saved quiz grades as the signed-in learner: no launch session.
+      ...(sessionId ? { session_id: sessionId } : {}),
       prompt: question.prompt,
       model_answer: question.model_answer ?? "",
       key_points: question.key_points ?? [],
       answer,
     }),
-    headers: tokenHeader(sessionToken),
+    headers: sessionId ? tokenHeader(sessionToken) : undefined,
   });
 }
 

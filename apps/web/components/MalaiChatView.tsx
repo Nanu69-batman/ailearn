@@ -110,7 +110,10 @@ function Composer({
   slashContext,
   voice,
   images,
+  pickerDown,
 }: {
+  /** The model chooser opens downward (a new chat or a subject's page). */
+  pickerDown?: boolean;
   /** Images attached in the bar (chat context, never resources). */
   images?: { items: PendingImage[]; onFiles: (f: FileList | File[]) => void; onRemove: (key: string) => void; uploading: boolean };
   /** Dictation and the voice conversation; absent when voice is off. */
@@ -213,7 +216,7 @@ function Composer({
         voice && <VoiceButton size="lg" primary onClick={voice.onTalk} disabled={disabled} />
       )}
     </form>
-    <ModelModePicker className="mt-1.5 pl-3" />
+    <ModelModePicker className="mt-1.5 pl-3" down={pickerDown} />
     </div>
   );
 }
@@ -619,6 +622,7 @@ export default function MalaiChatView() {
       autoFocus={!chatId}
       inputRef={inputRef}
       slashContext={slashContext}
+      pickerDown={chatId === null && messages.length === 0 && !loading}
     />
   );
   const notes = (
@@ -787,6 +791,7 @@ export default function MalaiChatView() {
               getCurrentTimeMs={() => 0}
               scope={quizScope}
               subjectId={subject?.id ?? null}
+              chatId={quizChat.id}
               sourceNote={
                 subject
                   ? `From ${subject.name}: its documents and the videos you've marked done.`
