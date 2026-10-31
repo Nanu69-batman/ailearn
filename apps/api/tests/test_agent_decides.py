@@ -186,3 +186,16 @@ def test_general_chat_lets_the_agent_search_everything(chroma_store, monkeypatch
     resp = asyncio.run(service.chat(session_id=session.id, current_time_ms=0,
                                     message="wat is an integratng factor", general=True))
     assert resp.mode == "grounded" and [c.chunk_id for c in resp.citations] == ["n1"]
+
+
+def test_citations_in_the_models_own_style_still_count():
+    seen = {"res_a_c6_x": object(), "res_b_c42_y": object()}
+    text = (
+        "Definition (from the course PDF, chunk `res_a_c6_x`): the limit. "
+        "Why partial? (res_b_c42_y) Already fine [chunk_id=res_a_c6_x]. "
+        "Invented `res_zzz_c1_q` stays invented."
+    )
+    out = LessonAgent._normalize_citations(text, seen)
+    assert out.count("[chunk_id=res_a_c6_x]") == 2
+    assert "[chunk_id=res_b_c42_y]" in out
+    assert "[[" not in out and "res_zzz_c1_q" in out and "[chunk_id=res_zzz" not in out

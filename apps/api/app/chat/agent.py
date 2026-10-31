@@ -1023,7 +1023,7 @@ class LessonAgent:
         than serve an ungrounded answer; in a general chat, it IS the general
         answer.
         """
-        text = LessonAgent._expand_short_ids(text, seen)
+        text = LessonAgent._expand_short_ids(LessonAgent._normalize_citations(text, seen), seen)
         cited_ids = extract_cited_ids(text)
         unknown = [c for c in cited_ids if c not in seen]
         if unknown:
@@ -1038,6 +1038,31 @@ class LessonAgent:
         if tool_calls == 0:
             return AgentOutcome(kind="conversational", text=text, tool_calls=tool_calls)
         return AgentOutcome(kind="ask", text="", tool_calls=tool_calls, offer_general=True)
+
+    @staticmethod
+    def _normalize_citations(text: str, seen: dict) -> str:
+        """Turn a retrieved id cited in the model's own style into a marker.
+
+        Models cite as ``chunk `id` ``, ``(id)`` or ``chunk_id: id`` as often
+        as ``[chunk_id=id]``. Only ids returned by this turn's tools are
+        rewritten -- and the wrapper around them ("from the course PDF,
+        chunk `...`") with them -- so an invented id is never made valid.
+        """
+        ids = [c for c in sorted(seen, key=len, reverse=True) if c in text]
+        if not ids:
+            return text
+        loose = re.compile(
+            r"\(?(?:from [^()\n]{0,40}?,\s*)?"  # "(from the course PDF, "
+            r"(?:chunk(?:_id)?\s*[:=]?\s*)?"  # "chunk " / "chunk_id: "
+            r"[`\[]?(" + "|".join(re.escape(c) for c in ids) + r")[`\]]?\)?"
+        )
+        # Proper markers are already in the transport format: only the text
+        # between them is rewritten.
+        parts = re.split(r"(\[chunk_id=[^\]]*\])", text)
+        return "".join(
+            p if i % 2 else loose.sub(lambda m: f"[chunk_id={m.group(1)}]", p)
+            for i, p in enumerate(parts)
+        )
 
     @staticmethod
     def _expand_short_ids(text: str, seen: dict) -> str:
@@ -1065,7 +1090,7 @@ class LessonAgent:
     ) -> AgentOutcome:
         if text == REFUSAL_TEXT:
             return AgentOutcome(kind="refused", text=text, tool_calls=tool_calls)
-        text = LessonAgent._expand_short_ids(text, seen)
+        text = LessonAgent._expand_short_ids(LessonAgent._normalize_citations(text, seen), seen)
         cited_ids = extract_cited_ids(text)
         unknown = [c for c in cited_ids if c not in seen]
         if unknown:
