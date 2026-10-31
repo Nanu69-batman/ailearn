@@ -427,7 +427,9 @@ class ChatService:
         # are only searched when the message explicitly points at them ("what
         # do my notes say..."). Otherwise no retrieval runs at all, so nothing
         # is claimed about the course and no citation can be produced.
-        if general and live_frame is None and not refers_to_materials(message):
+        # With an agent, it decides when the materials are worth a search.
+        agent_ok = live_frame is None and not fast and self._agent is not None
+        if general and not agent_ok and live_frame is None and not refers_to_materials(message):
             devtrace.emit(
                 "route", "end", title="General chat (no materials)",
                 data={"path": "general"},
@@ -439,7 +441,7 @@ class ChatService:
         granted = self._sessions.get(session_id)
         # A subject chat with an agent: the agent decides what the message
         # needs (chat, its materials, another material, general knowledge).
-        decide = ask_first and live_frame is None and not fast and self._agent is not None
+        decide = (ask_first or general) and agent_ok
         nothing_ticked = (
             not allowed
             and focus_resource_id is None
@@ -556,8 +558,12 @@ class ChatService:
                 ask_first=ask_first,
                 limits=resource_limits_ms,
                 decide=decide,
-                other_ids=other_resource_ids,
+                # A general chat may search everything the session holds; what
+                # it may show is still only what it can read.
+                other_ids=other_resource_ids
+                or ([r for r in session.resource_scope if r not in done] if general else []),
                 materials=materials,
+                general_chat=general,
             )
             if resp is not None:
                 return resp
@@ -932,6 +938,7 @@ class ChatService:
         decide: bool = False,
         other_ids: Sequence[str] = (),
         materials: Sequence[dict] = (),
+        general_chat: bool = False,
     ) -> ChatResponse | None:
         """One agentic turn, or ``None`` to fall back to the classic pipeline.
 
@@ -970,6 +977,7 @@ class ChatService:
                     decide=decide,
                     other_ids=list(other_ids),
                     materials=list(materials),
+                    general_chat=general_chat,
                 ),
                 timeout=settings.agent_total_timeout_s,
             )
