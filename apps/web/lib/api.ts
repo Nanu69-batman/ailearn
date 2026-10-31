@@ -184,6 +184,8 @@ export interface ChatRequest {
   ask_first?: boolean;
   /** Materials the message names ("the pdf", "the video"). */
   referenced_resource_ids?: string[];
+  /** The subject's materials, for the agent to name and choose from. */
+  materials?: Array<{ id: string; title: string; kind: string }>;
   /** Videos granted "till you've watched": read up to this ms. */
   resource_limits_ms?: Record<string, number>;
 }

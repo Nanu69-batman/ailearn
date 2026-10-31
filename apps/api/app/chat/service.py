@@ -293,6 +293,8 @@ class ChatService:
         fast: bool = False,
         ask_first: bool = False,
         resource_limits_ms: dict[str, int] | None = None,
+        other_resource_ids: Sequence[str] = (),
+        materials: Sequence[dict] = (),
     ) -> ChatResponse:
         """Answer one learner question; flags ``visual_pending`` when visuals lag.
 
@@ -344,6 +346,8 @@ class ChatService:
                 fast=fast,
                 ask_first=ask_first,
                 resource_limits_ms=resource_limits_ms,
+                other_resource_ids=other_resource_ids,
+                materials=materials,
             )
         except BaseException as exc:
             devtrace.end_run(token, "error", data={"error": type(exc).__name__})
@@ -390,6 +394,8 @@ class ChatService:
         fast: bool = False,
         ask_first: bool = False,
         resource_limits_ms: dict[str, int] | None = None,
+        other_resource_ids: Sequence[str] = (),
+        materials: Sequence[dict] = (),
     ) -> ChatResponse:
         """Answer one learner question.
 
@@ -431,14 +437,18 @@ class ChatService:
         t_ms = clamp_current_time_ms(current_time_ms)
         allowed = effective_resource_scope(session.resource_scope, focus_resource_id)
         granted = self._sessions.get(session_id)
-        if (
+        # A subject chat with an agent: the agent decides what the message
+        # needs (chat, its materials, another material, general knowledge).
+        decide = ask_first and live_frame is None and not fast and self._agent is not None
+        nothing_ticked = (
             not allowed
             and focus_resource_id is None
             and live_frame is None
             and scope_resource_ids is not None
             and granted is not None
-            and granted.resource_scope
-        ):
+            and bool(granted.resource_scope)
+        )
+        if nothing_ticked and not decide:
             # The chat itself allows no materials (nothing ticked), not a stale
             # grant: it still talks. A greeting gets a greeting; anything else
             # is answered from general knowledge with no retrieval and no
@@ -459,7 +469,7 @@ class ChatService:
                     mode="grounded", grounded=False,
                 )
             return await self._general_answer(session_id, message, mode)
-        if not allowed:
+        if not allowed and not (nothing_ticked and decide):
             # Fail closed and say WHY. Without this branch the request reached
             # retrieval with an impossible scope and came back through the
             # ordinary low-evidence path, telling the learner they had not
@@ -498,9 +508,10 @@ class ChatService:
             },
         )
 
-        intent = await self._route_intent(message) if live_frame is None else None
+        intent = await self._route_intent(message) if live_frame is None and not decide else None
         if (
             ask_first
+            and not decide
             and live_frame is None
             and intent != SMALLTALK
             and has_subject_content(message)
@@ -544,9 +555,17 @@ class ChatService:
                 intent=intent,
                 ask_first=ask_first,
                 limits=resource_limits_ms,
+                decide=decide,
+                other_ids=other_resource_ids,
+                materials=materials,
             )
             if resp is not None:
                 return resp
+            if decide and not allowed:
+                # Nothing readable and no agent to decide: the route asks.
+                return ChatResponse(
+                    answer=REFUSAL_TEXT, citations=[], refused=True, mode="grounded", grounded=False,
+                )
             devtrace.emit(
                 "route", "end", title="Agent fell back to the classic pipeline",
                 data={"path": "classic", "reason": "agent unavailable or answer not grounded"},
@@ -910,6 +929,9 @@ class ChatService:
         intent: str | None = None,
         ask_first: bool = False,
         limits: dict[str, int] | None = None,
+        decide: bool = False,
+        other_ids: Sequence[str] = (),
+        materials: Sequence[dict] = (),
     ) -> ChatResponse | None:
         """One agentic turn, or ``None`` to fall back to the classic pipeline.
 
@@ -945,6 +967,9 @@ class ChatService:
                     history=history,
                     live_passage=live_passage,
                     intent=intent,
+                    decide=decide,
+                    other_ids=list(other_ids),
+                    materials=list(materials),
                 ),
                 timeout=settings.agent_total_timeout_s,
             )
@@ -952,6 +977,21 @@ class ChatService:
             log.warning("agent unavailable (%r); using the classic pipeline", exc)
             return None
 
+        if outcome.kind == "ask":
+            # The agent asks the learner (access, or general knowledge). Not
+            # saved: a yes asks the same question again, saved once.
+            return ChatResponse(
+                answer=outcome.text or (
+                    "I couldn't find this in the materials this chat can read, but another "
+                    "material in this subject seems to cover it. Want to give this chat access?"
+                    if outcome.suggested
+                    else "I couldn't find this in your materials. Want me to answer from "
+                    "general knowledge instead?"
+                ),
+                citations=[], refused=False, mode="conversational", grounded=False,
+                suggested_resource_ids=list(outcome.suggested),
+                offer_general=outcome.offer_general,
+            )
         prefix = f"{no_frame_note}\n\n" if no_frame_note else ""
         state = "live" if live_passage is not None else ("document" if no_frame_note else None)
         if outcome.kind == "refused" or (ask_first and outcome.kind == "supplemental"):

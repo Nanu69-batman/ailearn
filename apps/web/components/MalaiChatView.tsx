@@ -22,16 +22,15 @@ import {
   adoptDraftAllowance,
   draftAllowanceKey,
   effectiveAllowance,
-  mentionedResourceIds,
   readLimitsMs,
   readWatch,
-  referencedResourceIds,
   setWatchLimited,
   subjectLimitKey,
   setChatAllowed,
   setSubjectCompletion,
   useChatAllowances,
   useSubjectCompletion,
+  materialList,
 } from "@/lib/progress";
 import { AccessPrompt, GeneralPrompt, ResourceChooser, SubjectChecklist } from "@/components/ResourceChecklist";
 import SubjectAnalytics from "@/components/SubjectAnalytics";
@@ -549,7 +548,8 @@ export default function MalaiChatView() {
                 ask_first: !allowGeneral,
                 // "the pdf", "the Pravin Chandra notes": answered from those,
                 // or the server asks for access at once.
-                referenced_resource_ids: referencedResourceIds(text, subjectResources).slice(0, 64),
+                // The agent reads this list and decides what to search or ask for.
+                materials: materialList(subjectResources),
               }
             : {}),
         };
@@ -588,15 +588,8 @@ export default function MalaiChatView() {
         preview: titleFrom(text),
         ...(res.thread_title ? { title: res.thread_title } : {}),
       });
-      // The server's matches by content, plus any material the question names
-      // by title ("what did the Pravin Chandra pdf say?") that this chat can't read.
-      const named =
-        // A plain conversational reply (a greeting) names nothing; the
-        // server's own ask (offer_general / suggestions) may.
-        res.mode === "conversational" && !res.offer_general && !res.suggested_resource_ids?.length
-          ? []
-          : mentionedResourceIds(text, subjectResources.filter((r) => !allowed.includes(r.id)));
-      const suggested = [...new Set([...named, ...(res.suggested_resource_ids ?? [])])].filter(
+      // The agent decided whether to ask for access, and to what.
+      const suggested = (res.suggested_resource_ids ?? []).filter(
         (id) => subjectIds.includes(id) && !allowed.includes(id),
       );
       if (subject && suggested.length) setAccessAsk({ chatId: current.id, ids: suggested, text });

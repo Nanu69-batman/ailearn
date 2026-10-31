@@ -58,6 +58,19 @@ class Personalization(BaseModel):
     length: Literal["concise", "balanced", "detailed"] = "balanced"
 
 
+class MaterialInfo(BaseModel):
+    """One of the subject's materials, as the learner sees it in the chooser.
+
+    Only lets the agent name materials ("the pdf", "the Pravin Chandra
+    notes"). Ids are intersected with the session grant like every other id
+    list, and titles are untrusted data in the prompt.
+    """
+
+    id: str = Field(max_length=64)
+    title: str = Field(default="", max_length=200)
+    kind: str = Field(default="", max_length=20)
+
+
 class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -107,6 +120,9 @@ class ChatRequest(BaseModel):
     referenced_resource_ids: list[Annotated[str, Field(max_length=64)]] = Field(
         default_factory=list, max_length=64
     )
+    #: The subject's materials (id, title, kind) for an ask-first chat: the
+    #: agent reads the list and decides which to search or ask access to.
+    materials: list[MaterialInfo] = Field(default_factory=list, max_length=256)
     #: Videos among ``completed_resource_ids`` granted only "till you've
     #: watched": read through the strict gate at this ms instead of in full.
     resource_limits_ms: dict[

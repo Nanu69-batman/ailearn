@@ -425,3 +425,14 @@ export function readLimitsMs(chatKey: string | null, subjectId: string | null, a
   for (const id of allowed) if (limited.has(id)) out[id] = Math.round(readWatch(id)?.ms ?? 0);
   return out;
 }
+
+/** A subject's materials as the agent sees them: id, title and kind, nothing else. */
+export function materialList(
+  resources: ReadonlyArray<{ id: string; title?: string | null; type?: string | null; provider?: string | null }>,
+): Array<{ id: string; title: string; kind: string }> {
+  return resources.slice(0, 256).map((r) => ({
+    id: r.id,
+    title: (r.title ?? "").slice(0, 200),
+    kind: (r.provider === "youtube" ? "video" : r.type ?? "").slice(0, 20),
+  }));
+}

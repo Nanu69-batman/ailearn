@@ -290,7 +290,11 @@ async def _answer(body: ChatRequest, *, voice: bool = False) -> ChatResponse:
             ),
             **({"general": True} if body.general else {}),
             **({"fast": True} if voice else {}),
-            **({"ask_first": True} if held is not None else {}),
+            **(
+                {"ask_first": True, **_decide_inputs(body)}
+                if held is not None
+                else {}
+            ),
         )
         if held is not None:
             turns = deferred_turns.get() or []
@@ -397,6 +401,21 @@ async def _ask_learner(body: ChatRequest) -> ChatResponse:
         ),
         refused=False, mode="conversational", grounded=False, offer_general=True,
     )
+
+
+def _decide_inputs(body: ChatRequest) -> dict:
+    """What a subject chat's agent decides with: the materials it may ask for."""
+    from app.chat.suggest import suggest_candidates
+
+    session = session_store.get(body.session_id)
+    if session is None:
+        return {}
+    readable = body.scope_resource_ids if body.scope_resource_ids is not None else session.resource_scope
+    granted = set(session.resource_scope)
+    return {
+        "other_resource_ids": suggest_candidates(session.resource_scope, readable, body.suggest_resource_ids),
+        "materials": [m.model_dump() for m in body.materials if m.id in granted],
+    }
 
 
 async def _suggest(body: ChatRequest) -> list[str]:

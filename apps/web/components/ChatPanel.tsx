@@ -19,7 +19,7 @@ import { mockChatAnswer, mockHistory } from "../lib/fixtures";
 import { LEARNER_NAME } from "../lib/learn";
 import MessageList from "./MessageList";
 import { AccessPrompt, GeneralPrompt } from "./ResourceChecklist";
-import { mentionedResourceIds, referencedResourceIds } from "../lib/progress";
+import { materialList } from "../lib/progress";
 import type { CitationBadgeProps } from "./CitationBadge";
 import {
   SlashMenuList,
@@ -528,7 +528,8 @@ export default function ChatPanel({
                   ? {
                       suggest_resource_ids: suggestResourceIds,
                       ask_first: !allowGeneral,
-                      referenced_resource_ids: referencedResourceIds(text, subjectMaterials).slice(0, 64),
+                      // The agent reads this list and decides what to search or ask for.
+                      materials: materialList(subjectMaterials),
                       resource_limits_ms: getResourceLimits?.() ?? {},
                     }
                   : {}),
@@ -559,16 +560,8 @@ export default function ChatPanel({
       };
       setMessages((prev) => [...prev, assistantMsg]);
       if (res.thread_title) onTitled?.(threadId, res.thread_title);
-      // Content matches from the server, plus materials the question names by title.
-      const named =
-        // A plain conversational reply (a greeting) names nothing; the
-        // server's own ask (offer_general / suggestions) may.
-        res.mode === "conversational" && !res.offer_general && !res.suggested_resource_ids?.length
-          ? []
-          : mentionedResourceIds(text, suggestResourceIds.map((id) => ({ id, title: resourceTitle(id) })));
-      const suggested = [...new Set([...named, ...(res.suggested_resource_ids ?? [])])].filter((id) =>
-        suggestResourceIds.includes(id),
-      );
+      // The agent decided whether to ask for access, and to what.
+      const suggested = (res.suggested_resource_ids ?? []).filter((id) => suggestResourceIds.includes(id));
       if (onAllowAccess && suggested.length) setAccessAsk({ ids: suggested, text });
       else if (onAllowAccess && res.offer_general) setAccessAsk({ ids: [], text, general: true });
     } catch (err) {
