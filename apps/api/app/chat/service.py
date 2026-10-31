@@ -405,6 +405,28 @@ class ChatService:
 
         t_ms = clamp_current_time_ms(current_time_ms)
         allowed = effective_resource_scope(session.resource_scope, focus_resource_id)
+        granted = self._sessions.get(session_id)
+        if (
+            not allowed
+            and focus_resource_id is None
+            and live_frame is None
+            and scope_resource_ids is not None
+            and granted is not None
+            and granted.resource_scope
+        ):
+            # The chat itself allows no materials (nothing ticked), not a stale
+            # grant: it still talks. A greeting gets a greeting; anything else
+            # is answered from general knowledge with no retrieval and no
+            # citations, and the route offers the materials that would cover it.
+            devtrace.emit(
+                "route", "end", title="Chat allows no materials (general answer)",
+                data={"path": "general_no_allowance"},
+            )
+            if await self._route_intent(message) == SMALLTALK:
+                return await self._conversational_answer(
+                    session_id, message, self._user_history(session_id)
+                )
+            return await self._general_answer(session_id, message, mode)
         if not allowed:
             # Fail closed and say WHY. Without this branch the request reached
             # retrieval with an impossible scope and came back through the

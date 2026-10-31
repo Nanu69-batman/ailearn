@@ -73,6 +73,11 @@ SMALLTALK_PATTERNS: tuple[str, ...] = (
         rf"thanks?|thank you))*{_PUNCT}$"
     ),
     r"^(?:bye|goodbye|see you|see ya|good night|gn)" + _ADDRESS + _PUNCT + r"$",
+    # "how are you", "hi, how are you doing today?", "hey malai how's it going"
+    (
+        rf"^(?:{_GREETING}{_ADDRESS}{_PUNCT})?(?:how (?:are|r) (?:you|u)|how'?s it going|"
+        rf"how do you do|how have you been)(?: doing| today| doing today)?{_ADDRESS}{_PUNCT}\??{_PUNCT}$"
+    ),
     # Questions about the assistant itself, optionally after an interjection
     # ("really?? what are your capabilities", "ok so what can you do").
     rf"^{_LEADIN}(?:who|what) (?:are|r) (?:you|u)(?: exactly| really)?{_PUNCT}\??$",

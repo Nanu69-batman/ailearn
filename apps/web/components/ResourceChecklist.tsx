@@ -395,7 +395,7 @@ export function ResourceChooser({
           {list}
           <p className="border-t border-gray-100 px-3 py-2 text-[11px] text-gray-500">
             {allowed.length === 0
-              ? "Nothing ticked: Malai has no materials to answer from in this chat."
+              ? "Nothing ticked: Malai answers from general knowledge and offers access when a question needs one of these."
               : `Starts from ${subjectName}'s completed resources. Changes here stay in this chat.`}
           </p>
         </div>

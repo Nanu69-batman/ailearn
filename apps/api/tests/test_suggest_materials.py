@@ -76,3 +76,61 @@ def test_suggest_materials_never_raises():
 
 def test_response_defaults_to_no_suggestions():
     assert ChatResponse(answer="x").suggested_resource_ids == []
+
+
+class _RecordingLLM:
+    """Answers anything; records whether it was handed passages."""
+
+    def __init__(self) -> None:
+        self.passages: list | None = None
+
+    async def complete(self, *, system, user_prompt, passages, mode) -> LLMResult:
+        self.passages = list(passages)
+        return LLMResult(text="Hello! Happy to help.", cited_ids=[])
+
+
+def _empty_allowance_service(chroma_store, embedder):
+    chroma_store.add([make_chunk("pdf1", resource_id="res_pdf", source_type="pdf",
+                                 start_ms=None, end_ms=None, page_no=1, video_id=None, text=TEXT)])
+    sessions = InMemorySessionStore()
+    llm = _RecordingLLM()
+    service = ChatService(
+        store=chroma_store, embedder=embedder, llm=llm, sessions=sessions,
+        messages=InMemoryMessageStore(),
+    )
+    session = sessions.create(
+        learner_id="l1", course_id="course_1", resource_id="res_pdf", lesson_id=None,
+        resource_scope=["res_pdf"], current_time_ms=0,
+    )
+    return service, session.id, llm
+
+
+def test_chat_with_nothing_allowed_still_greets(chroma_store, embedder):
+    service, sid, _llm = _empty_allowance_service(chroma_store, embedder)
+    resp = asyncio.run(service.chat(
+        session_id=sid, current_time_ms=0, message="hi, how are you", scope_resource_ids=[],
+    ))
+    assert not resp.scope_empty and not resp.refused
+    assert resp.mode == "conversational"
+    assert resp.citations == []
+
+
+def test_chat_with_nothing_allowed_answers_generally_without_reading(chroma_store, embedder):
+    service, sid, llm = _empty_allowance_service(chroma_store, embedder)
+    resp = asyncio.run(service.chat(
+        session_id=sid, current_time_ms=0, message="what is a partial derivative",
+        scope_resource_ids=[],
+    ))
+    assert not resp.scope_empty
+    assert resp.mode == "general"
+    assert resp.citations == []
+    assert llm.passages == []  # no material was read
+
+
+def test_stale_grant_still_fails_closed(chroma_store, embedder):
+    service, sid, _llm = _empty_allowance_service(chroma_store, embedder)
+    resp = asyncio.run(service.chat(
+        session_id=sid, current_time_ms=0, message="what is a partial derivative",
+        focus_resource_id="res_not_granted",
+    ))
+    assert resp.scope_empty and resp.refused

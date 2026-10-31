@@ -274,7 +274,10 @@ async def _answer(body: ChatRequest, *, voice: bool = False) -> ChatResponse:
             **({"general": True} if body.general else {}),
             **({"fast": True} if voice else {}),
         )
-        if body.suggest_resource_ids and (resp.refused or resp.mode == "supplemental"):
+        # Refused, not covered, or answered from general knowledge: the
+        # materials outside this chat's reach may cover it. A greeting
+        # ("conversational") or a grounded answer needs nothing more.
+        if body.suggest_resource_ids and (resp.refused or resp.mode in ("supplemental", "general")):
             resp.suggested_resource_ids = await _suggest(body)
         return resp
     except SessionNotFoundError as exc:
