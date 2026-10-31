@@ -98,8 +98,6 @@ def test_position_reports_quota_instead_of_queueing(env):
 
 def test_chat_reports_spent_quota_as_503_not_502(monkeypatch):
     from app.chat import router as chat_router
-    from app.chat.launch import create_session_token
-    from app.config import settings
     from app.main import app
 
     class _Spent:
@@ -111,9 +109,8 @@ def test_chat_reports_spent_quota_as_503_not_502(monkeypatch):
         learner_id="l1", course_id="c1", resource_id="r1", lesson_id=None,
         resource_scope=["r1"], current_time_ms=0,
     )
-    token = create_session_token(settings.lms_launch_secret, session.id, "l1")
     r = TestClient(app).post("/chat", json={
-        "session_id": session.id, "session_token": token,
+        "session_id": session.id, 
         "current_time_ms": 0, "message": "hi",
     })
     assert r.status_code == 503

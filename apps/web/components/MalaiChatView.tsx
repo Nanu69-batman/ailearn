@@ -254,7 +254,7 @@ export default function MalaiChatView() {
   const slashContext: SlashContext = subject ? "subject" : "general";
 
   // Load the open chat's history whenever the chat changes.
-  const chatSession = chat ? `${chat.sessionId}|${chat.threadId}|${chat.sessionToken}` : null;
+  const chatSession = chat ? `${chat.sessionId}|${chat.threadId}` : null;
   useEffect(() => {
     setError(null);
     // Another chat, or a new one: the open quiz belongs to the old chat.
@@ -280,7 +280,6 @@ export default function MalaiChatView() {
       try {
         const rows = await getMessages(
           chat.sessionId,
-          chat.sessionToken,
           chat.threadId === MAIN_THREAD_ID ? undefined : chat.threadId,
         );
         if (!cancelled) {
@@ -338,7 +337,7 @@ export default function MalaiChatView() {
   const dictation = useDictation({
     getSession: async () => {
       const c = await ensureChat();
-      return { sessionId: c.sessionId, sessionToken: c.sessionToken };
+      return { sessionId: c.sessionId };
     },
     onFinal: (t) => setDraft((prev) => joinText(prev, t)),
   });
@@ -354,7 +353,7 @@ export default function MalaiChatView() {
   const images = useChatImages(async () => {
     const c = await ensureChat();
     imageChat.current = c;
-    return { sessionId: c.sessionId, sessionToken: c.sessionToken, threadId: c.threadId === MAIN_THREAD_ID ? undefined : c.threadId };
+    return { sessionId: c.sessionId, threadId: c.threadId === MAIN_THREAD_ID ? undefined : c.threadId };
   });
   const clearImages = images.clear;
   const imageNames = images.readyNames;
@@ -374,7 +373,6 @@ export default function MalaiChatView() {
     const c = voiceChat!;
     return {
       session_id: c.sessionId,
-      session_token: c.sessionToken,
       thread_id: c.threadId === MAIN_THREAD_ID ? undefined : c.threadId,
       current_time_ms: 0,
       completed_resource_ids: doneResourceIds(subject ? [subject] : subjects),
@@ -474,7 +472,6 @@ export default function MalaiChatView() {
       const ask = (c: MalaiChat) => {
         const req: ChatRequest = {
           session_id: c.sessionId,
-          session_token: c.sessionToken,
           thread_id: c.threadId === MAIN_THREAD_ID ? undefined : c.threadId,
           current_time_ms: 0,
           message: text,
@@ -555,7 +552,6 @@ export default function MalaiChatView() {
     try {
       const lines = await postQuizNote(
         { session_id: quizChat.sessionId, thread_id: quizChat.threadId, event: "started", request, count },
-        quizChat.sessionToken,
       );
       setMessages((prev) => [...prev, ...lines.filter((m) => m.role === "assistant")]);
     } catch {
@@ -574,7 +570,6 @@ export default function MalaiChatView() {
           score: o.score,
           to_review: o.toReview,
         },
-        quizChat.sessionToken,
       );
       setMessages((prev) => [...prev, ...lines]);
       updateChat(quizChat.id, { updatedAt: Date.now() });
@@ -787,7 +782,6 @@ export default function MalaiChatView() {
             <QuizPanel
               key={quizChat.id}
               sessionId={quizChat.sessionId}
-              sessionToken={quizChat.sessionToken}
               getCurrentTimeMs={() => 0}
               scope={quizScope}
               subjectId={subject?.id ?? null}

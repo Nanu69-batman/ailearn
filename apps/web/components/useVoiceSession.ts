@@ -17,7 +17,6 @@ import {
 /** The `start` fields a composer already sends to streamChat, minus model and tokens. */
 export interface VoiceStartFields {
   session_id: string;
-  session_token: string;
   video_id?: string;
   current_time_ms: number;
   thread_id?: string;

@@ -15,6 +15,8 @@ from app.main import app
 SECRET = "test-jwt-secret-at-least-32-bytes-long!!"
 USER_ID = "8b1f6c1e-0000-4000-8000-000000000001"
 
+pytestmark = pytest.mark.real_auth
+
 
 def _token(*, secret=SECRET, aud="authenticated", exp_in=3600, sub=USER_ID, email="a@b.c"):
     now = int(time.time())
@@ -126,23 +128,11 @@ def test_lms_session_forces_learner_id_to_user(client):
     assert r.json()["learner_id"] == USER_ID
 
 
-def test_lms_session_anonymous_keeps_body_learner(client):
-    r = client.post("/lms/session", json=_launch())
-    assert r.status_code == 200, r.text
-    assert r.json()["learner_id"] == "body-learner"
-
-
-def test_lms_session_requires_login_for_non_demo_when_auth_required(client, monkeypatch):
-    monkeypatch.setattr(settings, "auth_required", True)
-    r = client.post("/lms/session", json=_launch(course_id="c1"))
-    assert r.status_code == 401
-
-
-def test_lms_session_demo_course_is_anonymous_under_auth_required(client, monkeypatch):
-    monkeypatch.setattr(settings, "auth_required", True)
-    r = client.post("/lms/session", json=_launch(course_id="demo"))
-    assert r.status_code == 200, r.text
-    assert r.json()["learner_id"] == "body-learner"
+def test_lms_session_signed_out_is_401(client):
+    # Google or email sign-in is the only way in, for every course.
+    for course in ("c1", "demo"):
+        r = client.post("/lms/session", json=_launch(course_id=course))
+        assert r.status_code == 401
 
 
 def test_lms_session_bad_token_is_401(client):

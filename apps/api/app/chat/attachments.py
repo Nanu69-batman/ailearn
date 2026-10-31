@@ -27,7 +27,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
 from app.chat.sessions import history_key
@@ -197,10 +197,10 @@ def _describe(data: bytes, mime: str) -> str:
     return (getattr(resp, "text", "") or "").strip()
 
 
-def _authed(request: Request, session_id: str, token: str | None):
+def _authed(request: Request, session_id: str):
     from app.chat import router as chat_router
 
-    session = chat_router._authed_session(session_id, request, token)
+    session = chat_router._authed_session(session_id, request)
     return session
 
 
@@ -210,13 +210,12 @@ async def add_attachment(
     session_id: Annotated[str, Form()],
     image: Annotated[UploadFile, File()],
     thread_id: Annotated[str | None, Form(max_length=64)] = None,
-    session_token: Annotated[str | None, Form()] = None,
 ) -> AttachmentOut:
     from app.chat import router as chat_router
 
     if not chat_router._check_rate_limit(chat_router._client_ip(request)):
         raise HTTPException(status_code=429, detail="rate limit exceeded")
-    session = _authed(request, session_id, session_token)
+    session = _authed(request, session_id)
     tid = chat_router._resolve_thread(session.id, thread_id)
     if len(_rows(session.id, tid)) >= MAX_PER_CHAT:
         raise HTTPException(
@@ -296,11 +295,10 @@ def delete_attachment(
     request: Request,
     session_id: str,
     thread_id: str | None = None,
-    x_session_token: Annotated[str | None, Header()] = None,
 ) -> None:
     from app.chat import router as chat_router
 
-    session = _authed(request, session_id, x_session_token)
+    session = _authed(request, session_id)
     tid = chat_router._resolve_thread(session.id, thread_id)
     key = history_key(session.id, tid)
     gone = [r for r in _rows(session.id, tid) if r["id"] == attachment_id]

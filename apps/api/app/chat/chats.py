@@ -25,9 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.auth import AuthUser, get_current_user
-from app.chat.launch import create_session_token
 from app.chat.sessions import session_store, valid_thread_id
-from app.config import settings
 from app.supa.client import get_client
 
 log = logging.getLogger(__name__)
@@ -59,7 +57,6 @@ class MalaiChatIn(BaseModel):
 class MalaiChatOut(MalaiChatIn):
     id: str
     #: Minted for the caller's own live session; empty when the session is gone.
-    session_token: str = ""
 
 
 class MalaiChatList(BaseModel):
@@ -143,12 +140,6 @@ def _rows(owner: str) -> list[dict]:
 
 
 def _out(row: dict, owner: str) -> MalaiChatOut:
-    session = session_store.get(str(row.get("session_id")))
-    token = ""
-    if session is not None and session.owner_id == owner:
-        token = create_session_token(
-            settings.lms_launch_secret, session.id, session.learner_id
-        )
     return MalaiChatOut(
         id=str(row["id"]),
         session_id=str(row.get("session_id") or ""),
@@ -159,7 +150,6 @@ def _out(row: dict, owner: str) -> MalaiChatOut:
         preview=str(row.get("preview") or ""),
         created_ms=int(row.get("created_ms") or 0),
         updated_ms=int(row.get("updated_ms") or 0),
-        session_token=token,
     )
 
 

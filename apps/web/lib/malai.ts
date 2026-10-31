@@ -63,7 +63,6 @@ const SESSION_KEY = "ailearn.malai.session";
 export interface MalaiChat {
   id: string;
   sessionId: string;
-  sessionToken: string;
   threadId: string;
   title: string;
   /** Null: not filed under a subject ("Recent chats"). */
@@ -81,7 +80,6 @@ export interface MalaiChat {
 
 interface MalaiSession {
   session_id: string;
-  session_token: string;
   scope: string[];
 }
 
@@ -127,7 +125,7 @@ function save(next: MalaiChat[]): void {
 // another device. Local storage stays the instant, offline copy.
 // ---------------------------------------------------------------------------
 
-function toRow(c: MalaiChat): Omit<MalaiChatRow, "session_token"> {
+function toRow(c: MalaiChat): MalaiChatRow {
   return {
     id: c.id,
     session_id: c.sessionId,
@@ -145,8 +143,6 @@ function fromRow(r: MalaiChatRow, local: MalaiChat | undefined): MalaiChat {
   return {
     id: r.id,
     sessionId: r.session_id,
-    // The server mints a token only for a live session it can vouch for.
-    sessionToken: r.session_token || local?.sessionToken || "",
     threadId: r.thread_id,
     title: r.title,
     subjectId: r.subject_id,
@@ -192,7 +188,7 @@ export function syncMalaiChats(force = false): Promise<void> {
         if (removedIds.has(r.id)) continue;
         const mine = local.get(r.id);
         const theirs = fromRow(r, mine);
-        merged.set(r.id, mine && mine.updatedAt > theirs.updatedAt ? { ...mine, sessionToken: theirs.sessionToken || mine.sessionToken } : theirs);
+        merged.set(r.id, mine && mine.updatedAt > theirs.updatedAt ? mine : theirs);
         if (mine && mine.updatedAt > theirs.updatedAt) push(mine);
       }
       for (const c of local.values()) {
@@ -274,7 +270,6 @@ export function removeChat(id: string): void {
  */
 export function recordLessonChat(args: {
   sessionId: string;
-  sessionToken: string;
   threadId: string;
   subjectId: string;
   resourceId: string;
@@ -283,13 +278,12 @@ export function recordLessonChat(args: {
   const now = Date.now();
   const existing = load().find((c) => c.sessionId === args.sessionId && c.threadId === args.threadId);
   if (existing) {
-    updateChat(existing.id, { preview: titleFrom(args.question), updatedAt: now, sessionToken: args.sessionToken });
+    updateChat(existing.id, { preview: titleFrom(args.question), updatedAt: now });
     return existing.id;
   }
   const chat: MalaiChat = {
     id: newChatId(),
     sessionId: args.sessionId,
-    sessionToken: args.sessionToken,
     threadId: args.threadId,
     title: titleFrom(args.question),
     subjectId: args.subjectId,
@@ -355,7 +349,7 @@ function readSession(): MalaiSession | null {
   try {
     const raw = window.localStorage.getItem(SESSION_KEY);
     const v = raw ? (JSON.parse(raw) as Partial<MalaiSession>) : null;
-    if (v && typeof v.session_id === "string" && typeof v.session_token === "string" && Array.isArray(v.scope)) {
+    if (v && typeof v.session_id === "string" && Array.isArray(v.scope)) {
       return v as MalaiSession;
     }
   } catch {
@@ -388,7 +382,7 @@ async function malaiSession(scope: string[], fresh = false): Promise<MalaiSessio
     current_time_ms: 0,
     issued_at: Date.now(),
   });
-  const next = { session_id: res.session_id, session_token: res.session_token, scope };
+  const next = { session_id: res.session_id, scope };
   writeSession(next);
   return next;
 }
@@ -397,22 +391,22 @@ async function malaiSession(scope: string[], fresh = false): Promise<MalaiSessio
 export async function openThread(
   scope: string[],
   fresh = false,
-): Promise<{ sessionId: string; sessionToken: string; threadId: string }> {
+): Promise<{ sessionId: string; threadId: string }> {
   if (scope.length === 0) {
     throw new Error("Add materials to a subject first, so Malai has something to read.");
   }
   let session = await malaiSession(scope, fresh);
   let thread;
   try {
-    thread = await createThread(session.session_id, session.session_token);
+    thread = await createThread(session.session_id);
   } catch (err) {
     if (fresh) throw err;
     // The stored session is gone (server restart): mint once more.
     writeSession(null);
     session = await malaiSession(scope, true);
-    thread = await createThread(session.session_id, session.session_token);
+    thread = await createThread(session.session_id);
   }
-  return { sessionId: session.session_id, sessionToken: session.session_token, threadId: thread.id };
+  return { sessionId: session.session_id, threadId: thread.id };
 }
 
 export function newChatId(): string {

@@ -83,7 +83,6 @@ class QuizRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     session_id: str = Field(min_length=1, max_length=256)
-    session_token: str | None = Field(default=None, max_length=512)
     video_id: str | None = Field(default=None, max_length=256)
     current_time_ms: int = Field(ge=0, le=MAX_CURRENT_TIME_MS)
     completed_resource_ids: list[Annotated[str, Field(max_length=64)]] = Field(
@@ -143,7 +142,6 @@ class GradeRequest(BaseModel):
 
     # Optional for a signed-in learner: grading reads only the question and answer.
     session_id: str | None = Field(default=None, min_length=1, max_length=256)
-    session_token: str | None = Field(default=None, max_length=512)
     prompt: str = Field(min_length=1, max_length=1000)
     model_answer: str = Field(min_length=1, max_length=2000)
     key_points: list[Annotated[str, Field(max_length=300)]] = Field(
@@ -170,7 +168,6 @@ class QuizNoteRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     session_id: str = Field(min_length=1, max_length=256)
-    session_token: str | None = Field(default=None, max_length=512)
     thread_id: str | None = Field(default=None, max_length=64)
     #: "started": the learner asked for a quiz in the chat; "completed": they
     #: submitted every answer.

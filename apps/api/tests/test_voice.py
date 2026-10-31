@@ -147,7 +147,6 @@ def _start(launch, **extra):
     return {
         "type": "start",
         "session_id": launch["session_id"],
-        "session_token": launch["session_token"],
         "current_time_ms": 1000,
         **extra,
     }
@@ -227,10 +226,10 @@ def test_models_enabled_true_with_key(client):
 
 
 @pytest.mark.parametrize("path", ["/voice/live", "/voice/transcribe"])
-def test_bad_session_token_is_4401(client, launch, monkeypatch, path):
+def test_signed_out_is_4401(client, launch, monkeypatch, path):
     _install(monkeypatch, FakeSession())
     with client.websocket_connect(path) as ws:
-        ws.send_json(_start(launch, session_token="forged"))
+        ws.send_json(_start(launch, access_token="signed-out"))
         with pytest.raises(WebSocketDisconnect) as e:
             ws.receive_json()
     assert e.value.code == 4401
@@ -285,7 +284,7 @@ def test_other_users_session_is_4404(client, monkeypatch):
             {
                 "type": "start",
                 "session_id": r["session_id"],
-                "session_token": r["session_token"],
+                
                 "access_token": tok("someone-else"),
                 "current_time_ms": 0,
             }
@@ -605,7 +604,7 @@ def test_transcribe_relays_interim_final_and_ends_stream_on_stop(client, launch,
             {
                 "type": "start",
                 "session_id": launch["session_id"],
-                "session_token": launch["session_token"],
+                
                 "language": "en",
             }
         )

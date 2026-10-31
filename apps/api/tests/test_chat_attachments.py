@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+from tests.conftest import SIGNED_OUT
 import pytest
 from fastapi.testclient import TestClient
 
 from app.chat import attachments
 from app.chat import router as chat_router
-from app.chat.launch import create_session_token
 from app.chat.sessions import session_store
 from app.config import settings
 from app.main import app
@@ -36,13 +36,13 @@ def _session():
         resource_scope=["r"],
         current_time_ms=0,
     )
-    return s, create_session_token(settings.lms_launch_secret, s.id, s.learner_id)
+    return s, ""
 
 
 def _upload(client, sid, token, data=PNG, mime="image/png"):
     return client.post(
         "/chat/attachments",
-        data={"session_id": sid, "session_token": token},
+        data={"session_id": sid},
         files={"image": ("problem.png", data, mime)},
     )
 
@@ -56,9 +56,15 @@ def test_attach_transcribes_and_feeds_the_prompt(client):
     assert "problem.png" in note and "$x^2 + 2x = 0$" in note
 
 
-def test_wrong_token_is_refused(client):
+def test_signed_out_is_refused(client):
     s, _ = _session()
-    assert _upload(client, s.id, "nope").status_code == 401
+    r = client.post(
+        "/chat/attachments",
+        data={"session_id": s.id},
+        files={"image": ("problem.png", PNG, "image/png")},
+        headers=SIGNED_OUT,
+    )
+    assert r.status_code == 401
 
 
 def test_non_image_is_refused(client):
@@ -108,11 +114,11 @@ def test_image_file_goes_to_storage(client, monkeypatch):
             resource_scope=["r"],
             current_time_ms=0,
         )
-        token = create_session_token(settings.lms_launch_secret, s.id, s.learner_id)
+        token = ""
         assert _upload(client, s.id, token).status_code == 200
     finally:
         supa.set_client(None)
     uploads = [p for m, p in seen if m == "POST" and p.startswith("/storage/v1/object/")]
     assert len(uploads) == 1
-    assert uploads[0].startswith(f"/storage/v1/object/{settings.supabase_storage_bucket}/public/chat/{s.id}/att_")
+    assert uploads[0].startswith(f"/storage/v1/object/{settings.supabase_storage_bucket}/test-user/chat/{s.id}/att_")
     assert uploads[0].endswith(".png")

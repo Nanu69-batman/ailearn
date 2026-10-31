@@ -48,7 +48,6 @@ interface ChatPanelProps {
   /** The subject a quiz written here is saved under. */
   subjectId?: string | null;
   sessionId: string;
-  sessionToken: string;
   videoId: string;
   getCurrentTimeMs: () => number;
   /**
@@ -150,7 +149,6 @@ function fmtMs(ms: number): string {
 export default function ChatPanel({
   subjectId = null,
   sessionId,
-  sessionToken,
   videoId,
   getCurrentTimeMs,
   captureFrame,
@@ -207,7 +205,7 @@ export default function ChatPanel({
   const voiceModels = useVoiceModels(!offline);
   const [voiceOpen, setVoiceOpen] = useState(false);
   const dictation = useDictation({
-    getSession: async () => (sessionExpired ? null : { sessionId, sessionToken }),
+    getSession: async () => (sessionExpired ? null : { sessionId }),
     onFinal: (t) => setInput((prev) => joinText(prev, t)),
   });
 
@@ -222,7 +220,7 @@ export default function ChatPanel({
 
   // Images attached in the bar: context for this chat, never resources.
   const images = useChatImages(async () =>
-    sessionExpired ? null : { sessionId, sessionToken, threadId: threadId === MAIN_THREAD_ID ? undefined : threadId },
+    sessionExpired ? null : { sessionId, threadId: threadId === MAIN_THREAD_ID ? undefined : threadId },
   );
   const clearImages = images.clear;
   const drop = useImageDrop((f) => void images.add(f), !offline && !sessionExpired);
@@ -245,7 +243,7 @@ export default function ChatPanel({
     }
     let cancelled = false;
     setThreadId("");
-    createThread(sessionId, sessionToken)
+    createThread(sessionId)
       .then((t) => {
         if (!cancelled) setThreadId(t.id);
       })
@@ -256,7 +254,7 @@ export default function ChatPanel({
     return () => {
       cancelled = true;
     };
-  }, [sessionId, sessionToken, offline, openThreadId]);
+  }, [sessionId, offline, openThreadId]);
 
   useEffect(() => {
     if (!threadId) return;
@@ -273,7 +271,6 @@ export default function ChatPanel({
       try {
         const history = await getMessages(
           sessionId,
-          sessionToken,
           threadId === MAIN_THREAD_ID ? undefined : threadId,
         );
         if (!cancelled) {
@@ -298,7 +295,7 @@ export default function ChatPanel({
     return () => {
       cancelled = true;
     };
-  }, [sessionId, sessionToken, offline, threadId]);
+  }, [sessionId, offline, threadId]);
 
   useEffect(() => {
     // Filling a window: scroll the message box only, never the page around it.
@@ -349,7 +346,6 @@ export default function ChatPanel({
   function voiceStart(): VoiceStartFields {
     return {
       session_id: sessionId,
-      session_token: sessionToken,
       video_id: videoId,
       current_time_ms: getCurrentTimeMs(),
       thread_id: threadId,
@@ -453,7 +449,6 @@ export default function ChatPanel({
           // capture knows which instant the pixels belong to.
           res = await postChatWithFrame(captured.blob, {
             session_id: sessionId,
-            session_token: sessionToken,
             video_id: videoId,
             current_time_ms: captured.atMs,
             message: text,
@@ -473,7 +468,6 @@ export default function ChatPanel({
           : await streamChat(
               {
                 session_id: sessionId,
-                session_token: sessionToken,
                 video_id: videoId,
                 current_time_ms: getCurrentTimeMs(),
                 message: text,
@@ -576,7 +570,6 @@ export default function ChatPanel({
     try {
       const lines = await postQuizNote(
         { session_id: sessionId, thread_id: threadId, event: "started", request, count },
-        sessionToken,
       );
       // The learner's line is already on screen.
       setMessages((prev) => [...prev, ...lines.filter((m) => m.role === "assistant")]);
@@ -602,7 +595,6 @@ export default function ChatPanel({
           score: outcome.score,
           to_review: outcome.toReview,
         },
-        sessionToken,
       );
       setMessages((prev) => [...prev, ...lines]);
     } catch {
@@ -656,7 +648,6 @@ export default function ChatPanel({
       >
         <QuizPanel
           sessionId={sessionId}
-          sessionToken={sessionToken}
           getCurrentTimeMs={getCurrentTimeMs}
           subjectId={subjectId}
           scope={{ video_id: videoId, completed_resource_ids: completedResourceIds, thread_id: threadId }}

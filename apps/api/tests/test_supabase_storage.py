@@ -106,6 +106,7 @@ def test_upload_is_mirrored_and_row_upserted(client):
     assert row["size_bytes"] == len(BYTES) and row["mime"] == "video/mp4"
 
 
+@pytest.mark.real_auth
 def test_anonymous_upload_uses_public_prefix_and_null_owner(client):
     fake = Fake()
     _install(fake)

@@ -48,7 +48,6 @@ export interface QuizOutcome {
 
 interface QuizPanelProps {
   sessionId: string;
-  sessionToken: string;
   getCurrentTimeMs: () => number;
   /** What the quiz may draw from: the asking chat's own reach. */
   scope: QuizScope;
@@ -140,7 +139,6 @@ const VERDICT_STYLE: Record<Verdict, { box: string; label: string }> = {
 
 export default function QuizPanel({
   sessionId,
-  sessionToken,
   getCurrentTimeMs,
   scope,
   sourceNote,
@@ -235,7 +233,6 @@ export default function QuizPanel({
           ...(settings.prompt.trim() ? { prompt: settings.prompt.trim() } : {}),
           ...(model !== "default" ? { use_chosen_model: true } : {}),
         },
-        sessionToken,
         model !== "default" ? modelHeadersFor(model) : undefined,
       );
       setAttempt((a) => a + 1);
@@ -279,7 +276,7 @@ export default function QuizPanel({
     setGrading((g) => ({ ...g, [q.id]: true }));
     setGradeErrors((e) => ({ ...e, [q.id]: "" }));
     try {
-      const grade = await gradeQuizAnswer(sessionId, q, answer, sessionToken);
+      const grade = await gradeQuizAnswer(sessionId, q, answer);
       setResults((r) => ({ ...r, [q.id]: { verdict: grade.verdict, score: grade.score, grade } }));
     } catch (err) {
       setGradeErrors((e) => ({ ...e, [q.id]: formatApiError(err) }));

@@ -147,7 +147,6 @@ export default function QuizView() {
               key={run}
               saved={quiz}
               sessionId=""
-              sessionToken=""
               getCurrentTimeMs={() => 0}
               scope={{}}
               sourceNote=""

@@ -32,23 +32,20 @@ import {
 import { useParams } from "next/navigation";
 import {
   clearStoredMintedResourceIds,
-  clearStoredSessionToken,
   getCourseResources,
   getStoredMintedResourceIds,
-  getStoredSessionToken,
   getSubject,
   getSubjectResources,
   isApiConfigured,
   sameResourceIdSet,
   setStoredMintedResourceIds,
-  setStoredSessionToken,
   type StoredSession,
   type Subject,
 } from "@/lib/api";
 import { firstParam } from "@/lib/learn";
 import SessionBootstrap from "@/components/SessionBootstrap";
 
-/** `session_token` lives in lib/api.ts; the id is only known to this layer. */
+/** The session id, kept for this tab; the login authorizes every call. */
 const SESSION_ID_KEY = "ailearn.session_id";
 
 export interface LearnSession {
@@ -139,10 +136,9 @@ export default function LearnSessionProvider({
   // Rehydration runs once, after mount: reading sessionStorage during render
   // would desynchronise the server-rendered HTML from the first client render.
   useEffect(() => {
-    const token = getStoredSessionToken();
     const sessionId = readStoredSessionId();
-    if (token && sessionId) {
-      setSessionState({ session_id: sessionId, session_token: token });
+    if (sessionId) {
+      setSessionState({ session_id: sessionId });
     }
     setRestored(true);
   }, []);
@@ -207,7 +203,6 @@ export default function LearnSessionProvider({
 
   const setSession = useCallback(
     (next: StoredSession, isOffline: boolean): void => {
-      setStoredSessionToken(next.session_token);
       writeStoredSessionId(next.session_id);
       setStoredMintedResourceIds(next.minted_resource_ids ?? null);
       setSessionState(next);
@@ -225,7 +220,6 @@ export default function LearnSessionProvider({
   );
 
   const reset = useCallback((): void => {
-    clearStoredSessionToken();
     clearStoredMintedResourceIds();
     try {
       if (typeof window !== "undefined" && window.sessionStorage) {

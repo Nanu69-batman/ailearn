@@ -17,9 +17,7 @@ from app.chat.launch import (
     DEV_SECRET,
     LaunchAuthError,
     clamp_current_time_ms,
-    create_session_token,
     verify_lms_launch,
-    verify_session_token,
 )
 from app.chat.quiz import (
     GradeRequest,
@@ -57,9 +55,6 @@ from app.ingestion.backoff import QuotaExhaustedError
 log = logging.getLogger(__name__)
 
 router = APIRouter()
-
-#: Course usable without a login even when AUTH_REQUIRED is true.
-DEMO_COURSE_ID = "demo"
 
 _service_override: ChatService | None = None
 
@@ -181,9 +176,8 @@ def create_lms_session(
 ) -> LmsSessionResponse:
     from app.config import settings
 
-    # The bundled demo course stays public; everything else needs a login
-    # once AUTH_REQUIRED is on.
-    if settings.auth_required and user is None and body.course_id != DEMO_COURSE_ID:
+    # Google or email sign-in is the only way in: the session is the user's.
+    if user is None:
         raise HTTPException(status_code=401, detail="authentication required")
 
     if not _check_rate_limit(_client_ip(request)):
@@ -209,7 +203,7 @@ def create_lms_session(
     if not body.signature and secret == DEV_SECRET:
         log.error("unsigned LMS launch accepted (dev-secret mode)")
     # A signed-in learner is always themselves: the body value is ignored.
-    learner_id = user.id if user is not None else body.learner_id
+    learner_id = user.id
     session = session_store.create(
         learner_id=learner_id,
         course_id=body.course_id,
@@ -217,57 +211,26 @@ def create_lms_session(
         lesson_id=body.lesson_id,
         resource_scope=list(body.resource_scope),
         current_time_ms=clamp_current_time_ms(body.current_time_ms),
-        owner_id=user.id if user is not None else None,
+        owner_id=user.id,
     )
-    # Never log session_id at info level; only return the binding token.
-    token = create_session_token(secret, session.id, session.learner_id)
     return LmsSessionResponse(
         session_id=session.id,
         learner_id=session.learner_id,
         course_id=session.course_id,
-        session_token=token,
     )
 
 
-def _user_id(request: Request) -> str | None:
-    user = get_current_user(request)
-    return user.id if user is not None else None
-
-
 def _check_owner(session, request: Request) -> None:
-    """404 when the session belongs to a different signed-in user.
-
-    Sessions without an owner (anonymous / demo) stay open to the token holder.
-    """
-    owner = getattr(session, "owner_id", None)
-    if owner is None:
-        return
+    """401 when signed out; 404 unless the signed-in user owns the session."""
     user = get_current_user(request)
-    if user is None or user.id != owner:
+    if user is None:
+        raise HTTPException(status_code=401, detail="sign in required")
+    if getattr(session, "owner_id", None) != user.id:
         raise HTTPException(status_code=404, detail="session not found")
-
-
-def _require_session_token(
-    *,
-    secret: str,
-    session_id: str,
-    learner_id: str,
-    token: str | None,
-    owner_id: str | None = None,
-    user_id: str | None = None,
-) -> None:
-    # A signed-in learner (Google or email) reaches their own sessions by login
-    # alone; the launch token is only for sessions with no owner (signed out).
-    if owner_id is not None and owner_id == user_id:
-        return
-    if not verify_session_token(secret, session_id, learner_id, token):
-        log.warning("session token verification failed")
-        raise HTTPException(status_code=401, detail="invalid launch")
 
 
 def _authorize_chat(body: ChatRequest, request: Request) -> None:
     """Rate limit, session and token checks shared by both chat routes."""
-    from app.config import settings
 
     if not _check_rate_limit(_client_ip(request)):
         raise HTTPException(status_code=429, detail="rate limit exceeded")
@@ -275,14 +238,6 @@ def _authorize_chat(body: ChatRequest, request: Request) -> None:
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
     _check_owner(session, request)
-    _require_session_token(
-        secret=settings.lms_launch_secret,
-        session_id=session.id,
-        learner_id=session.learner_id,
-        owner_id=getattr(session, "owner_id", None),
-        user_id=_user_id(request),
-        token=body.session_token,
-    )
     _use_thread(session.id, body.thread_id)
 
 
@@ -487,22 +442,12 @@ def _use_thread(session_id: str, thread_id: str | None) -> None:
     current_thread.set(_resolve_thread(session_id, thread_id))
 
 
-def _authed_session(session_id: str, request: Request, session_token: str | None):
-    from app.config import settings
+def _authed_session(session_id: str, request: Request):
 
     session = session_store.get(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
     _check_owner(session, request)
-    token = session_token or request.headers.get("x-session-token")
-    _require_session_token(
-        secret=settings.lms_launch_secret,
-        session_id=session.id,
-        learner_id=session.learner_id,
-        owner_id=getattr(session, "owner_id", None),
-        user_id=_user_id(request),
-        token=token,
-    )
     return session
 
 
@@ -522,9 +467,9 @@ def _thread_out(session_id: str, t: ChatThread) -> ThreadOut:
 
 @router.get("/sessions/{session_id}/threads", response_model=ThreadsResponse)
 def list_threads(
-    session_id: str, request: Request, session_token: str | None = None
+    session_id: str, request: Request
 ) -> ThreadsResponse:
-    session = _authed_session(session_id, request, session_token)
+    session = _authed_session(session_id, request)
     threads = [
         _thread_out(session.id, t)
         for t in thread_store.list(session.id, session_created_at=session.created_at)
@@ -535,9 +480,9 @@ def list_threads(
 
 @router.post("/sessions/{session_id}/threads", response_model=ThreadOut)
 def create_thread(
-    session_id: str, request: Request, session_token: str | None = None
+    session_id: str, request: Request
 ) -> ThreadOut:
-    session = _authed_session(session_id, request, session_token)
+    session = _authed_session(session_id, request)
     try:
         t = thread_store.create(session.id)
     except ValueError as exc:
@@ -551,9 +496,8 @@ def rename_thread(
     thread_id: str,
     body: ThreadRenameRequest,
     request: Request,
-    session_token: str | None = None,
 ) -> ThreadOut:
-    session = _authed_session(session_id, request, session_token)
+    session = _authed_session(session_id, request)
     tid = _resolve_thread(session.id, thread_id)
     t = thread_store.rename(session.id, tid, body.title)
     if t is None:
@@ -563,10 +507,10 @@ def rename_thread(
 
 @router.delete("/sessions/{session_id}/threads/{thread_id}")
 def delete_thread(
-    session_id: str, thread_id: str, request: Request, session_token: str | None = None
+    session_id: str, thread_id: str, request: Request
 ) -> dict:
     """Delete a chat and its messages. The main chat is emptied, not removed."""
-    session = _authed_session(session_id, request, session_token)
+    session = _authed_session(session_id, request)
     tid = _resolve_thread(session.id, thread_id)
     thread_store.delete(session.id, tid)
     return {"deleted": True, "thread_id": tid, "emptied": tid == MAIN_THREAD}
@@ -576,10 +520,9 @@ def delete_thread(
 def get_messages(
     session_id: str,
     request: Request,
-    session_token: str | None = None,
     thread_id: str | None = None,
 ) -> MessagesResponse:
-    session = _authed_session(session_id, request, session_token)
+    session = _authed_session(session_id, request)
     tid = _resolve_thread(session.id, thread_id)
     out = [
         MessageOut(
@@ -649,12 +592,10 @@ async def post_chat_live_frame(
     frame: Annotated[UploadFile, File()],
     mode: Annotated[str, Form()] = ChatMode.qa.value,
     video_id: Annotated[str | None, Form()] = None,
-    session_token: Annotated[str | None, Form()] = None,
     force_frame: Annotated[bool, Form()] = False,
     thread_id: Annotated[str | None, Form(max_length=64)] = None,
     completed_resource_ids: Annotated[list[str] | None, Form()] = None,
 ) -> ChatResponse:
-    from app.config import settings
     from app.ingestion.liveframe import (
         LiveFrame,
         LiveFrameRejected,
@@ -672,15 +613,6 @@ async def post_chat_live_frame(
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
     _check_owner(session, request)
-    token = session_token or request.headers.get("x-session-token")
-    _require_session_token(
-        secret=settings.lms_launch_secret,
-        session_id=session.id,
-        learner_id=session.learner_id,
-        owner_id=getattr(session, "owner_id", None),
-        user_id=_user_id(request),
-        token=token,
-    )
     _use_thread(session.id, thread_id)
     chat_mode = _validate_mode(mode)
 
@@ -833,7 +765,7 @@ async def post_quiz(body: QuizRequest, request: Request) -> QuizResponse:
     """A practice quiz on the open material up to T, plus materials marked done."""
     if not _check_rate_limit(_client_ip(request)):
         raise HTTPException(status_code=429, detail="rate limit exceeded")
-    session = _authed_session(body.session_id, request, body.session_token)
+    session = _authed_session(body.session_id, request)
     if body.thread_id is not None:
         body = body.model_copy(update={"thread_id": _resolve_thread(session.id, body.thread_id)})
     try:
@@ -854,7 +786,7 @@ def post_quiz_note(body: QuizNoteRequest, request: Request) -> MessagesResponse:
     (:func:`app.chat.quiz.quiz_note_lines`), never taken as text from the
     client. Returns the lines added, in the messages shape.
     """
-    session = _authed_session(body.session_id, request, body.session_token)
+    session = _authed_session(body.session_id, request)
     _use_thread(session.id, body.thread_id)
     added = [
         message_store.append(session.id, role, text, [])
@@ -875,11 +807,9 @@ async def post_quiz_grade(body: GradeRequest, request: Request) -> GradeResponse
     """Grade one subjective answer. MCQ and numerical are graded client-side."""
     if not _check_rate_limit(_client_ip(request)):
         raise HTTPException(status_code=429, detail="rate limit exceeded")
-    # A signed-in learner needs no launch session; anyone else does.
+    # Grading reads only the question and answer: a signed-in learner is enough.
     if get_current_user(request) is None:
-        if not body.session_id:
-            raise HTTPException(status_code=401, detail="sign in to grade answers")
-        _authed_session(body.session_id, request, body.session_token)
+        raise HTTPException(status_code=401, detail="sign in required")
     try:
         return await get_quiz_service().grade(body)
     except QuotaExhaustedError:

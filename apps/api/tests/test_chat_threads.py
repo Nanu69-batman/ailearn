@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+from tests.conftest import SIGNED_OUT
 import pytest
 from fastapi.testclient import TestClient
 
 from app.chat import router as chat_router
-from app.chat.launch import create_session_token
 from app.chat.schemas import ChatResponse
 from app.chat.sessions import message_store, session_store
 from app.config import settings
@@ -36,14 +36,14 @@ def api():
         learner_id="l1", course_id="c1", resource_id="r1", lesson_id=None,
         resource_scope=["r1"], current_time_ms=0,
     )
-    token = create_session_token(settings.lms_launch_secret, session.id, "l1")
+    token = ""
     client = TestClient(app)
     yield client, session.id, token, svc
     chat_router.reset_chat_state()
 
 
 def _say(client, sid, token, text, thread_id=None):
-    body = {"session_id": sid, "session_token": token, "current_time_ms": 0, "message": text}
+    body = {"session_id": sid, "current_time_ms": 0, "message": text}
     if thread_id:
         body["thread_id"] = thread_id
     r = client.post("/chat", json=body)
@@ -52,7 +52,7 @@ def _say(client, sid, token, text, thread_id=None):
 
 
 def _messages(client, sid, token, thread_id=None):
-    params = {"session_token": token}
+    params = {}
     if thread_id:
         params["thread_id"] = thread_id
     r = client.get(f"/sessions/{sid}/messages", params=params)
@@ -63,7 +63,7 @@ def _messages(client, sid, token, thread_id=None):
 def test_a_new_chat_has_its_own_history(api):
     client, sid, token, svc = api
     _say(client, sid, token, "first question")
-    new = client.post(f"/sessions/{sid}/threads", params={"session_token": token}).json()
+    new = client.post(f"/sessions/{sid}/threads", params={}).json()
     _say(client, sid, token, "fresh topic", thread_id=new["id"])
 
     assert _messages(client, sid, token) == ["first question", "echo: first question"]
@@ -74,9 +74,9 @@ def test_a_new_chat_has_its_own_history(api):
 
 def test_list_titles_from_first_question_and_rename(api):
     client, sid, token, _ = api
-    new = client.post(f"/sessions/{sid}/threads", params={"session_token": token}).json()
+    new = client.post(f"/sessions/{sid}/threads", params={}).json()
     _say(client, sid, token, "what is a partial derivative", thread_id=new["id"])
-    threads = client.get(f"/sessions/{sid}/threads", params={"session_token": token}).json()["threads"]
+    threads = client.get(f"/sessions/{sid}/threads", params={}).json()["threads"]
     by_id = {t["id"]: t for t in threads}
     assert set(by_id) == {"main", new["id"]}
     assert by_id[new["id"]]["title"] == "what is a partial derivative"
@@ -85,7 +85,7 @@ def test_list_titles_from_first_question_and_rename(api):
 
     r = client.patch(
         f"/sessions/{sid}/threads/{new['id']}",
-        params={"session_token": token}, json={"title": "  Exam   prep "},
+        params={}, json={"title": "  Exam   prep "},
     )
     assert r.status_code == 200 and r.json()["title"] == "Exam prep" and r.json()["renamed"]
 
@@ -93,32 +93,32 @@ def test_list_titles_from_first_question_and_rename(api):
 def test_delete_removes_a_chat_and_empties_main(api):
     client, sid, token, _ = api
     _say(client, sid, token, "keep?")
-    new = client.post(f"/sessions/{sid}/threads", params={"session_token": token}).json()
+    new = client.post(f"/sessions/{sid}/threads", params={}).json()
     _say(client, sid, token, "gone", thread_id=new["id"])
 
-    assert client.delete(f"/sessions/{sid}/threads/{new['id']}", params={"session_token": token}).status_code == 200
-    ids = [t["id"] for t in client.get(f"/sessions/{sid}/threads", params={"session_token": token}).json()["threads"]]
+    assert client.delete(f"/sessions/{sid}/threads/{new['id']}", params={}).status_code == 200
+    ids = [t["id"] for t in client.get(f"/sessions/{sid}/threads", params={}).json()["threads"]]
     assert ids == ["main"]
     # A deleted chat cannot be written to or read.
     r = client.post("/chat", json={
-        "session_id": sid, "session_token": token, "current_time_ms": 0,
+        "session_id": sid, "current_time_ms": 0,
         "message": "hello?", "thread_id": new["id"],
     })
     assert r.status_code == 404
 
-    r = client.delete(f"/sessions/{sid}/threads/main", params={"session_token": token})
+    r = client.delete(f"/sessions/{sid}/threads/main", params={})
     assert r.json()["emptied"] is True
     assert _messages(client, sid, token) == []
 
 
-def test_thread_routes_require_the_session_token(api):
+def test_thread_routes_require_sign_in(api):
     client, sid, _token, _ = api
-    assert client.get(f"/sessions/{sid}/threads", params={"session_token": "bad"}).status_code == 401
-    assert client.post(f"/sessions/{sid}/threads").status_code == 401
+    assert client.get(f"/sessions/{sid}/threads", headers=SIGNED_OUT).status_code == 401
+    assert client.post(f"/sessions/{sid}/threads", headers=SIGNED_OUT).status_code == 401
 
 
 def test_unknown_or_malformed_thread_is_404(api):
     client, sid, token, _ = api
     for tid in ("thr_doesnotexist", "../main"):
-        r = client.get(f"/sessions/{sid}/messages", params={"session_token": token, "thread_id": tid})
+        r = client.get(f"/sessions/{sid}/messages", params={"thread_id": tid})
         assert r.status_code == 404

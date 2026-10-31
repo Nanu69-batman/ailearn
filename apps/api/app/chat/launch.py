@@ -6,10 +6,8 @@ Canonical payload (newline-joined, scope sorted, empty lesson as "")::
 
 ``signature`` = hex(HMAC-SHA256(lms_launch_secret, canonical)).
 
-Session binding: ``/lms/session`` returns ``session_token`` =
-hex(HMAC-SHA256(secret, session_id + "\\n" + learner_id)). Clients must echo
-it back per ``/chat`` + history call (``session_token`` field / query /
-``x-session-token`` header). Verification uses ``hmac.compare_digest``.
+Sessions belong to the signed-in user (Google or email); there is no
+session token.
 """
 
 from __future__ import annotations
@@ -74,27 +72,6 @@ def sign_launch(
     return hmac.new(
         secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
     ).hexdigest()
-
-
-def create_session_token(secret: str, session_id: str, learner_id: str) -> str:
-    """Bind a session id to its learner with an HMAC token."""
-    msg = f"{session_id}\n{learner_id or ''}"
-    return hmac.new(
-        secret.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256
-    ).hexdigest()
-
-
-def verify_session_token(
-    secret: str, session_id: str, learner_id: str, token: str | None
-) -> bool:
-    """Return True iff ``token`` is the valid HMAC binding for this session."""
-    if not token:
-        return False
-    expected = create_session_token(secret, session_id, learner_id)
-    try:
-        return hmac.compare_digest(expected, token)
-    except (TypeError, ValueError):
-        return False
 
 
 def clamp_current_time_ms(value: int) -> int:

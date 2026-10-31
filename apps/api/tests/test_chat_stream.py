@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from tests.conftest import SIGNED_OUT
 import asyncio
 import json
 
@@ -10,7 +11,6 @@ from fastapi.testclient import TestClient
 
 from app.chat import router as chat_router
 from app.chat import streaming
-from app.chat.launch import create_session_token
 from app.chat.llm import DeterministicStubLLM
 from app.chat.schemas import ChatResponse
 from app.chat.sessions import session_store
@@ -44,7 +44,7 @@ def api():
         learner_id="l1", course_id="c1", resource_id="r1", lesson_id=None,
         resource_scope=["r1"], current_time_ms=0,
     )
-    token = create_session_token(settings.lms_launch_secret, session.id, "l1")
+    token = ""
     yield TestClient(app), session.id, token
     chat_router.reset_chat_state()
 
@@ -58,7 +58,7 @@ def _events(text: str) -> list[tuple[str, dict]]:
 
 
 def _stream(client, sid, token):
-    body = {"session_id": sid, "session_token": token, "current_time_ms": 0, "message": "q"}
+    body = {"session_id": sid, "current_time_ms": 0, "message": "q"}
     return client.post("/chat/stream", json=body)
 
 
@@ -91,10 +91,11 @@ def test_stream_reports_provider_failure_as_an_error_event(api):
     assert all(k != "done" for k, _ in events)
 
 
-def test_stream_rejects_a_bad_token_before_streaming(api):
+def test_stream_rejects_signed_out_before_streaming(api):
     client, sid, _ = api
     chat_router.set_service_override(_StreamingService())
-    r = _stream(client, sid, "not-a-token")
+    body = {"session_id": sid, "current_time_ms": 0, "message": "q"}
+    r = client.post("/chat/stream", json=body, headers=SIGNED_OUT)
     assert r.status_code == 401
 
 

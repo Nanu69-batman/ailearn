@@ -7,7 +7,6 @@ import {
   getCourseResources,
   getSubjectResources,
   isApiConfigured,
-  setStoredSessionToken,
   type StoredSession,
 } from "../lib/api";
 import { devSessionFixture, mockSession } from "../lib/fixtures";
@@ -37,12 +36,10 @@ type Status = "pending" | "loading" | "error";
 
 function toStoredSession(res: {
   session_id: string;
-  session_token: string;
   minted_resource_ids?: string[];
 }): StoredSession {
   return {
     session_id: res.session_id,
-    session_token: res.session_token,
     minted_resource_ids: res.minted_resource_ids,
   };
 }
@@ -72,9 +69,6 @@ export default function SessionBootstrap({
     setStatus("loading");
     setError(null);
     if (!isApiConfigured()) {
-      // Mock/offline mode synthesizes a "mock-token" value so downstream
-      // postChat/getMessages carry a token even without a live backend.
-      setStoredSessionToken(mockSession.session_token);
       setStatus("pending");
       onReady(toStoredSession(mockSession), true);
       return;
@@ -106,8 +100,6 @@ export default function SessionBootstrap({
         launch.resource_id = ids[0];
       }
       const res = await createLmsSession(launch);
-      // Persist session_token alongside session_id for chat + history calls.
-      setStoredSessionToken(res.session_token);
       setStatus("pending");
       // Record the ids this grant was minted against so a later revalidation
       // can tell a still-valid grant from a stale one.
@@ -151,7 +143,6 @@ export default function SessionBootstrap({
             type="button"
             className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm text-gray-600 transition hover:bg-gray-50"
             onClick={() => {
-              setStoredSessionToken(mockSession.session_token);
               onReady(toStoredSession(mockSession), true);
             }}
           >

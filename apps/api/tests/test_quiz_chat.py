@@ -7,6 +7,7 @@ and a started/completed quiz is written into the chat by the server.
 
 from __future__ import annotations
 
+from tests.conftest import SIGNED_OUT
 import asyncio
 import json
 
@@ -123,11 +124,11 @@ def test_note_lines():
 def test_note_route_writes_into_the_chat(api):  # noqa: F811
     client, sid, token = api
     body = {"session_id": sid, "event": "completed", "count": 3, "score": 3}
-    assert client.post("/quiz/note", json=body).status_code == 401
-    r = client.post("/quiz/note", json={**body, "session_token": token})
+    assert client.post("/quiz/note", json=body, headers=SIGNED_OUT).status_code == 401
+    r = client.post("/quiz/note", json=body)
     assert r.status_code == 200, r.text
     assert r.json()["messages"][0]["content"].startswith("**Quiz completed**")
-    history = client.get(f"/sessions/{sid}/messages", params={"session_token": token}).json()
+    history = client.get(f"/sessions/{sid}/messages", params={}).json()
     assert history["messages"][-1]["content"].startswith("**Quiz completed**")
 
 

@@ -41,8 +41,6 @@ class LmsSessionResponse(BaseModel):
     session_id: str
     learner_id: str
     course_id: str
-    #: HMAC binding over (session_id, learner_id); echo per /chat + history call.
-    session_token: str
 
 
 class Personalization(BaseModel):
@@ -65,7 +63,6 @@ class ChatRequest(BaseModel):
 
     session_id: str = Field(min_length=1, max_length=256)
     #: HMAC session binding issued at /lms/session; verified per request (401).
-    session_token: str | None = Field(default=None, max_length=512)
     video_id: str | None = Field(default=None, max_length=256)
     current_time_ms: int = Field(ge=0, le=MAX_CURRENT_TIME_MS)
     message: str = Field(min_length=1, max_length=4000)

@@ -8,6 +8,7 @@ import jwt
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.conftest import SIGNED_OUT
 from app.chat import chats
 from app.chat import router as chat_router
 from app.chat.sessions import session_store
@@ -64,17 +65,16 @@ def _row(session_id: str, **kw) -> dict:
 
 
 def test_anonymous_gets_401(client):
-    assert client.get("/malai/chats").status_code == 401
+    assert client.get("/malai/chats", headers=SIGNED_OUT).status_code == 401
 
 
-def test_put_then_list_mints_a_token(client):
+def test_put_then_list(client):
     s = _session(ALICE)
     r = client.put("/malai/chats/chat-1", json=_row(s.id), headers=_auth(ALICE))
     assert r.status_code == 200, r.text
     out = client.get("/malai/chats", headers=_auth(ALICE)).json()["chats"]
     assert [c["id"] for c in out] == ["chat-1"]
     assert out[0]["title"] == "Tensors"
-    assert out[0]["session_token"]
 
 
 def test_lists_are_per_user(client):

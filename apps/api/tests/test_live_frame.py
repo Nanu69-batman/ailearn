@@ -696,7 +696,7 @@ def _post_frame(client, session_id, token, **fields):
 
     data = {
         "session_id": session_id,
-        "session_token": token,
+        
         "current_time_ms": "30000",
         "message": "what am I looking at?",
         "force_frame": "true",
@@ -720,7 +720,6 @@ def http_env(monkeypatch):
     from fastapi.testclient import TestClient
 
     from app.chat import router as chat_router
-    from app.chat.launch import DEV_SECRET, create_session_token
 
     monkeypatch.setattr(
         chat_router, "set_service_override",
@@ -746,7 +745,6 @@ def http_env(monkeypatch):
             lambda rid: duration_lookups.append(rid) or DURATION_MS,
             raising=True,
         )
-        monkeypatch.setattr("app.config.settings.lms_launch_secret", DEV_SECRET)
 
         test_app = FastAPI()
         test_app.include_router(chat_router.router)
@@ -755,7 +753,7 @@ def http_env(monkeypatch):
             learner_id="learner_1", course_id=COURSE, resource_id=RESOURCE,
             lesson_id="lesson_1", resource_scope=[RESOURCE], current_time_ms=0,
         )
-        token = create_session_token(DEV_SECRET, session.id, session.learner_id)
+        token = ""
         return client, session.id, token, duration_lookups
 
     return _build
@@ -892,13 +890,11 @@ def test_live_frame_rejects_a_non_resource_in_the_session_grant(http_env, monkey
     from fastapi.testclient import TestClient
 
     from app.chat import router as chat_router
-    from app.chat.launch import DEV_SECRET, create_session_token
 
     service = _service([], monkeypatch=monkeypatch)
     monkeypatch.setattr(chat_router, "get_vector_store",
                         lambda: _IndexedStore("video", []), raising=True)
     monkeypatch.setattr(chat_router, "get_service", lambda: service, raising=True)
-    monkeypatch.setattr("app.config.settings.lms_launch_secret", DEV_SECRET)
     test_app = FastAPI()
     test_app.include_router(chat_router.router)
     client = TestClient(test_app)
@@ -906,7 +902,7 @@ def test_live_frame_rejects_a_non_resource_in_the_session_grant(http_env, monkey
         learner_id="learner_1", course_id=COURSE, resource_id=RESOURCE,
         lesson_id="lesson_1", resource_scope=[RESOURCE], current_time_ms=0,
     )
-    token = create_session_token(DEV_SECRET, session.id, session.learner_id)
+    token = ""
 
     resp = _post_frame(client, session.id, token, video_id="res_not_granted")
     assert resp.status_code == 403, resp.text

@@ -5,7 +5,6 @@ import { micErrorMessage, startMicCapture, voiceAccessToken, voiceWsUrl, type Mi
 
 export interface DictationSession {
   sessionId: string;
-  sessionToken: string;
 }
 
 export type DictationState = "idle" | "connecting" | "recording";
@@ -115,7 +114,6 @@ export function useDictation({ getSession, onFinal }: Options) {
           JSON.stringify({
             type: "start",
             session_id: session.sessionId,
-            session_token: session.sessionToken,
             ...(token ? { access_token: token } : {}),
           }),
         );

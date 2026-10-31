@@ -10,6 +10,7 @@ import jwt
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.conftest import SIGNED_OUT
 from app.chat import router as chat_router
 from app.chat.sessions import (
     load_sessions_from_supabase,
@@ -286,31 +287,30 @@ def test_session_thread_message_mirroring(client, fake):
     assert fake.writes("DELETE", "chat_messages")[-1][2]["thread_id"] == f"eq.{t.id}"
 
 
-def test_anonymous_session_has_no_owner(client, fake):
-    r = client.post("/lms/session", json=_launch())
-    assert r.status_code == 200
-    assert fake.writes("POST", "chat_sessions")[0][3][0]["owner_id"] is None
+def test_signed_out_launch_is_refused(client, fake):
+    r = client.post("/lms/session", json=_launch(), headers=SIGNED_OUT)
+    assert r.status_code == 401
+    assert fake.writes("POST", "chat_sessions") == []
 
 
 def test_session_owner_isolation(client):
     r = client.post("/lms/session", json=_launch(), headers=_bearer(USER_A))
-    sid, tok = r.json()["session_id"], r.json()["session_token"]
+    sid = r.json()["session_id"]
     message_store.append(sid, "user", "secret")
 
-    url = f"/sessions/{sid}/messages?session_token={tok}"
+    url = f"/sessions/{sid}/messages"
     assert client.get(url, headers=_bearer(USER_A)).status_code == 200
-    # B has the token (worst case) but is not the owner; anonymous neither
+    # B is not the owner; signed out is refused outright
     assert client.get(url, headers=_bearer(USER_B)).status_code == 404
-    assert client.get(url).status_code == 404
+    assert client.get(url, headers=SIGNED_OUT).status_code == 401
 
-    turl = f"/sessions/{sid}/threads?session_token={tok}"
+    turl = f"/sessions/{sid}/threads"
     assert client.get(turl, headers=_bearer(USER_B)).status_code == 404
     assert client.post(turl, headers=_bearer(USER_B)).status_code == 404
     assert client.get(turl, headers=_bearer(USER_A)).status_code == 200
 
     chat = {
         "session_id": sid,
-        "session_token": tok,
         "message": "hi",
         "current_time_ms": 0,
     }
@@ -320,7 +320,7 @@ def test_session_owner_isolation(client):
 
 def test_sessions_load_from_supabase(client, fake):
     r = client.post("/lms/session", json=_launch(), headers=_bearer(USER_A))
-    sid, tok = r.json()["session_id"], r.json()["session_token"]
+    sid = r.json()["session_id"]
     t = thread_store.create(sid)
     message_store.append(sid, "user", "main q")
     from app.chat.sessions import current_thread
@@ -347,7 +347,7 @@ def test_sessions_load_from_supabase(client, fake):
     assert thread_msgs[0].citations == [{"c": 1}]
     assert thread_store.get(sid, t.id) is not None
 
-    url = f"/sessions/{sid}/messages?session_token={tok}"
+    url = f"/sessions/{sid}/messages"
     assert client.get(url, headers=_bearer(USER_A)).status_code == 200
     assert client.get(url, headers=_bearer(USER_B)).status_code == 404
 

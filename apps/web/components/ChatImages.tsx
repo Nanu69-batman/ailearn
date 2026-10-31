@@ -6,7 +6,6 @@ import { deleteChatImage, formatApiError, uploadChatImage } from "@/lib/api";
 /** The chat an image is attached to. */
 export interface ChatImageTarget {
   sessionId: string;
-  sessionToken: string;
   /** Undefined: the session's main chat. */
   threadId?: string;
 }

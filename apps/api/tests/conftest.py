@@ -23,6 +23,7 @@ cleared after it.
 from __future__ import annotations
 
 import pytest
+from fastapi import Request
 
 
 @pytest.fixture(autouse=True)
@@ -129,3 +130,58 @@ def chroma_store(tmp_path, embedder):
 @pytest.fixture
 def make_chunk_fixture():
     return make_chunk
+
+# ---------------------------------------------------------------------------
+# Login. Every session belongs to a signed-in user and every session route
+# checks that user (no session token). Tests run as TEST_USER_ID by default:
+# requests with no Authorization header act as that user, and sessions made
+# straight in the store are owned by them. Send ``SIGNED_OUT`` headers to act
+# signed out; mark a test ``real_auth`` to use only real JWTs.
+
+TEST_USER_ID = "test-user"
+SIGNED_OUT = {"x-test-signed-out": "1"}
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "real_auth: no default test login")
+
+
+@pytest.fixture(autouse=True)
+def _test_login(request, monkeypatch):
+    if request.node.get_closest_marker("real_auth"):
+        yield
+        return
+    from app.auth import get_current_user as real_get_current_user
+    from app.auth.supabase import AuthUser
+    from app.chat import router as chat_router
+    from app.chat import sessions as sessions_mod
+    from app.main import app
+    from app.voice import router as voice_router
+
+    def fake_user(req: Request):
+        if req.headers.get("x-test-signed-out"):
+            return None
+        return real_get_current_user(req) or AuthUser(id=TEST_USER_ID)
+
+    real_from_token = voice_router.user_from_token
+
+    def fake_from_token(token):
+        if token == "signed-out":
+            return None
+        return real_from_token(token) or AuthUser(id=TEST_USER_ID)
+
+    store = sessions_mod.session_store
+    real_create = store.create
+
+    def create(**kw):
+        kw.setdefault("owner_id", None)
+        if kw["owner_id"] is None:
+            kw["owner_id"] = TEST_USER_ID
+        return real_create(**kw)
+
+    monkeypatch.setattr(chat_router, "get_current_user", fake_user)
+    monkeypatch.setattr(voice_router, "user_from_token", fake_from_token)
+    monkeypatch.setattr(store, "create", create)
+    app.dependency_overrides[real_get_current_user] = fake_user
+    yield
+    app.dependency_overrides.pop(real_get_current_user, None)

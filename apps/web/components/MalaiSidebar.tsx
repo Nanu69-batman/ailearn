@@ -116,7 +116,7 @@ function ChatMenu({
     // The server copy goes first, best effort: a session lost on restart has
     // nothing left to delete, and the chat must still leave the list.
     try {
-      await deleteThread(chat.sessionId, chat.threadId, chat.sessionToken);
+      await deleteThread(chat.sessionId, chat.threadId);
     } catch {
       // Already gone server-side.
     }
@@ -275,7 +275,7 @@ function ChatRow({
     setRenaming(false);
     if (!title || title === chat.title) return;
     updateChat(chat.id, { title });
-    void renameThread(chat.sessionId, chat.threadId, title, chat.sessionToken).catch(() => {
+    void renameThread(chat.sessionId, chat.threadId, title).catch(() => {
       // The local title is what the list shows; the server copy is a courtesy.
     });
   }

@@ -1,10 +1,11 @@
 /**
  * Typed API client for the AI Learning Assistant backend.
  * Contract (docs/api.md):
- *   POST /lms/session -> { session_id, session_token, learner_id, course_id }
- *   POST /chat        -> { answer, citations[], refused } (needs session_token:
- *                        body field + X-Session-Token header; 401 = expired)
- *   GET  /sessions/{id}/messages (needs X-Session-Token header; 401 = expired)
+ *   POST /lms/session -> { session_id, learner_id, course_id }
+ *   POST /chat        -> { answer, citations[], refused }
+ *   GET  /sessions/{id}/messages
+ * Every call is authorized by the Supabase login (Authorization: Bearer);
+ * a session belongs to the signed-in user who opened it.
  *
  * All requests carry an `x-request-id` header for log correlation.
  * Backend may still be in progress — callers fall back to local
@@ -59,21 +60,13 @@ export interface LmsSessionRequest {
 
 export interface LmsSessionResponse {
   session_id: string;
-  session_token: string;
   learner_id?: string;
   course_id?: string;
 }
 
-/**
- * Session binding persisted alongside session_id after POST /lms/session.
- * Backend (apps/api/app/chat/router.py) issues `session_token` and requires
- * it on POST /chat (body `session_token` + `X-Session-Token` header) and
- * GET /sessions/{id}/messages (`X-Session-Token` header preferred).
- * Mock/offline mode synthesizes the "mock-token" value (see lib/fixtures.ts).
- */
+/** The session opened by POST /lms/session for the signed-in user. */
 export interface StoredSession {
   session_id: string;
-  session_token: string;
   /**
    * Resource ids the grant was minted against, recorded at mint time. Purely a
    * client-side bookkeeping field: it is never sent to the backend and never
@@ -85,50 +78,10 @@ export interface StoredSession {
   minted_resource_ids?: string[];
 }
 
-const SESSION_TOKEN_KEY = "ailearn.session_token";
 /** Sits next to the token/id keys; same error-tolerant persistence style. */
 const SESSION_RESOURCE_IDS_KEY = "ailearn.session_resource_ids";
 
-let inMemorySessionToken: string | null = null;
 let inMemoryMintedResourceIds: string[] | null = null;
-
-export function setStoredSessionToken(token: string): void {
-  inMemorySessionToken = token;
-  try {
-    if (typeof window !== "undefined" && window.sessionStorage) {
-      window.sessionStorage.setItem(SESSION_TOKEN_KEY, token);
-    }
-  } catch {
-    // Storage unavailable (SSR/private mode) — in-memory copy still works.
-  }
-}
-
-export function getStoredSessionToken(): string | null {
-  if (inMemorySessionToken) return inMemorySessionToken;
-  try {
-    if (typeof window !== "undefined" && window.sessionStorage) {
-      const v = window.sessionStorage.getItem(SESSION_TOKEN_KEY);
-      if (v) {
-        inMemorySessionToken = v;
-        return v;
-      }
-    }
-  } catch {
-    // Ignore storage errors.
-  }
-  return null;
-}
-
-export function clearStoredSessionToken(): void {
-  inMemorySessionToken = null;
-  try {
-    if (typeof window !== "undefined" && window.sessionStorage) {
-      window.sessionStorage.removeItem(SESSION_TOKEN_KEY);
-    }
-  } catch {
-    // Ignore storage errors.
-  }
-}
 
 /**
  * Record the resource-id set a grant was minted against. `null`/omitted means
@@ -200,8 +153,6 @@ export function isSessionExpiredError(err: unknown): boolean {
 
 export interface ChatRequest {
   session_id: string;
-  /** HMAC session binding issued at /lms/session; verified per request (401). */
-  session_token?: string;
   video_id?: string;
   current_time_ms: number;
   message: string;
@@ -484,25 +435,17 @@ export async function createLmsSession(
   });
 }
 
-/** The chat request body: the session token and the learner's personalization added. */
-function chatBody(req: ChatRequest, token: string | undefined): string {
+/** The chat request body, with the learner's personalization added. */
+function chatBody(req: ChatRequest): string {
   const personalization = personalizationForRequest();
   return JSON.stringify({
     ...req,
-    ...(token ? { session_token: token } : {}),
     ...(personalization ? { personalization } : {}),
   });
 }
 
 export function postChat(req: ChatRequest): Promise<ChatResponse> {
-  // Header X-Session-Token preferred; body field kept for back-compat since
-  // apps/api/app/chat/router.py verifies body.session_token on POST /chat.
-  const token = req.session_token ?? getStoredSessionToken() ?? undefined;
-  return apiFetch<ChatResponse>("/chat", {
-    method: "POST",
-    body: chatBody(req, token),
-    headers: token ? { "X-Session-Token": token } : undefined,
-  });
+  return apiFetch<ChatResponse>("/chat", { method: "POST", body: chatBody(req) });
 }
 
 export interface ChatStreamHandlers {
@@ -525,19 +468,17 @@ export async function streamChat(
   if (!base) {
     throw new ApiError(0, "NEXT_PUBLIC_API_URL is not configured", "n/a");
   }
-  const token = req.session_token ?? getStoredSessionToken() ?? undefined;
   const requestId = newRequestId();
   let res: Response;
   try {
     res = await fetch(`${base}/chat/stream`, {
       method: "POST",
-      body: chatBody(req, token),
+      body: chatBody(req),
       headers: {
         "Content-Type": "application/json",
         Accept: "text/event-stream",
         "x-request-id": requestId,
         ...(await authHeaders()),
-        ...(token ? { "X-Session-Token": token } : {}),
       },
     });
   } catch (err) {
@@ -599,15 +540,11 @@ export interface MessagesEnvelope {
 
 export async function getMessages(
   sessionId: string,
-  sessionToken?: string,
   threadId?: string,
 ): Promise<ChatMessage[]> {
-  // Header X-Session-Token preferred (router also accepts ?session_token=).
-  const token = sessionToken ?? getStoredSessionToken() ?? undefined;
   const query = threadId ? `?thread_id=${encodeURIComponent(threadId)}` : "";
   const envelope = await apiFetch<MessagesEnvelope>(
     `/sessions/${encodeURIComponent(sessionId)}/messages${query}`,
-    token ? { headers: { "X-Session-Token": token } } : undefined,
   );
   return envelope.messages.map((m, i) => ({
     ...m,
@@ -640,25 +577,16 @@ function threadsPath(sessionId: string, threadId?: string): string {
   return threadId ? `${base}/${encodeURIComponent(threadId)}` : base;
 }
 
-function tokenHeaders(sessionToken?: string): Record<string, string> | undefined {
-  const token = sessionToken ?? getStoredSessionToken() ?? undefined;
-  return token ? { "X-Session-Token": token } : undefined;
-}
-
 export async function listThreads(
   sessionId: string,
-  sessionToken?: string,
 ): Promise<ChatThread[]> {
-  const res = await apiFetch<{ threads: ChatThread[] }>(threadsPath(sessionId), {
-    headers: tokenHeaders(sessionToken),
-  });
+  const res = await apiFetch<{ threads: ChatThread[] }>(threadsPath(sessionId));
   return res.threads;
 }
 
-export function createThread(sessionId: string, sessionToken?: string): Promise<ChatThread> {
+export function createThread(sessionId: string): Promise<ChatThread> {
   return apiFetch<ChatThread>(threadsPath(sessionId), {
     method: "POST",
-    headers: tokenHeaders(sessionToken),
   });
 }
 
@@ -666,23 +594,19 @@ export function renameThread(
   sessionId: string,
   threadId: string,
   title: string,
-  sessionToken?: string,
 ): Promise<ChatThread> {
   return apiFetch<ChatThread>(threadsPath(sessionId, threadId), {
     method: "PATCH",
     body: JSON.stringify({ title }),
-    headers: tokenHeaders(sessionToken),
   });
 }
 
 export async function deleteThread(
   sessionId: string,
   threadId: string,
-  sessionToken?: string,
 ): Promise<void> {
   await apiFetch<unknown>(threadsPath(sessionId, threadId), {
     method: "DELETE",
-    headers: tokenHeaders(sessionToken),
   });
 }
 
@@ -700,8 +624,6 @@ export interface MalaiChatRow {
   preview: string;
   created_ms: number;
   updated_ms: number;
-  /** Minted for the caller's live session; empty when the session is gone. */
-  session_token?: string;
 }
 
 /** True when a Supabase login exists, so the chat list can live on the server. */
@@ -714,7 +636,7 @@ export async function listMalaiChats(): Promise<MalaiChatRow[]> {
   return Array.isArray(res.chats) ? res.chats : [];
 }
 
-export async function putMalaiChat(row: Omit<MalaiChatRow, "session_token">): Promise<void> {
+export async function putMalaiChat(row: MalaiChatRow): Promise<void> {
   const { id, ...body } = row;
   await apiFetch<unknown>(`/malai/chats/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) });
 }
@@ -744,7 +666,7 @@ export interface ChatImage {
 }
 
 export async function uploadChatImage(
-  target: { sessionId: string; sessionToken: string; threadId?: string },
+  target: { sessionId: string; threadId?: string },
   file: File,
 ): Promise<ChatImage> {
   const base = baseUrl();
@@ -753,7 +675,6 @@ export async function uploadChatImage(
   const form = new FormData();
   form.append("image", file, file.name || "image");
   form.append("session_id", target.sessionId);
-  form.append("session_token", target.sessionToken);
   if (target.threadId) form.append("thread_id", target.threadId);
   let res: Response;
   try {
@@ -770,7 +691,7 @@ export async function uploadChatImage(
 }
 
 export async function deleteChatImage(
-  target: { sessionId: string; sessionToken: string; threadId?: string },
+  target: { sessionId: string; threadId?: string },
   id: string,
 ): Promise<void> {
   const base = baseUrl();
@@ -780,7 +701,7 @@ export async function deleteChatImage(
   if (target.threadId) q.set("thread_id", target.threadId);
   const res = await fetch(`${base}/chat/attachments/${encodeURIComponent(id)}?${q}`, {
     method: "DELETE",
-    headers: { "x-request-id": requestId, "x-session-token": target.sessionToken, ...(await authHeaders()) },
+    headers: { "x-request-id": requestId, ...(await authHeaders()) },
   });
   if (!res.ok) throw await apiErrorFromResponse(res, requestId);
 }
@@ -791,7 +712,6 @@ export async function deleteChatImage(
 //   POST /chat/live-frame (multipart/form-data)
 //     frame            image/jpeg  — the captured frame (Blob)
 //     session_id       string
-//     session_token    string?
 //     current_time_ms  number      — read from video.currentTime in the SAME
 //                                    synchronous tick as the canvas draw
 //     message          string
@@ -811,7 +731,6 @@ export async function deleteChatImage(
 
 export interface LiveFrameRequest {
   session_id: string;
-  session_token?: string;
   video_id?: string;
   /** The playhead position the frame was captured at, in ms. */
   current_time_ms: number;
@@ -832,7 +751,6 @@ export async function postChatWithFrame(
     throw new ApiError(0, "NEXT_PUBLIC_API_URL is not configured", "n/a");
   }
   const requestId = newRequestId();
-  const token = req.session_token ?? getStoredSessionToken() ?? undefined;
   const form = new FormData();
   form.append("frame", frame, "frame.jpg");
   form.append("session_id", req.session_id);
@@ -840,7 +758,6 @@ export async function postChatWithFrame(
   form.append("message", req.message);
   if (req.mode) form.append("mode", req.mode);
   if (req.video_id) form.append("video_id", req.video_id);
-  if (token) form.append("session_token", token);
   form.append("force_frame", req.force_frame ? "true" : "false");
   if (req.thread_id) form.append("thread_id", req.thread_id);
   for (const id of req.completed_resource_ids ?? []) {
@@ -853,7 +770,6 @@ export async function postChatWithFrame(
       method: "POST",
       body: form,
       headers: {
-        "X-Session-Token": token ?? "",
         "x-request-id": requestId,
         ...(await authHeaders()),
       },
@@ -1272,11 +1188,10 @@ export interface QuizNote {
 }
 
 /** Record a quiz in its chat; the server writes the lines and returns them. */
-export async function postQuizNote(note: QuizNote, sessionToken?: string): Promise<ChatMessage[]> {
+export async function postQuizNote(note: QuizNote): Promise<ChatMessage[]> {
   const res = await apiFetch<MessagesEnvelope>("/quiz/note", {
     method: "POST",
     body: JSON.stringify(note),
-    headers: tokenHeader(sessionToken),
   });
   const stamp = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   return res.messages.map((m, i) => ({ ...m, id: `note-${stamp}-${i}` }));
@@ -1296,21 +1211,15 @@ export interface QuizGrade {
   missing: string[];
 }
 
-function tokenHeader(sessionToken?: string): Record<string, string> | undefined {
-  const token = sessionToken ?? getStoredSessionToken() ?? undefined;
-  return token ? { "X-Session-Token": token } : undefined;
-}
-
 /** `modelHeaders` overrides the chat's model choice for this quiz (lib/modelMode). */
 export function postQuiz(
   req: QuizRequest,
-  sessionToken?: string,
   modelHeaders?: Record<string, string>,
 ): Promise<QuizResponse> {
   return apiFetch<QuizResponse>("/quiz", {
     method: "POST",
     body: JSON.stringify(req),
-    headers: { ...(modelHeaders ?? {}), ...(tokenHeader(sessionToken) ?? {}) },
+    headers: modelHeaders,
   });
 }
 
@@ -1318,19 +1227,16 @@ export function gradeQuizAnswer(
   sessionId: string,
   question: QuizQuestion,
   answer: string,
-  sessionToken?: string,
 ): Promise<QuizGrade> {
   return apiFetch<QuizGrade>("/quiz/grade", {
     method: "POST",
     body: JSON.stringify({
-      // A saved quiz grades as the signed-in learner: no launch session.
       ...(sessionId ? { session_id: sessionId } : {}),
       prompt: question.prompt,
       model_answer: question.model_answer ?? "",
       key_points: question.key_points ?? [],
       answer,
     }),
-    headers: sessionId ? tokenHeader(sessionToken) : undefined,
   });
 }
 

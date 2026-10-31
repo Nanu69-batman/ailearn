@@ -34,7 +34,6 @@ export function devSessionFixture(courseId: string): LmsSessionRequest {
 
 export const mockSession: LmsSessionResponse = {
   session_id: "mock-session-local",
-  session_token: "mock-token",
   learner_id: "demo-learner",
   course_id: "demo-course",
 };

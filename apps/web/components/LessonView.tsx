@@ -439,17 +439,16 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
   // File each chat asked here under its subject in Malai's sidebar, and keep
   // the address on that chat so a reload (or the sidebar) reopens it.
   const sessionId = session?.session_id ?? null;
-  const sessionToken = session?.session_token ?? null;
   const onAsk = useCallback(
     (threadId: string, question: string): void => {
-      if (!sessionId || !sessionToken || !subjectId || resourceId === SAMPLE_CLIP_ID) return;
-      const id = recordLessonChat({ sessionId, sessionToken, threadId, subjectId, resourceId, question });
+      if (!sessionId || !subjectId || resourceId === SAMPLE_CLIP_ID) return;
+      const id = recordLessonChat({ sessionId, threadId, subjectId, resourceId, question });
       if (malai && id !== openChatId) {
         // Same page, new address: no remount, so the answer keeps streaming.
         window.history.replaceState(null, "", malaiLessonPath(subjectId, resourceId, id));
       }
     },
-    [sessionId, sessionToken, subjectId, resourceId, malai, openChatId],
+    [sessionId, subjectId, resourceId, malai, openChatId],
   );
   const onTitled = useCallback(
     (threadId: string, title: string): void => {
@@ -909,7 +908,6 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
         fill
         subjectId={subjectId}
         sessionId={session.session_id}
-        sessionToken={session.session_token}
         videoId={selected.resourceId}
         getCurrentTimeMs={getCurrentTimeMs}
         captureFrame={captureFrame}

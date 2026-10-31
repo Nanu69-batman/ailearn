@@ -23,13 +23,5 @@ const _noExtras: _ExtraKeys extends never ? true : never = true;
 void _exhaustive;
 void _noExtras;
 
-// Session token round-trip (backend LmsSessionResponse.session_token):
-// the frontend type must carry it and the mock fixture must synthesize it.
-type _SessionToken = LmsSessionResponse["session_token"];
-const _tokenIsString: _SessionToken extends string ? true : never = true;
-const _mockToken: string = mockSession.session_token;
-
-void _tokenIsString;
-void _mockToken;
 
 export const CONTRACT_MODES: readonly string[] = CHAT_MODES;

@@ -87,7 +87,6 @@ class _StartBase(BaseModel):
 
     type: str = "start"
     session_id: str = Field(min_length=1, max_length=256)
-    session_token: str | None = Field(default=None, max_length=512)
     access_token: str | None = Field(default=None, max_length=8192)
 
 
@@ -162,21 +161,11 @@ async def _authorize(ws: WebSocket, start: _StartBase, *, thread_id: str | None 
     except HTTPException:
         await _close(ws, 4401, "invalid token")
         return None
-    owner = getattr(session, "owner_id", None)
-    if owner is not None and (user is None or user.id != owner):
-        await _close(ws, 4404, "session not found")
+    if user is None:
+        await _close(ws, 4401, "sign in required")
         return None
-    try:
-        chat_router._require_session_token(
-            secret=settings.lms_launch_secret,
-            session_id=session.id,
-            learner_id=session.learner_id,
-            token=start.session_token,
-            owner_id=owner,
-            user_id=user.id if user is not None else None,
-        )
-    except HTTPException:
-        await _close(ws, 4401, "invalid launch")
+    if getattr(session, "owner_id", None) != user.id:
+        await _close(ws, 4404, "session not found")
         return None
     if thread_id is not None:
         try:
@@ -406,7 +395,6 @@ class _LiveSession:
             voice_turns.set(self.turns)
             body = ChatRequest(
                 session_id=s.session_id,
-                session_token=s.session_token,
                 video_id=s.video_id,
                 # The LATEST playhead, clamped; the strict gate lives in chat().
                 current_time_ms=clamp_current_time_ms(self.latest_ms),

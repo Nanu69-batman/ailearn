@@ -6,6 +6,7 @@ the store's own ``where`` clause.
 
 from __future__ import annotations
 
+from tests.conftest import SIGNED_OUT
 import asyncio
 import json
 import random
@@ -14,7 +15,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.chat import router as chat_router
-from app.chat.launch import create_session_token
 from app.chat.llm import LLMResult
 from app.chat.quiz import (
     GradeRequest,
@@ -174,23 +174,23 @@ def api(chroma_store, embedder):
         learner_id="l1", course_id="course_1", resource_id="r1", lesson_id=None,
         resource_scope=["r1"], current_time_ms=T,
     )
-    token = create_session_token(settings.lms_launch_secret, session.id, "l1")
+    token = ""
     yield TestClient(app), session.id, token
     chat_router.reset_chat_state()
 
 
-def test_quiz_routes_need_the_session_token(api):
+def test_quiz_routes_need_sign_in(api):
     client, sid, token = api
     body = {"session_id": sid, "current_time_ms": T, "video_id": "r1"}
-    assert client.post("/quiz", json=body).status_code == 401
-    r = client.post("/quiz", json=body, headers={"X-Session-Token": token})
+    assert client.post("/quiz", json=body, headers=SIGNED_OUT).status_code == 401
+    r = client.post("/quiz", json=body)
     assert r.status_code == 200, r.text
     qs = r.json()["questions"]
     assert qs and qs[0]["citation"]["chunk_id"] == "open_early"
     grade = {"session_id": sid, "prompt": "Why?", "model_answer": "Because x.",
              "key_points": ["because"], "answer": "because x"}
-    assert client.post("/quiz/grade", json=grade).status_code == 401
-    g = client.post("/quiz/grade", json={**grade, "session_token": token})
+    assert client.post("/quiz/grade", json=grade, headers=SIGNED_OUT).status_code == 401
+    g = client.post("/quiz/grade", json=grade)
     assert g.status_code == 200 and g.json()["verdict"] == "correct"
 
 
