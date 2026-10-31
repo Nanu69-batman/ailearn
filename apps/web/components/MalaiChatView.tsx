@@ -452,7 +452,7 @@ export default function MalaiChatView() {
     if (voiceChat) updateChat(voiceChat.id, { updatedAt: Date.now() });
   };
 
-  const send = useCallback(async (override?: string, allowGeneral = false) => {
+  const send = useCallback(async (override?: string, allowGeneral = false, reask = false) => {
     const typed = (override ?? draft).trim();
     if (!typed || loading) return;
     stopDictation();
@@ -478,11 +478,20 @@ export default function MalaiChatView() {
       setLoading(true);
       setPreview({ status: null, text: "" });
     }
-    setMessages((prev) => [
-      ...prev,
-      { id: newMessageId(), role: "user", content: withImageNote(text, imageNames), citations: [], created_at: new Date().toISOString() },
-    ]);
-    clearImages();
+    // A re-ask (after "allow" or "answer from general knowledge") is the same
+    // question: its bubble is already there, and Malai's ask is replaced by
+    // the answer instead of the question appearing again.
+    setMessages((prev) =>
+      reask
+        ? prev[prev.length - 1]?.role === "assistant"
+          ? prev.slice(0, -1)
+          : prev
+        : [
+            ...prev,
+            { id: newMessageId(), role: "user", content: withImageNote(text, imageNames), citations: [], created_at: new Date().toISOString() },
+          ],
+    );
+    if (!reask) clearImages();
 
     const scope = allResourceIds(subjects);
     let current = chat ?? imageChat.current;
@@ -652,7 +661,7 @@ export default function MalaiChatView() {
   useEffect(() => {
     if (resend === null) return;
     setResend(null);
-    void send(resend.text, resend.allowGeneral);
+    void send(resend.text, resend.allowGeneral, true);
   }, [resend, send]);
 
   const allowAccess = (forSubject: boolean): void => {

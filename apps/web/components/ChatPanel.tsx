@@ -243,6 +243,8 @@ export default function ChatPanel({
   const [resend, setResend] = useState<{ text: string; allowGeneral: boolean } | null>(null);
   /** The next send may answer from general knowledge (the learner said yes). */
   const allowGeneralRef = useRef(false);
+  /** The next send re-asks the last question: no new bubble, the ask is replaced. */
+  const reaskRef = useRef(false);
   useEffect(() => setAccessAsk(null), [threadId]);
 
   // Images attached in the bar: context for this chat, never resources.
@@ -411,6 +413,8 @@ export default function ChatPanel({
     setAccessAsk(null);
     const allowGeneral = allowGeneralRef.current;
     allowGeneralRef.current = false;
+    const reask = reaskRef.current;
+    reaskRef.current = false;
     dictation.stop();
     // A slash command sets the answer style, or opens a quiz; so does a
     // message that asks for a quiz in so many words ("quiz me on this").
@@ -441,9 +445,14 @@ export default function ChatPanel({
       citations: [],
       created_at: new Date().toISOString(),
     };
-    setMessages((prev) => [...prev, userMsg]);
-    clearImages();
-    setInput("");
+    // A re-ask is the same question: keep its bubble, replace Malai's ask.
+    setMessages((prev) =>
+      reask ? (prev[prev.length - 1]?.role === "assistant" ? prev.slice(0, -1) : prev) : [...prev, userMsg],
+    );
+    if (!reask) {
+      clearImages();
+      setInput("");
+    }
     setSending(true);
     if (!offline) onAsk?.(threadId, text);
     setSendError(null);
@@ -602,6 +611,7 @@ export default function ChatPanel({
     if (resend === null) return;
     setResend(null);
     allowGeneralRef.current = resend.allowGeneral;
+    reaskRef.current = true;
     void send(resend.text);
     // `send` is recreated every render; only a new `resend` should fire this.
     // eslint-disable-next-line react-hooks/exhaustive-deps

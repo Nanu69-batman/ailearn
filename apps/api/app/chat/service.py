@@ -491,6 +491,25 @@ class ChatService:
         )
 
         intent = await self._route_intent(message) if live_frame is None else None
+        if (
+            ask_first
+            and live_frame is None
+            and intent != SMALLTALK
+            and has_subject_content(message)
+            and not is_supplemental_request(message)
+            and not await self._anything_readable(session, message, allowed, done, t_ms, focus_resource_id)
+        ):
+            # Nothing this chat can read matches: the route asks the learner
+            # now, instead of after an agent run that ends in a general
+            # answer ask-first would throw away.
+            devtrace.emit(
+                "route", "end", title="Nothing readable matches (ask the learner)",
+                data={"path": "ask_first_empty"},
+            )
+            self._persist(session_id, message, REFUSAL_TEXT, [])
+            return ChatResponse(
+                answer=REFUSAL_TEXT, citations=[], refused=True, mode="grounded", grounded=False,
+            )
         use_agent = (
             not fast
             and self._agent is not None
@@ -947,6 +966,33 @@ class ChatService:
             mode=outcome.kind,
             grounded=outcome.kind == "grounded",
         )
+
+    async def _anything_readable(
+        self, session, message: str, allowed: list[str], done: Sequence[str],
+        t_ms: int, focus_resource_id: str | None,
+    ) -> bool:
+        """Does any passage this request may read match the question at all?
+
+        The same gated retrieval the answer would use (allowed at T, done at
+        the end of time). A failure counts as "yes", so the normal path runs.
+        """
+        try:
+            retrieval = self._retrieval()
+            found = await retrieval.retrieve(
+                message, session.course_id, allowed, t_ms, k=4,
+                focus_resource_id=focus_resource_id,
+            )
+            if apply_strict_timestamp(found, t_ms, "qa"):
+                return True
+            if done:
+                extra = await retrieval.retrieve(
+                    message, session.course_id, list(done), COMPLETED_T_MS, k=4
+                )
+                return bool(extra)
+            return False
+        except Exception as exc:  # noqa: BLE001 - a pre-check never fails the answer
+            log.warning("readable pre-check skipped: %s", type(exc).__name__)
+            return True
 
     async def _general_answer(
         self, session_id: str, message: str, mode: str = "qa"

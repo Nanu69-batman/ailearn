@@ -30,10 +30,14 @@ def completed_scope(
 
     grant INTERSECT completed, minus the focused resource (which keeps its own
     playhead gate). Like focus, the list only ever narrows the grant: an id the
-    session was not granted is dropped, never added. Without a focused resource
-    the whole grant is already in play, so this is empty.
+    session was not granted is dropped, never added.
+
+    Without a focused resource (a Malai chat: no player, so T is 0) the grant
+    is in play but every video in it is still gated at T=0 and reads nothing.
+    The ones marked done are therefore read here, in full, exactly as with a
+    focus -- otherwise a video ticked in a Malai chat could never be read.
     """
-    if not focus_resource_id or not completed_resource_ids:
+    if not completed_resource_ids:
         return []
     done = set(completed_resource_ids)
     return [r for r in granted_scope or [] if r in done and r != focus_resource_id]

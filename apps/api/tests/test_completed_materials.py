@@ -86,5 +86,18 @@ def test_completed_scope_only_narrows_the_grant():
     grant = ["a", "b", "c"]
     assert completed_scope(grant, "a", ["b", "zzz"]) == ["b"]
     assert completed_scope(grant, "a", ["a"]) == []  # the open one keeps its gate
-    assert completed_scope(grant, None, ["b"]) == []  # no focus: grant already in play
+    # No focus (a Malai chat, T=0): the done ones are still read in full.
+    assert completed_scope(grant, None, ["b", "zzz"]) == ["b"]
     assert completed_scope(grant, "a", []) == []
+
+
+def test_malai_chat_without_a_player_reads_done_videos(chroma_store, embedder):
+    """No open material (T=0): a video marked done is still read in full."""
+    service, sid, llm = _setup(chroma_store, embedder)
+    asyncio.run(service.chat(
+        session_id=sid, current_time_ms=0, message="what is a partial derivative",
+        completed_resource_ids=["res_done"], scope_resource_ids=["res_done"],
+    ))
+    assert "done_late" in llm.seen
+    assert "done_noend" not in llm.seen  # unknown end: still excluded
+    assert "open_early" not in llm.seen  # not in this chat's scope

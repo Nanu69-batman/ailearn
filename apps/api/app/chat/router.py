@@ -261,8 +261,8 @@ async def _answer(body: ChatRequest, *, voice: bool = False) -> ChatResponse:
     if body.referenced_resource_ids:
         early, body, locked_refs = _apply_references(body)
         if early is not None:
+            # Not saved, like the other asks: a yes re-asks and saves it once.
             style_note.reset(note)
-            service._persist(body.session_id, body.message, early.answer, [])
             return early
     # Ask-first: hold this turn's saving until we know whether the refusal is
     # replaced by a question to the learner.
@@ -292,8 +292,10 @@ async def _answer(body: ChatRequest, *, voice: bool = False) -> ChatResponse:
             deferred_turns.reset(held)
             held = None
             if resp.refused and not resp.scope_empty and not resp.processing_pending:
+                # Not saved: if the learner says yes, the same question is
+                # asked again and saved once, with its real answer.
                 resp = await _ask_learner(body)
-                turns = [(body.session_id, body.message, resp.answer, [])]
+                turns = []
             elif locked_refs:
                 # Answered from the readable ones; offer the rest it named.
                 resp.suggested_resource_ids = locked_refs[:3]
