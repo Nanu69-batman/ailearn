@@ -620,8 +620,9 @@ export default function LearnShell({ children }: { children: ReactNode }) {
 
           <main className="relative flex-1 px-4 py-6 sm:px-6 lg:px-10 lg:py-10">
             {/* Desktop has no top bar: the developer view is a floating icon
-                button in the corner, labelled by its tooltip. */}
-            <div className="group absolute right-4 top-4 z-20 hidden md:block lg:right-6 lg:top-6">
+                button in the corner, labelled by its tooltip. Fixed to the
+                window, so it stays put while the page or chat scrolls. */}
+            <div className="group fixed right-4 top-4 z-40 hidden md:block lg:right-6 lg:top-6">
               <button
                 type="button"
                 onClick={() =>

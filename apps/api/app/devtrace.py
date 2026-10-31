@@ -214,3 +214,52 @@ def latest_seq() -> int:
 def clear() -> None:
     with _LOCK:
         _EVENTS.clear()
+
+
+def export_runs(run_id: str | None = None, flow: str | None = None) -> dict:
+    """Every buffered event, grouped by run, for download from the developer view.
+
+    Each run carries a summary (flow, start/end, duration, errors, the
+    question and answer previews) ahead of its events, so a failed run can be
+    read top to bottom. Same data as the live trace: previews and ids only.
+    """
+    with _LOCK:
+        items = list(_EVENTS)
+    if run_id:
+        items = [e for e in items if e.get("run_id") == run_id]
+    if flow:
+        items = [e for e in items if e.get("flow") == flow]
+    runs: dict[str, dict] = {}
+    for e in items:
+        rid = e.get("run_id") or "none"
+        r = runs.setdefault(rid, {"run_id": rid, "flow": e.get("flow"), "course_id": e.get("course_id"),
+                                  "events": []})
+        r["events"].append(e)
+    out = []
+    for r in runs.values():
+        evs = r["events"]
+        t0, t1 = evs[0].get("ts"), evs[-1].get("ts")
+        errors = [
+            {"step": e.get("step"), "title": e.get("title"), "data": e.get("data")}
+            for e in evs if e.get("phase") == "error"
+        ]
+        first_data = next((e.get("data") or {} for e in evs if e.get("step") == "request"), {})
+        last_data = next((e.get("data") or {} for e in reversed(evs) if e.get("step") == "respond"), {})
+        r["summary"] = {
+            "started": t0,
+            "ended": t1,
+            "duration_ms": round((t1 - t0) * 1000) if isinstance(t0, (int, float)) and isinstance(t1, (int, float)) else None,
+            "steps": len(evs),
+            "status": "error" if errors else ("done" if evs[-1].get("step") == "respond" else "incomplete"),
+            "errors": errors,
+            "question": first_data.get("question"),
+            "answer": last_data.get("answer"),
+            "path": [e.get("title") for e in evs if e.get("step") == "route" and e.get("phase") == "end"],
+        }
+        out.append({k: r[k] for k in ("run_id", "flow", "course_id", "summary", "events")})
+    return {
+        "exported_at": time.time(),
+        "buffer_size": MAX_EVENTS,
+        "run_count": len(out),
+        "runs": out,
+    }

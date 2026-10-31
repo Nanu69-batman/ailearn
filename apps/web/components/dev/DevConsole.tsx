@@ -114,6 +114,69 @@ const STEP_MS = 560;
 const FAST_STEP_MS = 90;
 const MAX_RUNS = 60;
 
+/**
+ * Download the API's buffered run logs as JSON: the selected run, or every
+ * run still in the buffer. Each run comes with a summary (question, answer,
+ * the path taken, errors, timing) ahead of its step events.
+ */
+function ExportButtons({ runId }: { runId: string | null }) {
+  const [busy, setBusy] = useState<"run" | "all" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const download = async (which: "run" | "all"): Promise<void> => {
+    const base = apiBase();
+    if (!base || busy) return;
+    setBusy(which);
+    setError(null);
+    try {
+      const q = which === "run" && runId ? `?run_id=${encodeURIComponent(runId)}` : "";
+      const res = await fetch(`${base}/dev/trace/export${q}`, { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body: unknown = await res.json();
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const name = which === "run" && runId ? `malai-run-${runId}-${stamp}.json` : `malai-runs-${stamp}.json`;
+      const blob = new Blob([JSON.stringify(body, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const btn =
+    "flex items-center gap-1.5 rounded-lg border border-[var(--dev-border)] px-2.5 py-1.5 text-xs text-[var(--dev-text-2)] transition hover:bg-[var(--dev-chip)] disabled:cursor-not-allowed disabled:opacity-50";
+  const icon = (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5" aria-hidden="true">
+      <path d="M12 3v12M7 10l5 5 5-5M5 21h14" />
+    </svg>
+  );
+  return (
+    <div className="flex items-center gap-1.5">
+      <button type="button" className={btn} disabled={!runId || busy !== null} onClick={() => void download("run")} title="Download the selected run's log as JSON">
+        {icon}
+        {busy === "run" ? "Exporting…" : "Export run"}
+      </button>
+      <button type="button" className={btn} disabled={busy !== null} onClick={() => void download("all")} title="Download every run still in the API's buffer as JSON">
+        {icon}
+        {busy === "all" ? "Exporting…" : "Export all"}
+      </button>
+      {error && (
+        <span role="alert" className="text-xs text-rose-400">
+          Export failed: {error}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function apiBase(): string {
   return (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/$/, "");
 }
@@ -513,6 +576,7 @@ export default function DevConsole() {
             />
             Follow live
           </label>
+          <ExportButtons runId={runId} />
           <ConnBadge conn={conn} queued={queued} />
           <button
             type="button"

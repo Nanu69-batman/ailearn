@@ -144,6 +144,19 @@ def dev_trace(after: int = 0, course_id: str | None = None) -> dict:
     }
 
 
+@app.get("/dev/trace/export")
+def dev_trace_export(run_id: str | None = None, flow: str | None = None) -> JSONResponse:
+    """The buffered runs (or one run) as a JSON download, for debugging."""
+    import time as _time
+
+    from app import devtrace
+
+    payload = devtrace.export_runs(run_id=run_id, flow=flow)
+    stamp = _time.strftime("%Y%m%d-%H%M%S")
+    name = f"malai-run-{run_id[:12]}-{stamp}.json" if run_id else f"malai-runs-{stamp}.json"
+    return JSONResponse(payload, headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
