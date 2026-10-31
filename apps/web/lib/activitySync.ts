@@ -138,3 +138,89 @@ export async function pullActivity(): Promise<RemoteActivity | null> {
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// Video watch progress and per-chat resource allowances (migration 0006).
+// Separate queries from pullActivity on purpose: on a database without 0006
+// they fail on their own and the rest of the activity still syncs.
+// ---------------------------------------------------------------------------
+
+export async function pushWatch(resourceId: string, watchedMs: number, durationMs: number): Promise<void> {
+  const s = await signedIn();
+  if (!s) return;
+  const { error } = await s.supabase.from("lesson_progress").upsert(
+    { user_id: s.userId, resource_id: resourceId, watched_ms: Math.round(watchedMs), duration_ms: Math.round(durationMs) },
+    { onConflict: "user_id,resource_id" },
+  );
+  if (error) warn("watch progress", error);
+}
+
+/** { resourceId: { ms, durationMs } }, or null when signed out / unavailable. */
+export async function pullWatch(): Promise<Record<string, { ms: number; durationMs: number }> | null> {
+  const s = await signedIn();
+  if (!s) return null;
+  const { data, error } = await s.supabase.from("lesson_progress").select("resource_id, watched_ms, duration_ms");
+  if (error) {
+    warn("watch pull", error);
+    return null;
+  }
+  const out: Record<string, { ms: number; durationMs: number }> = {};
+  for (const row of data ?? []) {
+    const ms = Number(row.watched_ms) || 0;
+    if (ms > 0) out[row.resource_id] = { ms, durationMs: Number(row.duration_ms) || 0 };
+  }
+  return out;
+}
+
+export interface RemoteAllowance {
+  subjectId: string;
+  add: string[];
+  remove: string[];
+  updatedAt: number;
+}
+
+export async function pushAllowance(chatId: string, a: RemoteAllowance): Promise<void> {
+  const s = await signedIn();
+  if (!s) return;
+  const { error } = await s.supabase.from("chat_allowances").upsert(
+    {
+      user_id: s.userId,
+      chat_id: chatId,
+      subject_id: a.subjectId,
+      allow_add: a.add,
+      allow_remove: a.remove,
+      updated_at: new Date(a.updatedAt).toISOString(),
+    },
+    { onConflict: "user_id,chat_id" },
+  );
+  if (error) warn("chat allowance", error);
+}
+
+export async function deleteAllowance(chatId: string): Promise<void> {
+  const s = await signedIn();
+  if (!s) return;
+  const { error } = await s.supabase.from("chat_allowances").delete().eq("user_id", s.userId).eq("chat_id", chatId);
+  if (error) warn("chat allowance delete", error);
+}
+
+export async function pullAllowances(): Promise<Record<string, RemoteAllowance> | null> {
+  const s = await signedIn();
+  if (!s) return null;
+  const { data, error } = await s.supabase
+    .from("chat_allowances")
+    .select("chat_id, subject_id, allow_add, allow_remove, updated_at");
+  if (error) {
+    warn("chat allowance pull", error);
+    return null;
+  }
+  const out: Record<string, RemoteAllowance> = {};
+  for (const row of data ?? []) {
+    out[row.chat_id] = {
+      subjectId: row.subject_id,
+      add: Array.isArray(row.allow_add) ? row.allow_add : [],
+      remove: Array.isArray(row.allow_remove) ? row.allow_remove : [],
+      updatedAt: Date.parse(row.updated_at) || 0,
+    };
+  }
+  return out;
+}

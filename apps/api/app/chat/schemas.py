@@ -86,6 +86,13 @@ class ChatRequest(BaseModel):
     #: from general knowledge and only searches the learner's materials when
     #: the message explicitly asks about them.
     general: bool = False
+    #: The chat's subject's other materials (not readable in this chat). When
+    #: the answer is refused or not covered, they are searched and matching ids
+    #: come back as ``suggested_resource_ids`` (see app/chat/suggest.py).
+    #: Intersected with the session grant: never a way to read anything.
+    suggest_resource_ids: list[Annotated[str, Field(max_length=64)]] = Field(
+        default_factory=list, max_length=256
+    )
     #: The learner's personalization, applied as a style note to the prompt.
     personalization: Personalization | None = None
 
@@ -167,6 +174,11 @@ class ChatResponse(BaseModel):
     #: low-evidence refusal. Defaults to False so every existing response
     #: shape and assertion is unchanged.
     scope_empty: bool = False
+    #: Materials this chat cannot read that match the question (ids only),
+    #: offered so the learner can give the chat access. Empty unless the
+    #: request named ``suggest_resource_ids`` and the answer was refused or
+    #: not covered by the readable materials.
+    suggested_resource_ids: list[str] = Field(default_factory=list)
     #: What the live-frame path did for this turn, or ``None`` when no frame was
     #: involved. ``"live"``: the learner's captured frame was described and
     #: injected as high-priority evidence. ``"document"``: a frame was asked for

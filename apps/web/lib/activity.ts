@@ -156,6 +156,8 @@ function claimActivityOwner(userId: string): void {
         key === LAST_KEY ||
         key === ACCESSED_KEY ||
         key === ARCHIVED_KEY ||
+        key === "ailearn.watch.v1" ||
+        key === "ailearn.chat_allow.v1" ||
         (key.startsWith("ailearn.course.") && key.endsWith(".completion"))
       ) {
         ls.removeItem(key);

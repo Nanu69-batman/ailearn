@@ -256,7 +256,7 @@ async def _answer(body: ChatRequest, *, voice: bool = False) -> ChatResponse:
     style = "\n\n".join(p for p in (style_for(body.personalization, voice=voice), images) if p)
     note = style_note.set(style)
     try:
-        return await service.chat(
+        resp = await service.chat(
             session_id=body.session_id,
             current_time_ms=clamp_current_time_ms(body.current_time_ms),
             message=body.message,
@@ -274,6 +274,9 @@ async def _answer(body: ChatRequest, *, voice: bool = False) -> ChatResponse:
             **({"general": True} if body.general else {}),
             **({"fast": True} if voice else {}),
         )
+        if body.suggest_resource_ids and (resp.refused or resp.mode == "supplemental"):
+            resp.suggested_resource_ids = await _suggest(body)
+        return resp
     except SessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail="session not found") from exc
     except HTTPException:
@@ -290,6 +293,18 @@ async def _answer(body: ChatRequest, *, voice: bool = False) -> ChatResponse:
         raise HTTPException(status_code=502, detail="upstream provider error") from exc
     finally:
         style_note.reset(note)
+
+
+async def _suggest(body: ChatRequest) -> list[str]:
+    """Materials outside this chat's reach that would answer the question."""
+    from app.chat.suggest import suggest_candidates, suggest_materials
+
+    session = session_store.get(body.session_id)
+    if session is None:
+        return []
+    readable = body.scope_resource_ids if body.scope_resource_ids is not None else session.resource_scope
+    candidates = suggest_candidates(session.resource_scope, readable, body.suggest_resource_ids)
+    return await suggest_materials(get_service(), session, body.message, candidates)
 
 
 @router.post("/chat", response_model=ChatResponse)

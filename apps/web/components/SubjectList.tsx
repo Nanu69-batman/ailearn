@@ -1,5 +1,6 @@
 "use client";
 
+import { useWatchProgress } from "@/lib/progress";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Subject } from "@/lib/api";
 import {
@@ -119,11 +120,13 @@ export default function SubjectList() {
     }
   }, []);
 
+  // Watch progress counts toward a subject's progress (and syncs from the account).
+  const watch = useWatchProgress();
   useEffect(() => {
     const next: Record<string, number> = {};
     for (const s of subjects) next[s.id] = subjectProgress(s);
     setProgress(next);
-  }, [subjects]);
+  }, [subjects, watch]);
 
   // Fade the "just created" highlight and transient notices.
   useEffect(() => {

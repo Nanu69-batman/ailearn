@@ -12,17 +12,27 @@
  *
  * Both are small external stores so every view stays in sync, and both
  * survive a missing or broken localStorage (they just last for the page).
+ * Signed in, both are also kept on the account (lib/activitySync.ts,
+ * migration 0006): pulled once per page load and merged, pushed on change.
  */
 
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { readCompletion, writeCompletion } from "@/lib/learn";
+import {
+  deleteAllowance,
+  pullAllowances,
+  pullWatch,
+  pushAllowance,
+  pushWatch,
+} from "@/lib/activitySync";
 
 // ---------------------------------------------------------------------------
 // Tiny keyed JSON store.
 // ---------------------------------------------------------------------------
 
-function jsonStore<T>(key: string) {
+function jsonStore<T>(key: string, pull?: (current: Record<string, T>) => Promise<Record<string, T> | null>) {
   let cache: Record<string, T> | null = null;
+  let pulled = false;
   const listeners = new Set<() => void>();
   const EMPTY: Record<string, T> = {};
 
@@ -50,6 +60,15 @@ function jsonStore<T>(key: string) {
 
   const subscribe = (l: () => void): (() => void) => {
     listeners.add(l);
+    if (pull && !pulled) {
+      // The account's copy, merged into this browser's, once per page load.
+      pulled = true;
+      void pull(read())
+        .then((merged) => {
+          if (merged) write(merged);
+        })
+        .catch(() => {});
+    }
     const onStorage = (e: StorageEvent) => {
       if (e.key === key) {
         cache = null;
@@ -65,7 +84,7 @@ function jsonStore<T>(key: string) {
 
   const use = (): Record<string, T> => useSyncExternalStore(subscribe, read, () => EMPTY);
 
-  return { read, write, use };
+  return { read, write, use, subscribe };
 }
 
 // ---------------------------------------------------------------------------
@@ -79,7 +98,23 @@ export interface WatchProgress {
   durationMs: number;
 }
 
-const watchStore = jsonStore<WatchProgress>("ailearn.watch.v1");
+const watchStore = jsonStore<WatchProgress>("ailearn.watch.v1", async (local) => {
+  const remote = await pullWatch();
+  if (!remote) return null;
+  const merged: Record<string, WatchProgress> = { ...local };
+  for (const [id, r] of Object.entries(remote)) {
+    const l = local[id];
+    // Watching only moves forward: keep the furthest point either side has.
+    if (!l || r.ms > l.ms) merged[id] = { ms: r.ms, durationMs: r.durationMs || l?.durationMs || 0 };
+    else if (l.ms > r.ms) void pushWatch(id, l.ms, l.durationMs);
+  }
+  for (const [id, l] of Object.entries(local)) if (!remote[id] && l.ms > 0) void pushWatch(id, l.ms, l.durationMs);
+  return merged;
+});
+
+/** Last push per video; watch progress goes to the account at most this often. */
+const lastWatchPush = new Map<string, number>();
+const WATCH_PUSH_MS = 15_000;
 
 /** A jump bigger than this between two time reports is a seek, not playback. */
 const MAX_STEP_MS = 5_000;
@@ -106,6 +141,11 @@ export function recordWatch(resourceId: string, prevMs: number | null, ms: numbe
   // Whole seconds are enough: no write (and no re-render) on every timeupdate.
   if (dur === cur.durationMs && next - cur.ms < 1_000 && next !== dur) return;
   watchStore.write({ ...all, [resourceId]: { ms: next, durationMs: dur } });
+  const now = Date.now();
+  if (next === dur || now - (lastWatchPush.get(resourceId) ?? 0) >= WATCH_PUSH_MS) {
+    lastWatchPush.set(resourceId, now);
+    void pushWatch(resourceId, next, dur);
+  }
 }
 
 /** Share watched, 0..1; null when the length is not known yet. */
@@ -133,15 +173,15 @@ export function setSubjectCompletion(subjectId: string, ids: string[], done: boo
   // unticked that resource for itself.
   if (done) {
     const all = allowStore.read();
-    let changed = false;
+    const changed: string[] = [];
     const patched: Record<string, ChatAllowance> = {};
     for (const [chatId, a] of Object.entries(all)) {
       if (a.subjectId === subjectId && a.remove.some((id) => ids.includes(id))) {
-        patched[chatId] = { ...a, remove: a.remove.filter((id) => !ids.includes(id)) };
-        changed = true;
+        patched[chatId] = { ...a, remove: a.remove.filter((id) => !ids.includes(id)), updatedAt: Date.now() };
+        changed.push(chatId);
       } else patched[chatId] = a;
     }
-    if (changed) allowStore.write(patched);
+    if (changed.length) putAllowances(patched, changed);
   }
   notifyCompletion(subjectId);
 }
@@ -187,13 +227,42 @@ export interface ChatAllowance {
   add: string[];
   /** Unticked for this chat although completed for the subject. */
   remove: string[];
+  /** Last change, ms; the newer side wins when merging with the account. */
+  updatedAt?: number;
 }
 
-const allowStore = jsonStore<ChatAllowance>("ailearn.chat_allow.v1");
+const DRAFT_PREFIX = "draft:";
+
+const allowStore = jsonStore<ChatAllowance>("ailearn.chat_allow.v1", async (local) => {
+  const remote = await pullAllowances();
+  if (!remote) return null;
+  const merged: Record<string, ChatAllowance> = { ...local };
+  for (const [id, r] of Object.entries(remote)) {
+    const l = local[id];
+    if (!l || r.updatedAt > (l.updatedAt ?? 0)) merged[id] = r;
+    else if ((l.updatedAt ?? 0) > r.updatedAt) pushOne(id, l);
+  }
+  for (const [id, l] of Object.entries(local)) if (!remote[id]) pushOne(id, l);
+  return merged;
+});
+
+/** Drafts (a chat not made yet) stay in this browser. */
+function pushOne(chatKey: string, a: ChatAllowance | null): void {
+  if (chatKey.startsWith(DRAFT_PREFIX)) return;
+  if (a) void pushAllowance(chatKey, { subjectId: a.subjectId, add: a.add, remove: a.remove, updatedAt: a.updatedAt ?? Date.now() });
+  else void deleteAllowance(chatKey);
+}
+
+/** Write the allowances, sending the changed (or removed) chats to the account. */
+function putAllowances(next: Record<string, ChatAllowance>, changed: string[], removed: string[] = []): void {
+  allowStore.write(next);
+  for (const k of changed) pushOne(k, next[k] ?? null);
+  for (const k of removed) pushOne(k, null);
+}
 
 /** Key for a chat not created yet (the new-chat box on a subject's page). */
 export function draftAllowanceKey(subjectId: string): string {
-  return `draft:${subjectId}`;
+  return `${DRAFT_PREFIX}${subjectId}`;
 }
 
 export function useChatAllowances(): Record<string, ChatAllowance> {
@@ -228,7 +297,7 @@ export function setChatAllowed(chatKey: string, subjectId: string, resourceId: s
   const remove = cur.remove.filter((id) => id !== resourceId);
   if (allowed && !subjectDone) add.push(resourceId);
   if (!allowed && subjectDone) remove.push(resourceId);
-  allowStore.write({ ...all, [chatKey]: { subjectId, add, remove } });
+  putAllowances({ ...all, [chatKey]: { subjectId, add, remove, updatedAt: Date.now() } }, [chatKey]);
 }
 
 /** A new chat was made from the draft: it keeps the draft's choices. */
@@ -237,7 +306,7 @@ export function adoptDraftAllowance(subjectId: string, chatId: string): void {
   const draft = all[draftAllowanceKey(subjectId)];
   if (!draft) return;
   const { [draftAllowanceKey(subjectId)]: _drop, ...rest } = all;
-  allowStore.write({ ...rest, [chatId]: draft });
+  putAllowances({ ...rest, [chatId]: { ...draft, updatedAt: Date.now() } }, [chatId]);
 }
 
 /** Back to following the subject. */
@@ -245,5 +314,5 @@ export function resetChatAllowance(chatKey: string): void {
   const all = allowStore.read();
   if (!all[chatKey]) return;
   const { [chatKey]: _drop, ...rest } = all;
-  allowStore.write(rest);
+  putAllowances(rest, [], [chatKey]);
 }

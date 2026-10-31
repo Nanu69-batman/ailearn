@@ -403,3 +403,64 @@ export function ResourceChooser({
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Access prompt
+// ---------------------------------------------------------------------------
+
+/**
+ * Shown under an answer when the materials that cover the question are not
+ * readable in this chat: give the chat access (this chat, or the whole
+ * subject), or leave it as it is. Allowing asks the question again.
+ */
+export function AccessPrompt({
+  titles,
+  subjectName,
+  onAllowChat,
+  onAllowSubject,
+  onDismiss,
+}: {
+  /** Titles of the suggested materials. */
+  titles: string[];
+  subjectName: string;
+  onAllowChat: () => void;
+  onAllowSubject: () => void;
+  onDismiss: () => void;
+}) {
+  const named =
+    titles.length === 1
+      ? `“${titles[0]}”`
+      : `${titles.slice(0, -1).map((t) => `“${t}”`).join(", ")} and “${titles[titles.length - 1]}”`;
+  return (
+    <div role="group" aria-label="Give this chat access" className="rounded-2xl border border-violet-200 bg-violet-50/70 px-4 py-3 text-sm text-gray-700 shadow-sm">
+      <p>
+        This looks covered in <span className="font-medium text-gray-900">{named}</span>, which this chat can&apos;t read
+        yet. Give it access?
+      </p>
+      <div className="mt-2.5 flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={onAllowChat}
+          className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-violet-700 ring-1 ring-violet-200 transition hover:bg-violet-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
+        >
+          Allow for this chat
+        </button>
+        <button
+          type="button"
+          onClick={onAllowSubject}
+          title={`Marks it completed for ${subjectName}: every chat in it can read it`}
+          className="rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
+        >
+          Allow for whole subject
+        </button>
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="rounded-lg px-3 py-1.5 text-xs font-medium text-gray-500 transition hover:bg-white hover:text-gray-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
+        >
+          Don&apos;t allow
+        </button>
+      </div>
+    </div>
+  );
+}

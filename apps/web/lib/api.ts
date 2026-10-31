@@ -175,6 +175,11 @@ export interface ChatRequest {
    * knowledge unless the message explicitly asks about the learner's materials.
    */
   general?: boolean;
+  /**
+   * The subject's materials this chat cannot read. If the answer is refused
+   * or not covered, the ones that match come back as suggested_resource_ids.
+   */
+  suggest_resource_ids?: string[];
 }
 
 export type CitationSourceType =
@@ -260,6 +265,8 @@ export interface ChatResponse {
   live_frame?: LiveFrameState | null;
   /** Read defensively; older backends omit it. See scope_empty in ChatPanel. */
   scope_empty?: boolean;
+  /** Materials this chat cannot read that would answer the question (ids). */
+  suggested_resource_ids?: string[];
   /** True when the question is past the processed part of a stream-mode video. */
   processing_pending?: boolean;
   processed_through_ms?: number | null;

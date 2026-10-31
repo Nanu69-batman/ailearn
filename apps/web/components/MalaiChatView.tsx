@@ -21,10 +21,12 @@ import {
   adoptDraftAllowance,
   draftAllowanceKey,
   effectiveAllowance,
+  setChatAllowed,
+  setSubjectCompletion,
   useChatAllowances,
   useSubjectCompletion,
 } from "@/lib/progress";
-import { ResourceChooser, SubjectChecklist } from "@/components/ResourceChecklist";
+import { AccessPrompt, ResourceChooser, SubjectChecklist } from "@/components/ResourceChecklist";
 import SubjectAnalytics from "@/components/SubjectAnalytics";
 import {
   addChat,
@@ -284,6 +286,15 @@ export default function MalaiChatView() {
       ? { completed_resource_ids: allowed.slice(0, 100), scope_resource_ids: allowed }
       : { completed_resource_ids: doneResourceIds(subjects), general: true };
 
+  /**
+   * The answer needed materials this chat cannot read: ask whether to give it
+   * access. Allowing asks the question again once the new allowance is in
+   * (`resend`, picked up by an effect after the re-render).
+   */
+  const [accessAsk, setAccessAsk] = useState<{ chatId: string; ids: string[]; text: string } | null>(null);
+  const [resend, setResend] = useState<string | null>(null);
+  useEffect(() => setAccessAsk((a) => (a && a.chatId === chatId ? a : null)), [chatId]);
+
   // Load the open chat's history whenever the chat changes.
   const chatSession = chat ? `${chat.sessionId}|${chat.threadId}` : null;
   useEffect(() => {
@@ -439,8 +450,8 @@ export default function MalaiChatView() {
     if (voiceChat) updateChat(voiceChat.id, { updatedAt: Date.now() });
   };
 
-  const send = useCallback(async () => {
-    const typed = draft.trim();
+  const send = useCallback(async (override?: string) => {
+    const typed = (override ?? draft).trim();
     if (!typed || loading) return;
     stopDictation();
     if (subject && (subject.resource_count ?? 0) === 0) {
@@ -459,7 +470,8 @@ export default function MalaiChatView() {
     const mode: ChatMode = cmd?.command.mode ?? "qa";
     const text = quizAsk ? quizAsk.request : cmd ? commandQuestion(cmd.command, cmd.rest) : typed;
     setError(null);
-    setDraft("");
+    setAccessAsk(null);
+    if (override === undefined) setDraft("");
     if (!quizAsk) {
       setLoading(true);
       setPreview({ status: null, text: "" });
@@ -510,6 +522,7 @@ export default function MalaiChatView() {
           mode,
           // No subject: a general chat; materials are read only when asked for.
           ...readScope(),
+          ...(subject ? { suggest_resource_ids: subjectIds.filter((id) => !allowed.includes(id)) } : {}),
         };
         return streamChat(req, {
           onStatus: (status) => setPreview((p) => ({ status, text: p?.text ?? "" })),
@@ -546,6 +559,8 @@ export default function MalaiChatView() {
         preview: titleFrom(text),
         ...(res.thread_title ? { title: res.thread_title } : {}),
       });
+      const suggested = (res.suggested_resource_ids ?? []).filter((id) => subjectIds.includes(id));
+      if (subject && suggested.length) setAccessAsk({ chatId: current.id, ids: suggested, text });
     } catch (err) {
       setError(err instanceof ApiError ? formatApiError(err) : err instanceof Error ? err.message : String(err));
     } finally {
@@ -610,6 +625,20 @@ export default function MalaiChatView() {
     }
   };
 
+
+  useEffect(() => {
+    if (resend === null) return;
+    setResend(null);
+    void send(resend);
+  }, [resend, send]);
+
+  const allowAccess = (forSubject: boolean): void => {
+    if (!accessAsk || !subject) return;
+    if (forSubject) setSubjectCompletion(subject.id, accessAsk.ids, true);
+    for (const id of accessAsk.ids) setChatAllowed(accessAsk.chatId, subject.id, id, true);
+    setResend(accessAsk.text);
+    setAccessAsk(null);
+  };
 
   const start = (prompt: string) => {
     setDraft(prompt);
@@ -784,6 +813,17 @@ export default function MalaiChatView() {
                   </p>
                 )}
                 <MessageList fill messages={messages} loading={loading} preview={preview} onSeek={() => {}} />
+                {accessAsk && subject && !loading && (
+                  <div className="mt-4">
+                    <AccessPrompt
+                      titles={accessAsk.ids.map((id) => subjectResources.find((r) => r.id === id)?.title ?? id)}
+                      subjectName={subject.name}
+                      onAllowChat={() => allowAccess(false)}
+                      onAllowSubject={() => allowAccess(true)}
+                      onDismiss={() => setAccessAsk(null)}
+                    />
+                  </div>
+                )}
               </>
             )}
           </div>

@@ -1005,6 +1005,19 @@ export default function LessonView({ malai = false, withChat = true }: { malai?:
         onSeek={handleSeek}
         openDoc={selected.kind === "pptx" || selected.kind === "image" || (selected.kind === "pdf" && !selected.src) ? null : openDoc}
         completedResourceIds={completedForChat}
+        suggestResourceIds={
+          malai && chatKey ? resources.map((r) => r.id).filter((id) => id !== resourceId && !completedIds.includes(id)) : []
+        }
+        resourceTitle={(id) => resources.find((r) => r.id === id)?.title ?? id}
+        subjectName={subject?.name ?? "this subject"}
+        onAllowAccess={
+          malai && chatKey && subjectId
+            ? (ids, forSubject) => {
+                if (forSubject) setSubjectCompletion(subjectId, ids, true);
+                for (const id of ids) setChatAllowed(chatKey, subjectId, id, true);
+              }
+            : undefined
+        }
         offline={offline}
         onRejoin={reset}
         openThreadId={openThreadId}

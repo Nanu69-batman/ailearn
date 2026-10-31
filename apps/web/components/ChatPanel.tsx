@@ -18,6 +18,7 @@ import {
 import { mockChatAnswer, mockHistory } from "../lib/fixtures";
 import { LEARNER_NAME } from "../lib/learn";
 import MessageList from "./MessageList";
+import { AccessPrompt } from "./ResourceChecklist";
 import type { CitationBadgeProps } from "./CitationBadge";
 import {
   SlashMenuList,
@@ -65,6 +66,15 @@ interface ChatPanelProps {
    * material plus these, and nothing else from the course.
    */
   completedResourceIds?: string[];
+  /**
+   * The subject's materials this chat cannot read. When an answer needs one,
+   * the chat asks whether to give it access (`onAllowAccess`), then asks again.
+   */
+  suggestResourceIds?: string[];
+  /** Title of a suggested material, for the access prompt. */
+  resourceTitle?: (id: string) => string;
+  subjectName?: string;
+  onAllowAccess?: (ids: string[], forSubject: boolean) => void;
   offline: boolean;
   onRejoin?: () => void;
   /**
@@ -157,6 +167,10 @@ export default function ChatPanel({
   onSeek,
   openDoc,
   completedResourceIds = [],
+  suggestResourceIds = [],
+  resourceTitle = (id: string) => id,
+  subjectName = "this subject",
+  onAllowAccess,
   offline,
   onRejoin,
   fill = false,
@@ -220,6 +234,10 @@ export default function ChatPanel({
   const [threadId, setThreadId] = useState<string>("");
   const threadRef = useRef("");
   threadRef.current = threadId;
+  /** The answer needed materials this chat cannot read; `resend` asks again once allowed. */
+  const [accessAsk, setAccessAsk] = useState<{ ids: string[]; text: string } | null>(null);
+  const [resend, setResend] = useState<string | null>(null);
+  useEffect(() => setAccessAsk(null), [threadId]);
 
   // Images attached in the bar: context for this chat, never resources.
   const images = useChatImages(async () =>
@@ -384,6 +402,7 @@ export default function ChatPanel({
   async function send(raw: string): Promise<void> {
     const typed = raw.trim();
     if (!typed || !threadId || sending || images.uploading) return;
+    setAccessAsk(null);
     dictation.stop();
     // A slash command sets the answer style, or opens a quiz; so does a
     // message that asks for a quiz in so many words ("quiz me on this").
@@ -477,6 +496,7 @@ export default function ChatPanel({
                 mode,
                 thread_id: threadId,
                 completed_resource_ids: completedResourceIds,
+                ...(onAllowAccess && suggestResourceIds.length ? { suggest_resource_ids: suggestResourceIds } : {}),
               },
               {
                 onStatus: (status) => setPreview((p) => ({ status, text: p?.text ?? "" })),
@@ -504,6 +524,8 @@ export default function ChatPanel({
       };
       setMessages((prev) => [...prev, assistantMsg]);
       if (res.thread_title) onTitled?.(threadId, res.thread_title);
+      const suggested = (res.suggested_resource_ids ?? []).filter((id) => suggestResourceIds.includes(id));
+      if (onAllowAccess && suggested.length) setAccessAsk({ ids: suggested, text });
     } catch (err) {
       if (isFatalSessionError(err)) {
         // 401 = session binding rejected, 404 = session gone server-side.
@@ -548,6 +570,15 @@ export default function ChatPanel({
       setPreview(null);
     }
   }
+
+  // Asked again after access is given, once the new allowance has rendered.
+  useEffect(() => {
+    if (resend === null) return;
+    setResend(null);
+    void send(resend);
+    // `send` is recreated every render; only a new `resend` should fire this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resend]);
 
   /** Malai's line in the chat, when the server could not record one. */
   function localNote(content: string, refused = false): void {
@@ -740,6 +771,25 @@ export default function ChatPanel({
                   suggestDisabled={sending || sessionExpired}
                   fill
                 />
+                {accessAsk && onAllowAccess && !sending && (
+                  <div className="mt-3">
+                    <AccessPrompt
+                      titles={accessAsk.ids.map(resourceTitle)}
+                      subjectName={subjectName}
+                      onAllowChat={() => {
+                        onAllowAccess(accessAsk.ids, false);
+                        setResend(accessAsk.text);
+                        setAccessAsk(null);
+                      }}
+                      onAllowSubject={() => {
+                        onAllowAccess(accessAsk.ids, true);
+                        setResend(accessAsk.text);
+                        setAccessAsk(null);
+                      }}
+                      onDismiss={() => setAccessAsk(null)}
+                    />
+                  </div>
+                )}
               </div>
             )
           )}

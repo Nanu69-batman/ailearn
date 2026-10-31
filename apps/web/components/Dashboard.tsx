@@ -1,5 +1,6 @@
 "use client";
 
+import { useWatchProgress } from "@/lib/progress";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import type { Subject } from "@/lib/api";
@@ -201,6 +202,8 @@ function ArrowCircle({ href, label }: { href: string; label: string }) {
 }
 
 export default function Dashboard() {
+  // Watch progress counts toward subject progress; subscribing also pulls it from the account.
+  useWatchProgress();
   const { apiLive, subjects, state, error, load, added, removed } = useSubjects();
   const [now, setNow] = useState<Date | null>(null);
   const [activity, setActivity] = useState<Activity | null>(null);
