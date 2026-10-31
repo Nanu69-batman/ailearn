@@ -266,7 +266,14 @@ UNCERTAINTY_RULE = (
 LATEX_RULE = (
     "Write mathematics as LaTeX: $...$ inline and $$...$$ for display. Use "
     "\\partial for a partial derivative and \\frac for a fraction, for example "
-    "$\\frac{\\partial f}{\\partial x}$."
+    "$\\frac{\\partial f}{\\partial x}$. This holds even when the passages "
+    "write maths as plain text or Unicode symbols (a PDF's extracted text "
+    "often does): never copy that style. Rewrite every symbol, variable and "
+    "formula you use into LaTeX, e.g. 'µ : D ⊆ ℝ² → ℝ\\{0\\}' becomes "
+    "$\\mu : D \\subseteq \\mathbb{R}^2 \\to \\mathbb{R} \\setminus \\{0\\}$, "
+    "'∂M/∂y' becomes $\\frac{\\partial M}{\\partial y}$, 'exp(∫ g(y) dy)' "
+    "becomes $\\exp\\left(\\int g(y)\\,dy\\right)$, and single variables in a "
+    "sentence are inline maths too ($M$, $N$, $x$)."
 )
 
 #: How an answer is laid out on screen. The chat renders Markdown (GFM) and
