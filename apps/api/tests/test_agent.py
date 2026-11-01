@@ -176,6 +176,35 @@ def test_agent_asking_for_the_whole_video_gets_only_the_watched_part(env):
     assert "[chunk_id=" not in resp.answer
 
 
+# --- quizzes are a tool, not a regex ---------------------------------------
+
+
+def test_a_misspelled_practice_test_request_opens_one_through_the_tool(env):
+    ask, transport, _ = env(
+        call("start_quiz", kind="practice", count=5, topic="partial derivatives",
+             message="Opening a 5-question practice test."),
+    )
+    resp = ask("genarate a 5 question practice test")
+    offered = {t["function"]["name"] for p in transport.payloads for t in p["tools"]}
+    assert "start_quiz" in offered
+    assert resp.quiz_request is not None
+    assert resp.quiz_request.kind == "practice" and resp.quiz_request.count == 5
+    assert resp.quiz_request.topic == "partial derivatives"
+    assert resp.citations == [] and not resp.refused
+    assert resp.answer == "Opening a 5-question practice test."
+
+
+def test_start_quiz_arguments_are_clamped():
+    from app.chat.agent import quiz_action
+
+    assert quiz_action({"kind": "quiz", "count": 99, "types": ["mcq", "essay"]}) == {
+        "kind": "quiz", "count": 20, "types": ["mcq"], "topic": "",
+    }
+    practice = quiz_action({"kind": "practice", "count": "lots"})
+    assert practice["count"] == 15 and practice["types"] == ["mcq", "numerical", "subjective"]
+    assert quiz_action({"kind": "practice", "count": 50})["count"] == 30
+
+
 # --- what the model decides ------------------------------------------------
 
 

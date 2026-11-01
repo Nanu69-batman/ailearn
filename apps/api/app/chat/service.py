@@ -37,7 +37,7 @@ from app.chat.prompts import (
     rewrite_query,
     strip_citation_markers,
 )
-from app.chat.schemas import ChatResponse, Citation, normalize_modality
+from app.chat.schemas import ChatResponse, Citation, QuizAction, normalize_modality
 from app.chat.sessions import InMemoryMessageStore, InMemorySessionStore
 from app.ingestion.liveframe import assert_live_frame_at, live_frame_passage
 from app.retrieval.recency import (
@@ -985,6 +985,16 @@ class ChatService:
             log.warning("agent unavailable (%r); using the classic pipeline", exc)
             return None
 
+        if outcome.kind == "quiz" and outcome.quiz:
+            # The agent opened a quiz / practice test. The browser opens the
+            # panel and POST /quiz writes it (its own gates and citation
+            # checks); the chat keeps the ask and this one line.
+            self._persist(session.id, message, outcome.text, [])
+            return ChatResponse(
+                answer=outcome.text, citations=[], refused=False,
+                mode="conversational", grounded=False,
+                quiz_request=QuizAction(**outcome.quiz),
+            )
         if outcome.kind == "ask":
             # The agent asks the learner (access, or general knowledge). Not
             # saved: a yes asks the same question again, saved once.

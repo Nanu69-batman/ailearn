@@ -562,7 +562,13 @@ export default function ChatPanel({
       if (res.thread_title) onTitled?.(threadId, res.thread_title);
       // The agent decided whether to ask for access, and to what.
       const suggested = (res.suggested_resource_ids ?? []).filter((id) => suggestResourceIds.includes(id));
-      if (onAllowAccess && suggested.length) setAccessAsk({ ids: suggested, text });
+      if (res.quiz_request) {
+        // The agent's start_quiz tool: open the tab and write it there. No
+        // `request`: the ask and Malai's line are already in this chat.
+        const q = res.quiz_request;
+        setQuizPreset({ kind: q.kind, count: q.count, types: q.types, prompt: q.topic, nonce: Date.now() });
+        setTab(q.kind);
+      } else if (onAllowAccess && suggested.length) setAccessAsk({ ids: suggested, text });
       else if (onAllowAccess && res.offer_general) setAccessAsk({ ids: [], text, general: true });
     } catch (err) {
       if (isFatalSessionError(err)) {

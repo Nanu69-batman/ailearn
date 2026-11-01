@@ -596,7 +596,15 @@ export default function MalaiChatView() {
       const suggested = (res.suggested_resource_ids ?? []).filter(
         (id) => subjectIds.includes(id) && !allowed.includes(id),
       );
-      if (subject && suggested.length) setAccessAsk({ chatId: current.id, ids: suggested, text });
+      if (res.quiz_request) {
+        // The agent's start_quiz tool: open the panel and write it there. No
+        // `request`: the ask and Malai's line are already in this chat.
+        const q = res.quiz_request;
+        setQuizChat(current);
+        setQuizPreset({ kind: q.kind, count: q.count, types: q.types, prompt: q.topic, nonce: Date.now() });
+        setPanelKind(q.kind);
+        setQuizOpen(true);
+      } else if (subject && suggested.length) setAccessAsk({ chatId: current.id, ids: suggested, text });
       else if (subject && res.offer_general) setAccessAsk({ chatId: current.id, ids: [], text, general: true });
     } catch (err) {
       setError(err instanceof ApiError ? formatApiError(err) : err instanceof Error ? err.message : String(err));

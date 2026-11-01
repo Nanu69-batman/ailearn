@@ -277,6 +277,16 @@ export interface ChatResponse {
   suggested_resource_ids?: string[];
   /** Nothing the learner has covers it: offer an answer from general knowledge. */
   offer_general?: boolean;
+  /**
+   * The agent decided the learner wants a quiz or practice test (its
+   * start_quiz tool): open the panel with these settings; POST /quiz writes it.
+   */
+  quiz_request?: {
+    kind: "quiz" | "practice";
+    count: number;
+    types: ("mcq" | "numerical" | "subjective")[];
+    topic: string;
+  } | null;
   /** True when the question is past the processed part of a stream-mode video. */
   processing_pending?: boolean;
   processed_through_ms?: number | null;

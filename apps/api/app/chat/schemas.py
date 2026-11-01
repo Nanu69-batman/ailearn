@@ -198,8 +198,24 @@ class Citation(BaseModel):
     live: bool = False
 
 
+class QuizAction(BaseModel):
+    """The agent's ``start_quiz`` tool call: the browser opens the quiz panel
+    with these settings, and POST /quiz writes the questions (with its own
+    gates and citation checks). The agent never writes questions in chat."""
+
+    kind: Literal["quiz", "practice"] = "quiz"
+    count: int = Field(ge=1, le=30)
+    types: list[Literal["mcq", "numerical", "subjective"]] = Field(
+        default_factory=lambda: ["mcq", "numerical", "subjective"], max_length=3
+    )
+    #: Topic / focus / difficulty for the quiz, in the learner's words.
+    topic: str = Field(default="", max_length=500)
+
+
 class ChatResponse(BaseModel):
     answer: str
+    #: Set when the agent decided the learner wants a quiz or practice test.
+    quiz_request: QuizAction | None = None
     citations: list[Citation] = Field(default_factory=list)
     refused: bool = False
     #: True only when the session grant, intersected with the focused
