@@ -58,10 +58,20 @@ export default function ModelModePicker({ className = "", down = false }: { clas
     );
   }, [options, filter, settings]);
 
+  // `down` is only a preference: flip if there's more room the other way, and
+  // never grow past the window (that stretched the page).
+  const [place, setPlace] = useState<{ down: boolean; maxH: number }>({ down, maxH: 544 });
   useEffect(() => {
     if (!open) return;
     setFilter("");
     setExpanded({});
+    const r = rootRef.current?.getBoundingClientRect();
+    if (r) {
+      const below = window.innerHeight - r.bottom - 16;
+      const above = r.top - 16;
+      const goDown = down ? !(below < 320 && above > below) : below > above && above < 320;
+      setPlace({ down: goDown, maxH: Math.max(160, Math.min(544, goDown ? below : above)) });
+    }
     function onDown(e: MouseEvent): void {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
     }
@@ -74,7 +84,7 @@ export default function ModelModePicker({ className = "", down = false }: { clas
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
     };
-  }, [open]);
+  }, [open, down]);
 
   // Built-in modes first, then each key as its own collapsible group.
   const builtIn = shown.filter((o) => o.kind === "mode");
@@ -143,7 +153,8 @@ export default function ModelModePicker({ className = "", down = false }: { clas
         <div
           id={menuId}
           role="menu"
-          className={`absolute left-0 z-40 ${down ? "top-full mt-2" : "bottom-full mb-2"} flex max-h-[min(34rem,70dvh)] w-80 max-w-[calc(100vw-2rem)] flex-col rounded-2xl border border-gray-200 bg-white p-1.5 shadow-xl`}
+          style={{ maxHeight: place.maxH }}
+          className={`absolute left-0 z-40 ${place.down ? "top-full mt-2" : "bottom-full mb-2"} flex w-80 max-w-[calc(100vw-2rem)] flex-col rounded-2xl border border-gray-200 bg-white p-1.5 shadow-xl`}
         >
           <div className="flex items-center gap-2 px-1.5 pb-1.5 pt-1">
             {options.length > 6 && (
