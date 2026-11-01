@@ -40,6 +40,8 @@ export default function ModelModePicker({ className = "", down = false }: { clas
   const settings = useModelSettings();
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState("");
+  /** Key groups the learner opened or closed; unset = open only where the model in use is. */
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const rootRef = useRef<HTMLDivElement | null>(null);
   const menuId = useId();
 
@@ -59,6 +61,7 @@ export default function ModelModePicker({ className = "", down = false }: { clas
   useEffect(() => {
     if (!open) return;
     setFilter("");
+    setExpanded({});
     function onDown(e: MouseEvent): void {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
     }
@@ -73,13 +76,46 @@ export default function ModelModePicker({ className = "", down = false }: { clas
     };
   }, [open]);
 
-  // Group own-key models under their key's name.
-  const groups: { title: string | null; items: ModelOption[] }[] = [];
+  // Built-in modes first, then each key as its own collapsible group.
+  const builtIn = shown.filter((o) => o.kind === "mode");
+  const keyGroups: { keyId: string; title: string; items: ModelOption[]; hasActive: boolean }[] = [];
   for (const o of shown) {
-    const title = o.kind === "mode" ? null : o.keyLabel;
-    const last = groups[groups.length - 1];
-    if (last && last.title === title) last.items.push(o);
-    else groups.push({ title, items: [o] });
+    if (o.kind !== "own") continue;
+    let g = keyGroups.find((x) => x.keyId === o.keyId);
+    if (!g) {
+      g = { keyId: o.keyId, title: o.keyLabel, items: [], hasActive: false };
+      keyGroups.push(g);
+    }
+    g.items.push(o);
+    if (isOptionActive(settings, o)) g.hasActive = true;
+  }
+  const searching = filter.trim() !== "";
+  const isExpanded = (keyId: string, hasActive: boolean) => searching || (expanded[keyId] ?? (hasActive || keyGroups.length === 1));
+
+  function renderOption(o: ModelOption, indent = false) {
+    const on = isOptionActive(settings, o);
+    return (
+      <button
+        key={o.value}
+        type="button"
+        role="menuitemradio"
+        aria-checked={on}
+        onClick={() => {
+          chooseOption(o);
+          setOpen(false);
+        }}
+        className={`flex w-full items-start gap-2.5 rounded-xl py-2 pr-3 text-left transition hover:bg-gray-50 focus:bg-gray-50 focus:outline-none ${indent ? "pl-5" : "pl-3"}`}
+      >
+        <Check on={on} />
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center gap-1.5">
+            <span className="truncate text-sm font-medium text-gray-900">{o.label}</span>
+            <FreeBadge free={o.free} />
+          </span>
+          <span className="block truncate text-xs text-gray-500">{o.hint}</span>
+        </span>
+      </button>
+    );
   }
 
   return (
@@ -137,38 +173,35 @@ export default function ModelModePicker({ className = "", down = false }: { clas
           </div>
 
           <div className="min-h-0 overflow-y-auto">
-            {groups.map((g) => (
-              <div key={g.title ?? "_modes"} className={g.title ? "mt-1 border-t border-gray-100 pt-1" : ""}>
-                {g.title && (
-                  <p className="truncate px-3 pb-0.5 pt-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">{g.title}</p>
+            {builtIn.length > 0 && (
+              <div>
+                {keyGroups.length > 0 && (
+                  <p className="px-3 pb-0.5 pt-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">Built-in</p>
                 )}
-                {g.items.map((o) => {
-                  const on = isOptionActive(settings, o);
-                  return (
-                    <button
-                      key={o.value}
-                      type="button"
-                      role="menuitemradio"
-                      aria-checked={on}
-                      onClick={() => {
-                        chooseOption(o);
-                        setOpen(false);
-                      }}
-                      className="flex w-full items-start gap-2.5 rounded-xl px-3 py-2 text-left transition hover:bg-gray-50 focus:bg-gray-50 focus:outline-none"
-                    >
-                      <Check on={on} />
-                      <span className="min-w-0 flex-1">
-                        <span className="flex items-center gap-1.5">
-                          <span className="truncate text-sm font-medium text-gray-900">{o.label}</span>
-                          <FreeBadge free={o.free} />
-                        </span>
-                        <span className="block truncate text-xs text-gray-500">{o.hint}</span>
-                      </span>
-                    </button>
-                  );
-                })}
+                {builtIn.map((o) => renderOption(o))}
               </div>
-            ))}
+            )}
+            {keyGroups.map((g, i) => {
+              const exp = isExpanded(g.keyId, g.hasActive);
+              return (
+                <div key={g.keyId} className={builtIn.length > 0 || i > 0 ? "mt-1 border-t border-gray-100 pt-1" : ""}>
+                  <button
+                    type="button"
+                    aria-expanded={exp}
+                    onClick={() => setExpanded((e) => ({ ...e, [g.keyId]: !exp }))}
+                    className="flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wide text-gray-500 transition hover:bg-gray-50 hover:text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className={`h-3 w-3 shrink-0 transition-transform ${exp ? "rotate-90" : ""}`} aria-hidden="true">
+                      <path d="M9 6l6 6-6 6" />
+                    </svg>
+                    <span className="min-w-0 flex-1 truncate">{g.title}</span>
+                    {g.hasActive && !exp && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-violet-500" aria-label="model in use" />}
+                    <span className="shrink-0 font-medium normal-case tracking-normal text-gray-400">{g.items.length}</span>
+                  </button>
+                  {exp && g.items.map((o) => renderOption(o, true))}
+                </div>
+              );
+            })}
             {shown.length === 0 && (
               <p className="px-3 py-3 text-xs text-gray-500">
                 {settings.freeOnly ? "No free models are turned on." : "No model matches."}

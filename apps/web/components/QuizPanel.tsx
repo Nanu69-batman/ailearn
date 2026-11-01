@@ -18,12 +18,13 @@ import { addAttempt, saveQuiz, type SavedQuiz } from "@/lib/quizStore";
 import MarkdownBody from "./MarkdownBody";
 import Select from "./Select";
 import {
-  MODEL_MODES,
+  effectiveQuizModel,
   loadModelSettings,
-  loadQuizModel,
-  modelHeadersFor,
+  quizModelHeaders,
+  quizModelOptions,
   saveQuizModel,
   useModelSettings,
+  useQuizModel,
   type QuizModel,
 } from "@/lib/modelMode";
 
@@ -175,7 +176,7 @@ export default function QuizPanel({
   /** Which model writes the quiz; a quiz asked for in the chat uses the chat's. */
   const [quizModel, setQuizModel] = useState<QuizModel>("default");
   const modelSettings = useModelSettings();
-  const hasOwnKey = Boolean(modelSettings.key && modelSettings.model);
+  const savedQuizModel = useQuizModel();
   /** The quiz (by attempt) whose finish was already reported. */
   const reported = useRef<number | null>(null);
   /** The preset already acted on: a remount or a re-run must not write it twice. */
@@ -183,7 +184,8 @@ export default function QuizPanel({
 
   const count = parseCount(countText);
 
-  useEffect(() => setQuizModel(loadQuizModel()), []);
+  // Follows the saved choice (changed here, in Settings, or pulled from the account).
+  useEffect(() => setQuizModel(savedQuizModel), [savedQuizModel]);
 
   function chooseModel(m: QuizModel) {
     setQuizModel(m);
@@ -231,9 +233,9 @@ export default function QuizPanel({
           types: settings.types,
           attempt,
           ...(settings.prompt.trim() ? { prompt: settings.prompt.trim() } : {}),
-          ...(model !== "default" ? { use_chosen_model: true } : {}),
+          ...(quizModelHeaders(model) ? { use_chosen_model: true } : {}),
         },
-        model !== "default" ? modelHeadersFor(model) : undefined,
+        quizModelHeaders(model),
       );
       setAttempt((a) => a + 1);
       setAnswers({});
@@ -420,15 +422,13 @@ export default function QuizPanel({
             <span className="mb-1.5 block text-xs font-medium text-gray-700">Model</span>
             <Select<QuizModel>
               label="Model"
-              value={quizModel === "custom" && !hasOwnKey ? "default" : quizModel}
+              value={effectiveQuizModel(modelSettings, quizModel)}
               onChange={chooseModel}
               options={[
-                { value: "default", label: "Default (fastest)" },
-                ...MODEL_MODES.filter((m) => !modelSettings.disabledModes.includes(m.id)).map((m) => ({
-                  value: m.id as QuizModel,
-                  label: `${m.label} · ${m.hint}`,
-                })),
-                ...(hasOwnKey ? [{ value: "custom" as QuizModel, label: `Own key · ${modelSettings.modelName || modelSettings.model}` }] : []),
+                ...quizModelOptions(modelSettings),
+                ...(effectiveQuizModel(modelSettings, quizModel) === "custom"
+                  ? [{ value: "custom" as QuizModel, label: "Same as the chat model" }]
+                  : []),
               ]}
               className={loading ? "pointer-events-none opacity-60" : ""}
             />

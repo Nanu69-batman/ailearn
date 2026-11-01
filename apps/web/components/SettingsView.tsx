@@ -14,16 +14,18 @@ import {
   chooseOption,
   enabledOptions,
   isModelEnabled,
+  effectiveQuizModel,
   isOptionActive,
-  loadQuizModel,
   maskKey,
   providerLabel,
+  quizModelOptions,
   removeKey,
   renameKey,
   saveQuizModel,
   setModeEnabled,
   setModelEnabled,
   useModelSettings,
+  useQuizModel,
   type QuizModel,
   type SavedKey,
 } from "@/lib/modelMode";
@@ -80,10 +82,13 @@ function KeyCard({
   k,
   models,
   onLoad,
+  manage = true,
 }: {
   k: SavedKey;
   models: KeyModels | undefined;
   onLoad: () => void;
+  /** False in the Models tab: model switches only, no rename/remove. */
+  manage?: boolean;
 }) {
   const settings = useModelSettings();
   const [open, setOpen] = useState(false);
@@ -153,6 +158,8 @@ function KeyCard({
             >
               {open ? "Hide models" : "Choose models"}
             </button>
+            {manage && (
+            <>
             <button
               type="button"
               onClick={() => {
@@ -172,6 +179,8 @@ function KeyCard({
             >
               Remove
             </button>
+            </>
+            )}
           </>
         )}
       </div>
@@ -244,7 +253,7 @@ export default function SettingsView() {
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
   const [keyModels, setKeyModels] = useState<Record<string, KeyModels>>({});
-  const [quizModel, setQuizModel] = useState<QuizModel>("default");
+  const quizModel = useQuizModel();
   const [personalizing, setPersonalizing] = useState(false);
   const [tab, setTab] = useState<TabId>("models");
 
@@ -260,11 +269,8 @@ export default function SettingsView() {
     window.history.replaceState(null, "", `#${id}`);
   }
 
-  useEffect(() => setQuizModel(loadQuizModel()), [settings]);
-
   const options = useMemo(() => enabledOptions(settings), [settings]);
   const active = options.find((o) => isOptionActive(settings, o));
-  const hasOwnModel = settings.mode === "custom" && Boolean(settings.model);
   const placeholder = PROVIDERS.find((p) => p.id === provider)?.placeholder ?? "API key";
 
   async function loadFor(k: SavedKey): Promise<void> {
@@ -381,8 +387,20 @@ export default function SettingsView() {
         {options.length === 0 && (
           <p className="mt-2 text-xs text-amber-700">Everything is turned off, so Auto is used.</p>
         )}
+      </Section>
+
+      <Section title="Your keys' models" hint="Turn on the models from your own keys that should appear in the model chooser.">
+        {settings.keys.length > 0 ? (
+          <ul className="flex flex-col gap-2">
+            {settings.keys.map((k) => (
+              <KeyCard key={k.id} k={k} models={keyModels[k.id]} onLoad={() => void loadFor(k)} manage={false} />
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm text-gray-500">No keys yet.</p>
+        )}
         <p className="mt-3 text-xs text-gray-500">
-          Models from your own keys are turned on in{" "}
+          Add, rename or remove keys in{" "}
           <button type="button" onClick={() => openTab("keys")} className="font-medium text-violet-700 hover:underline">
             API keys
           </button>
@@ -393,20 +411,15 @@ export default function SettingsView() {
       <Section title="Quizzes" hint="The model that writes a quiz from the quiz form. A quiz asked for in the chat uses the chat model.">
         <Select<QuizModel>
           label="Quiz model"
-          value={quizModel === "custom" && !hasOwnModel ? "default" : quizModel}
-          onChange={(v) => {
-            setQuizModel(v);
-            saveQuizModel(v);
-          }}
+          value={effectiveQuizModel(settings, quizModel)}
+          onChange={(v) => saveQuizModel(v)}
           options={[
-            { value: "default", label: "Default (fastest)" },
-            ...MODEL_MODES.filter((m) => !settings.disabledModes.includes(m.id)).map((m) => ({
-              value: m.id as QuizModel,
-              label: `${m.label} · ${m.hint}`,
-            })),
-            ...(hasOwnModel ? [{ value: "custom" as QuizModel, label: `Own key · ${settings.modelName || settings.model}` }] : []),
+            ...quizModelOptions(settings),
+            ...(effectiveQuizModel(settings, quizModel) === "custom"
+              ? [{ value: "custom" as QuizModel, label: "Same as the chat model" }]
+              : []),
           ]}
-          className="sm:w-80"
+          className="sm:w-96"
         />
       </Section>
       </>

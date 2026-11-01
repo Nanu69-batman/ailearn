@@ -377,14 +377,16 @@ export async function pullSettings(): Promise<void> {
     return;
   }
   const next = clean(data.model);
+  const quiz = cleanQuizModel(data.quiz_model);
   cache = next;
   try {
     window.localStorage.setItem(STORE_KEY, JSON.stringify(stored(next)));
-    window.localStorage.setItem(QUIZ_STORE_KEY, String(data.quiz_model || "default"));
+    window.localStorage.setItem(QUIZ_STORE_KEY, quiz);
   } catch {
     // This page keeps the pulled copy.
   }
   for (const fn of listeners) fn(next);
+  for (const fn of quizListeners) fn(quiz);
 }
 
 /** Headers that tell the API which models to use. */
@@ -402,18 +404,35 @@ export function modelHeadersFor(mode: ModelMode): Record<string, string> {
 
 /**
  * Which model writes a quiz, picked in the quiz form. "default" is the app's
- * fastest provider; any other value is a chat mode (or the own-key model in
- * use) tried first. A quiz asked for in the chat uses the chat's own choice.
+ * fastest provider; a built-in mode, or any own-key model that is turned on
+ * (`own:<keyId>:<modelId>`), is tried first. "custom" (older builds) means the
+ * chat's own-key model in use. A quiz asked for in the chat uses the chat's
+ * own choice.
  */
-export type QuizModel = "default" | ModelMode;
+export type QuizModel = "default" | ModelMode | `own:${string}`;
 
 const QUIZ_STORE_KEY = "malai:quiz-model";
+const quizListeners = new Set<(q: QuizModel) => void>();
+
+/** `own:<keyId>:<modelId>`; the model id may itself contain colons. */
+export function parseOwnValue(v: string): { keyId: string; modelId: string } | null {
+  if (!v.startsWith("own:")) return null;
+  const rest = v.slice(4);
+  const i = rest.indexOf(":");
+  if (i <= 0 || i === rest.length - 1) return null;
+  return { keyId: rest.slice(0, i), modelId: rest.slice(i + 1) };
+}
+
+function cleanQuizModel(raw: unknown): QuizModel {
+  const ok: QuizModel[] = ["default", "auto", "fast", "balanced", "powerful", "custom"];
+  if (typeof raw !== "string") return "default";
+  if (ok.includes(raw as QuizModel)) return raw as QuizModel;
+  return parseOwnValue(raw) ? (raw as QuizModel) : "default";
+}
 
 export function loadQuizModel(): QuizModel {
   try {
-    const raw = window.localStorage.getItem(QUIZ_STORE_KEY);
-    const ok: QuizModel[] = ["default", "auto", "fast", "balanced", "powerful", "custom"];
-    return ok.includes(raw as QuizModel) ? (raw as QuizModel) : "default";
+    return cleanQuizModel(window.localStorage.getItem(QUIZ_STORE_KEY));
   } catch {
     return "default";
   }
@@ -425,7 +444,56 @@ export function saveQuizModel(model: QuizModel): void {
   } catch {
     // The choice lasts for this page only.
   }
+  for (const fn of quizListeners) fn(model);
   void pushSettings();
+}
+
+/** The quiz choice as it can be used now: one that is turned off falls back to "default". */
+export function effectiveQuizModel(s: ModelSettings, q: QuizModel): QuizModel {
+  if (q === "custom") return s.mode === "custom" && s.key && s.model ? q : "default";
+  const own = parseOwnValue(q);
+  if (own) return isModelEnabled(s, own.keyId, own.modelId) ? q : "default";
+  if (q !== "default" && s.disabledModes.includes(q as BuiltInMode)) return "default";
+  return q;
+}
+
+/** What the quiz model menus list: Default, the built-in modes on, then every own-key model on. */
+export function quizModelOptions(s: ModelSettings): { value: QuizModel; label: string }[] {
+  return [
+    { value: "default", label: "Default (fastest)" },
+    ...enabledOptions(s).map((o) => ({
+      value: o.value as QuizModel,
+      label:
+        o.kind === "mode"
+          ? `${o.label} · ${o.hint}`
+          : `${o.keyLabel} · ${o.label}${o.free === true ? " · Free" : ""}`,
+    })),
+  ];
+}
+
+/** Headers for a quiz written with `q`; undefined = the app's default. */
+export function quizModelHeaders(q: QuizModel): Record<string, string> | undefined {
+  const s = loadModelSettings();
+  const use = effectiveQuizModel(s, q);
+  if (use === "default") return undefined;
+  const own = parseOwnValue(use);
+  if (!own) return modelHeadersFor(use as ModelMode);
+  const key = s.keys.find((k) => k.id === own.keyId);
+  if (!key) return undefined;
+  return { "X-Model-Mode": "custom", "X-LLM-Provider": key.provider, "X-LLM-Key": key.key, "X-LLM-Model": own.modelId };
+}
+
+/** The saved quiz model, kept in step across every open menu and an account pull. */
+export function useQuizModel(): QuizModel {
+  const [q, setQ] = useState<QuizModel>("default");
+  useEffect(() => {
+    setQ(loadQuizModel());
+    quizListeners.add(setQ);
+    return () => {
+      quizListeners.delete(setQ);
+    };
+  }, []);
+  return q;
 }
 
 export function useModelSettings(): ModelSettings {

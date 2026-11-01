@@ -41,6 +41,11 @@ export default function Select<T extends string>({ value, options, onChange, lab
     return () => document.removeEventListener("pointerdown", onDown);
   }, [open]);
 
+  // A long list scrolls: keep the highlighted option in view.
+  useEffect(() => {
+    if (open) document.getElementById(`${id}-opt-${active}`)?.scrollIntoView({ block: "nearest" });
+  }, [open, active, id]);
+
   function openList(): void {
     setActive(selectedIndex);
     setOpen(true);
@@ -122,7 +127,7 @@ export default function Select<T extends string>({ value, options, onChange, lab
           aria-label={label}
           aria-activedescendant={`${id}-opt-${active}`}
           onKeyDown={onListKey}
-          className="absolute right-0 z-40 mt-2 min-w-full overflow-hidden rounded-2xl border border-gray-200 bg-white p-1.5 shadow-xl shadow-gray-900/10 outline-none"
+          className="absolute right-0 z-40 mt-2 max-h-80 min-w-full max-w-[calc(100vw-2rem)] overflow-y-auto overflow-x-hidden rounded-2xl border border-gray-200 bg-white p-1.5 shadow-xl shadow-gray-900/10 outline-none"
         >
           {options.map((o, i) => {
             const selected = o.value === value;
@@ -138,7 +143,7 @@ export default function Select<T extends string>({ value, options, onChange, lab
                   i === active ? "bg-violet-50 text-violet-900" : "text-gray-700"
                 } ${selected ? "font-semibold text-violet-700" : ""}`}
               >
-                <span className="flex-1">{o.label}</span>
+                <span className="min-w-0 flex-1 truncate">{o.label}</span>
                 <svg
                   viewBox="0 0 24 24"
                   fill="none"
