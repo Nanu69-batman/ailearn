@@ -25,6 +25,8 @@ interface SelectProps<T extends string> {
 export default function Select<T extends string>({ value, options, onChange, label, prefix, className = "" }: SelectProps<T>) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
+  const [up, setUp] = useState(false);
+  const [maxH, setMaxH] = useState(320);
   const rootRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
@@ -47,6 +49,15 @@ export default function Select<T extends string>({ value, options, onChange, lab
   }, [open, active, id]);
 
   function openList(): void {
+    // Open upward when there isn't room below, so the list never stretches the page.
+    const r = buttonRef.current?.getBoundingClientRect();
+    if (r) {
+      const below = window.innerHeight - r.bottom - 16;
+      const above = r.top - 16;
+      const goUp = below < 320 && above > below;
+      setUp(goUp);
+      setMaxH(Math.max(120, Math.min(320, goUp ? above : below)));
+    }
     setActive(selectedIndex);
     setOpen(true);
   }
@@ -127,7 +138,8 @@ export default function Select<T extends string>({ value, options, onChange, lab
           aria-label={label}
           aria-activedescendant={`${id}-opt-${active}`}
           onKeyDown={onListKey}
-          className="absolute right-0 z-40 mt-2 max-h-80 min-w-full max-w-[calc(100vw-2rem)] overflow-y-auto overflow-x-hidden rounded-2xl border border-gray-200 bg-white p-1.5 shadow-xl shadow-gray-900/10 outline-none"
+          style={{ maxHeight: maxH }}
+          className={`absolute right-0 z-40 ${up ? "bottom-full mb-2" : "top-full mt-2"} min-w-full max-w-[calc(100vw-2rem)] overflow-y-auto overflow-x-hidden rounded-2xl border border-gray-200 bg-white p-1.5 shadow-xl shadow-gray-900/10 outline-none`}
         >
           {options.map((o, i) => {
             const selected = o.value === value;
