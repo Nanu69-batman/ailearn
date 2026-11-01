@@ -9,7 +9,8 @@ import {
   type ReactNode,
 } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { DASHBOARD_PATH, LEARNER_NAME, SUBJECTS_PATH } from "@/lib/learn";
+import { LearnerInitial, LearnerName } from "@/components/LearnerName";
+import { DASHBOARD_PATH, SUBJECTS_PATH } from "@/lib/learn";
 import { MALAI_PATH } from "@/lib/malai";
 import MalaiSidebar from "@/components/MalaiSidebar";
 import AccountMenu from "@/components/AccountMenu";
@@ -612,8 +613,8 @@ export default function LearnShell({ children }: { children: ReactNode }) {
                 <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-violet-500" />
               </button>
               <div className="flex items-center gap-2">
-                <span className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-violet-100 to-indigo-100 text-sm font-bold text-violet-700 ring-2 ring-white">{LEARNER_NAME[0]}</span>
-                <span className="hidden text-sm font-medium text-gray-800 sm:inline">{LEARNER_NAME}</span>
+                <span className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-violet-100 to-indigo-100 text-sm font-bold text-violet-700 ring-2 ring-white"><LearnerInitial /></span>
+                <span className="hidden text-sm font-medium text-gray-800 sm:inline"><LearnerName /></span>
               </div>
             </div>
           </header>

@@ -17,7 +17,7 @@ import {
   type QuizScope,
 } from "@/lib/api";
 import { detectQuizIntent } from "@/lib/quizIntent";
-import { LEARNER_NAME } from "@/lib/learn";
+import { LearnerName } from "@/components/LearnerName";
 import {
   adoptDraftAllowance,
   draftAllowanceKey,
@@ -828,7 +828,7 @@ export default function MalaiChatView() {
           </div>
           <div className="relative w-full max-w-3xl text-center">
             <p className="text-lg font-medium text-violet-700">
-              Hello, {LEARNER_NAME} <span aria-hidden="true">👋</span>
+              Hello, <LearnerName /> <span aria-hidden="true">👋</span>
             </p>
             <h2 className="mt-2 text-3xl font-bold tracking-tight text-gray-900 sm:text-[2.6rem] sm:leading-tight">
               How can I help you today?

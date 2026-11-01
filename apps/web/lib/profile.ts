@@ -6,6 +6,7 @@
  * image in the public `avatars` bucket under {user id}/.
  */
 import { useEffect, useState } from "react";
+import { onAccountChange } from "@/lib/accountScope";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 
 export interface Profile {
@@ -46,8 +47,31 @@ function publish(p: Profile | null): void {
   listeners.forEach((l) => l(p));
 }
 
+// A different account signed in (or out): never keep showing the old one.
+onAccountChange(() => {
+  loading = null;
+  publish(null);
+  if (listeners.size > 0) void loadProfile();
+});
+
+/** First name for greetings ("Hello, Asha"); a neutral word while loading or signed out. */
+export function useLearnerName(): string {
+  const profile = useProfile();
+  const name = profile?.displayName.trim().split(/\s+/)[0];
+  return name || "there";
+}
+
 export function loadProfile(): Promise<Profile | null> {
-  if (!loading) loading = fetchProfile().then((p) => (publish(p), p)).catch(() => null);
+  if (!loading) {
+    const mine: Promise<Profile | null> = fetchProfile()
+      .then((p) => {
+        // Superseded by an account change while loading: do not publish.
+        if (loading === mine) publish(p);
+        return p;
+      })
+      .catch(() => null);
+    loading = mine;
+  }
   return loading;
 }
 

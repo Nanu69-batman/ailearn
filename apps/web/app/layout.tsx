@@ -5,6 +5,8 @@ import "./globals.css";
 // `next build` both bundle it and Next fingerprints the font assets.
 import "katex/dist/katex.min.css";
 
+import AccountGuard from "@/components/AccountGuard";
+
 // Self-hosted by next/font at build time (no request to Google at runtime).
 // Inter is the closest open face to the neo-grotesque ChatGPT reads in.
 const sans = Inter({ subsets: ["latin"], display: "swap", variable: "--font-sans" });
@@ -23,6 +25,7 @@ export default function RootLayout({ children }: RootLayoutProps) {
   return (
     <html lang="en" className={`${sans.variable} ${mono.variable}`}>
       <body className="min-h-screen bg-zinc-950 text-zinc-100 antialiased">
+        <AccountGuard />
         {children}
       </body>
     </html>

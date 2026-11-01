@@ -12,6 +12,7 @@
  */
 import { useEffect, useSyncExternalStore } from "react";
 import type { QuizGrade, QuizQuestion } from "@/lib/api";
+import { ensureAccountClaimed, isAccountClaimed, onAccountChange, onAccountClaimed } from "@/lib/accountScope";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 
 export interface QuizAttemptResult {
@@ -45,9 +46,28 @@ const listeners = new Set<() => void>();
 let cache: SavedQuiz[] | null = null;
 const EMPTY: SavedQuiz[] = [];
 let pulled = false;
+/** Bumped on every account change; a pull started before it is dropped. */
+let epoch = 0;
+
+onAccountChange(() => {
+  epoch += 1;
+  cache = null;
+  pulled = false;
+  listeners.forEach((l) => l());
+  if (listeners.size > 0) {
+    pulled = true;
+    void pull();
+  }
+});
+onAccountClaimed(() => {
+  cache = null;
+  listeners.forEach((l) => l());
+});
 
 function read(): SavedQuiz[] {
   if (cache) return cache;
+  // Until storage is known to be this account's, show nothing (lib/accountScope.ts).
+  if (!isAccountClaimed()) return EMPTY;
   try {
     cache = JSON.parse(localStorage.getItem(KEY) ?? "[]") as SavedQuiz[];
   } catch {
@@ -69,13 +89,9 @@ function write(next: SavedQuiz[]): void {
 async function remote() {
   const supabase = getSupabaseBrowserClient();
   if (!supabase) return null;
-  try {
-    const { data } = await supabase.auth.getSession();
-    const userId = data.session?.user.id;
-    return userId ? { supabase, userId } : null;
-  } catch {
-    return null;
-  }
+  // Claims storage for this account first, so nothing of another's is uploaded.
+  const userId = await ensureAccountClaimed();
+  return userId ? { supabase, userId } : null;
 }
 
 async function push(quiz: SavedQuiz): Promise<void> {
@@ -108,10 +124,13 @@ async function remove(quizId: string): Promise<void> {
 async function pull(): Promise<void> {
   const s = await remote();
   if (!s) return;
+  const at = epoch;
   const { data, error } = await s.supabase
     .from("saved_quizzes")
     .select("id, subject_id, chat_id, title, questions, attempts, created_ms")
+    .eq("owner_id", s.userId)
     .order("created_ms", { ascending: false });
+  if (at !== epoch) return;
   if (error || !data) {
     if (error) console.warn("quiz pull failed", error);
     return;

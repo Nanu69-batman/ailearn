@@ -12,6 +12,7 @@
  * the numbers follow the learner across browsers.
  */
 
+import { claimBrowserForUser } from "@/lib/accountScope";
 import type { Subject } from "@/lib/api";
 import { pullActivity, pushStudySeconds, pushVisit } from "@/lib/activitySync";
 import { readCompletion, writeCompletionLocal } from "@/lib/learn";
@@ -25,8 +26,6 @@ const LAST_KEY = "ailearn.activity.last";
 const ACCESSED_KEY = "ailearn.activity.accessed";
 /** Subject ids the learner archived. */
 const ARCHIVED_KEY = "ailearn.subjects.archived";
-/** The account the records above were last synced from. */
-const OWNER_KEY = "ailearn.activity.owner";
 
 export interface LastVisit {
   subjectId: string;
@@ -108,7 +107,8 @@ export function recordVisit(visit: Omit<LastVisit, "at">): void {
 export async function syncActivityFromAccount(): Promise<boolean> {
   const remote = await pullActivity();
   if (!remote) return false;
-  claimActivityOwner(remote.userId);
+  // Another account's records are wiped first (lib/accountScope.ts).
+  claimBrowserForUser(remote.userId);
   writeJson(DAYS_KEY, remote.days);
 
   const accessed: Record<string, number> = {};
@@ -144,30 +144,6 @@ export async function syncActivityFromAccount(): Promise<boolean> {
   return true;
 }
 
-/** Forget the previous account's local records when a different one signs in. */
-function claimActivityOwner(userId: string): void {
-  const owner = readJson<string | null>(OWNER_KEY, null);
-  if (owner === userId) return;
-  try {
-    const ls = window.localStorage;
-    for (const key of Object.keys(ls)) {
-      if (
-        key === DAYS_KEY ||
-        key === LAST_KEY ||
-        key === ACCESSED_KEY ||
-        key === ARCHIVED_KEY ||
-        key === "ailearn.watch.v1" ||
-        key === "ailearn.chat_allow.v1" ||
-        (key.startsWith("ailearn.course.") && key.endsWith(".completion"))
-      ) {
-        ls.removeItem(key);
-      }
-    }
-  } catch {
-    // Storage unavailable -> nothing stored to leak.
-  }
-  writeJson(OWNER_KEY, userId);
-}
 
 export function readLastVisit(): LastVisit | null {
   const v = readJson<Partial<LastVisit> | null>(LAST_KEY, null);

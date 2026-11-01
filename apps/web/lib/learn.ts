@@ -120,9 +120,6 @@ export const DASHBOARD_PATH = "/dashboard";
 /** "My subjects" sidebar target: the list of subjects. */
 export const SUBJECTS_PATH = "/ai-tutor/subjects";
 
-/** The demo learner. There is no account system, so this is the one name shown. */
-export const LEARNER_NAME = "Nimish";
-
 export function subjectPath(subjectId: string): string {
   return `${SUBJECTS_PATH}/${encodeURIComponent(subjectId)}`;
 }

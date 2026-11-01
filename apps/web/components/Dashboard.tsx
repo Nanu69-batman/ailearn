@@ -16,7 +16,8 @@ import {
   syncActivityFromAccount,
   type LastVisit,
 } from "@/lib/activity";
-import { LEARNER_NAME, SUBJECTS_PATH, contentPath } from "@/lib/learn";
+import { LearnerName } from "@/components/LearnerName";
+import { SUBJECTS_PATH, contentPath } from "@/lib/learn";
 import SubjectCard, { AddSubjectTile, ProgressBar, SubjectCardSkeleton } from "@/components/SubjectCard";
 import SubjectCreateDialog from "@/components/SubjectCreateDialog";
 import SubjectDeleteDialog from "@/components/SubjectDeleteDialog";
@@ -285,7 +286,7 @@ export default function Dashboard() {
       <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight text-gray-900 sm:text-4xl">
-            {now ? timeGreeting(now) : "Welcome back"}, {LEARNER_NAME} <span aria-hidden="true">👋</span>
+            {now ? timeGreeting(now) : "Welcome back"}, <LearnerName /> <span aria-hidden="true">👋</span>
           </h1>
           <p className="mt-2 text-base text-gray-500">Keep your learning momentum going.</p>
         </div>

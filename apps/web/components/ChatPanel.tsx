@@ -16,7 +16,7 @@ import {
   MAIN_THREAD_ID,
 } from "../lib/api";
 import { mockChatAnswer, mockHistory } from "../lib/fixtures";
-import { LEARNER_NAME } from "../lib/learn";
+import { LearnerName } from "./LearnerName";
 import MessageList from "./MessageList";
 import { AccessPrompt, GeneralPrompt } from "./ResourceChecklist";
 import { materialList } from "../lib/progress";
@@ -772,7 +772,7 @@ export default function ChatPanel({
           {showGreeting ? (
             <div className="flex min-h-full flex-col items-center justify-center px-2 py-6 text-center">
               <p className="text-sm font-medium text-violet-700">
-                Hello, {LEARNER_NAME} <span aria-hidden="true">👋</span>
+                Hello, <LearnerName /> <span aria-hidden="true">👋</span>
               </p>
               <h3 className="mt-1.5 text-xl font-bold tracking-tight text-gray-900 sm:text-2xl">
                 How can I help you with this {isVideo ? "video" : "material"}?

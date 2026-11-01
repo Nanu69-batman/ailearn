@@ -1,3 +1,4 @@
+import { ensureAccountClaimed, isAccountClaimed, onAccountChange } from "@/lib/accountScope";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 
 /**
@@ -78,8 +79,17 @@ function clean(raw: unknown): Personalization {
   };
 }
 
+// Another account took over this browser: drop the previous one's copy.
+onAccountChange(() => {
+  cache = null;
+  const p = loadPersonalization();
+  for (const fn of listeners) fn(p);
+});
+
 export function loadPersonalization(): Personalization {
   if (cache) return cache;
+  // Until storage is known to be this account's, use the defaults (not cached).
+  if (typeof window !== "undefined" && !isAccountClaimed()) return { ...DEFAULT_PERSONALIZATION };
   try {
     const raw = typeof window !== "undefined" ? window.localStorage.getItem(KEY) : null;
     cache = raw ? clean(JSON.parse(raw)) : { ...DEFAULT_PERSONALIZATION };
@@ -118,9 +128,14 @@ export async function syncPersonalization(): Promise<Personalization> {
   const supabase = getSupabaseBrowserClient();
   if (supabase) {
     try {
+      await ensureAccountClaimed();
       const { data } = await supabase.auth.getUser();
-      const remote = data.user?.user_metadata?.[META_KEY];
-      if (remote) storeLocal(clean(remote));
+      if (data.user) {
+        const remote = data.user.user_metadata?.[META_KEY];
+        // Signed in: the account's copy, or the defaults. Never a local copy
+        // that may have been written under someone else's login.
+        storeLocal(remote ? clean(remote) : { ...DEFAULT_PERSONALIZATION });
+      }
     } catch {
       // Keep the local copy.
     }

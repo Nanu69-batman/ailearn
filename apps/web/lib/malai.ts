@@ -19,7 +19,6 @@ import {
   createThread,
   deleteMalaiChat,
   formatApiError,
-  isSignedIn,
   listMalaiChats,
   putMalaiChat,
   type MalaiChatRow,
@@ -28,6 +27,7 @@ import {
   type CourseResource,
   type Subject,
 } from "@/lib/api";
+import { ensureAccountClaimed, isAccountClaimed, onAccountChange, onAccountClaimed } from "@/lib/accountScope";
 import { readCompletion } from "@/lib/learn";
 import { onSubjectsChanged } from "@/lib/subjectEvents";
 
@@ -93,6 +93,8 @@ const listeners = new Set<() => void>();
 
 function load(): MalaiChat[] {
   if (cache) return cache;
+  // Until storage is known to be this account's, show nothing (lib/accountScope.ts).
+  if (!isAccountClaimed()) return EMPTY;
   try {
     const raw = window.localStorage.getItem(CHATS_KEY);
     const parsed: unknown = raw ? JSON.parse(raw) : [];
@@ -154,15 +156,18 @@ function fromRow(r: MalaiChatRow, local: MalaiChat | undefined): MalaiChat {
 }
 
 function push(c: MalaiChat): void {
-  void isSignedIn()
-    .then((yes) => (yes ? putMalaiChat(toRow(c)) : undefined))
+  const at = epoch;
+  void ensureAccountClaimed()
+    // Only into the account this chat was made under.
+    .then((userId) => (userId && at === epoch ? putMalaiChat(toRow(c)) : undefined))
     // A session this login does not own (made signed out) stays local only.
     .catch(() => {});
 }
 
 function pushDelete(id: string): void {
-  void isSignedIn()
-    .then((yes) => (yes ? deleteMalaiChat(id) : undefined))
+  const at = epoch;
+  void ensureAccountClaimed()
+    .then((userId) => (userId && at === epoch ? deleteMalaiChat(id) : undefined))
     .catch(() => {});
 }
 
@@ -171,16 +176,40 @@ let lastSync = 0;
 const SYNC_EVERY_MS = 15_000;
 // Deleted here while a sync was in flight: not brought back by it.
 const removedIds = new Set<string>();
+/** Bumped on every account change; work started under an older epoch is dropped. */
+let epoch = 0;
+
+// Another account (or nobody) took over this browser: forget everything.
+onAccountChange(() => {
+  epoch += 1;
+  cache = null;
+  syncing = null;
+  lastSync = 0;
+  removedIds.clear();
+  listeners.forEach((l) => l());
+  if (listeners.size > 0) void syncMalaiChats(true);
+});
+// Storage is now known to be this account's: let the UI read it.
+onAccountClaimed(() => {
+  cache = null;
+  listeners.forEach((l) => l());
+});
 
 /** Merge the server's list into this browser's; upload chats only this browser has. */
 export function syncMalaiChats(force = false): Promise<void> {
   if (typeof window === "undefined") return Promise.resolve();
   if (syncing) return syncing;
   if (!force && Date.now() - lastSync < SYNC_EVERY_MS) return Promise.resolve();
-  syncing = (async () => {
+  // Assigned before the async body can reach `finally` (it awaits first).
+  let run!: Promise<void>;
+  run = (async () => {
     try {
-      if (!(await isSignedIn())) return;
+      const userId = await ensureAccountClaimed();
+      if (!userId) return;
+      const at = epoch;
       const rows = await listMalaiChats();
+      // The account changed while the list was loading: it is not this one's.
+      if (at !== epoch) return;
       lastSync = Date.now();
       const local = new Map(load().map((c) => [c.id, c]));
       const merged = new Map<string, MalaiChat>();
@@ -207,10 +236,11 @@ export function syncMalaiChats(force = false): Promise<void> {
     } catch {
       // Offline or the list is unavailable: keep the local copy.
     } finally {
-      syncing = null;
+      if (syncing === run) syncing = null;
     }
   })();
-  return syncing;
+  syncing = run;
+  return run;
 }
 
 function subscribe(listener: () => void): () => void {
@@ -372,6 +402,8 @@ function writeSession(s: MalaiSession | null): void {
  * `fresh` forces a new one (the stored session was lost server-side).
  */
 async function malaiSession(scope: string[], fresh = false): Promise<MalaiSession> {
+  // A stored session from another account must be gone before it is reused.
+  await ensureAccountClaimed();
   const stored = fresh ? null : readSession();
   if (stored && sameResourceIdSet(stored.scope, scope)) return stored;
   const res = await createLmsSession({
