@@ -31,10 +31,18 @@ LEEWAY_S = 30
 _jwks_clients: dict[str, jwt.PyJWKClient] = {}
 
 
+#: Account roles chosen at sign-up, stored in Supabase ``user_metadata.role``.
+ROLES = ("individual", "teacher", "student")
+
+
 @dataclass(frozen=True)
 class AuthUser:
     id: str
     email: str | None = None
+    #: ``individual`` | ``teacher`` | ``student``; ``None`` = not chosen yet
+    #: (treated as ``individual``).
+    role: str | None = None
+    name: str | None = None
 
 
 def _jwks_client(url: str) -> jwt.PyJWKClient:
@@ -96,7 +104,16 @@ def user_from_token(token: str | None) -> AuthUser | None:
     if not isinstance(sub, str) or not sub:
         raise HTTPException(status_code=401, detail="invalid token")
     email = claims.get("email")
-    return AuthUser(id=sub, email=email if isinstance(email, str) else None)
+    meta = claims.get("user_metadata")
+    meta = meta if isinstance(meta, dict) else {}
+    role = meta.get("role")
+    name = meta.get("full_name") or meta.get("name")
+    return AuthUser(
+        id=sub,
+        email=email if isinstance(email, str) else None,
+        role=role if role in ROLES else None,
+        name=name.strip() if isinstance(name, str) and name.strip() else None,
+    )
 
 
 def get_current_user(request: Request) -> AuthUser | None:

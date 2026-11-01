@@ -14,6 +14,7 @@ import SubjectCard, {
   SubjectCardSkeleton,
 } from "@/components/SubjectCard";
 import SubjectCreateDialog from "@/components/SubjectCreateDialog";
+import { useRole } from "@/lib/role";
 import SubjectDeleteDialog from "@/components/SubjectDeleteDialog";
 import Select from "@/components/Select";
 import { useSubjects } from "@/components/useSubjects";
@@ -96,6 +97,8 @@ function matches(subject: Subject, query: string): boolean {
 export default function SubjectList() {
   const { apiLive, subjects, state, error, load, added, removed } = useSubjects();
   const [createOpen, setCreateOpen] = useState(false);
+  // Students get their subjects from their teacher's classes.
+  const role = useRole();
   const [pendingDelete, setPendingDelete] = useState<Subject | null>(null);
   const [highlightId, setHighlightId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -324,7 +327,7 @@ export default function SubjectList() {
               {searching ? `No subjects match “${query.trim()}”.` : "Nothing here yet."}
             </li>
           )}
-          {apiLive && filter !== "archived" && !searching && (
+          {apiLive && role !== "student" && filter !== "archived" && !searching && (
             <li className={view === "grid" ? "min-h-[14rem]" : ""}>
               <AddSubjectTile onClick={() => setCreateOpen(true)} detailed={view === "grid"} />
             </li>

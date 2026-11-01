@@ -193,7 +193,9 @@ export default function SubjectPage() {
   const pending = (["youtube", "file"] as const)
     .map((s) => jobs[s])
     .filter((p): p is IngestProgress => p !== null);
-  const canDelete = apiLive && courseId !== null;
+  // A class subject seen by a student is read-only: the teacher manages it.
+  const canEdit = subject?.can_edit !== false;
+  const canDelete = canEdit && apiLive && courseId !== null;
   const ready = resourcesState === "ready";
   const isEmpty = ready && resources.length === 0 && pending.length === 0;
   const countLabel = ready
@@ -228,7 +230,17 @@ export default function SubjectPage() {
                 {countLabel}
               </p>
             )}
+            {subject?.class_id && (
+              <Link
+                href={`/classes/${subject.class_id}`}
+                className="mt-2 inline-flex items-center gap-1 rounded-full bg-violet-50 px-2.5 py-0.5 text-xs font-medium text-violet-700 hover:bg-violet-100"
+              >
+                Class: {subject.class_name}
+                {!canEdit && " · managed by your teacher"}
+              </Link>
+            )}
           </div>
+          {canEdit && (
           <button
             type="button"
             onClick={() => openDialog()}
@@ -244,6 +256,7 @@ export default function SubjectPage() {
               <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" aria-label="Processing" />
             )}
           </button>
+          )}
         </div>
         {!apiLive && (
           <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-700" role="note">
@@ -301,9 +314,11 @@ export default function SubjectPage() {
               No content yet
             </h2>
             <p className="mt-1 max-w-sm text-sm text-gray-500">
-              No videos in this subject yet — add a YouTube link or upload a
-              file, and Malai will make it askable.
+              {canEdit
+                ? "No videos in this subject yet — add a YouTube link or upload a file, and Malai will make it askable."
+                : "Your teacher has not added any material to this subject yet."}
             </p>
+            {canEdit && (
             <div className="mt-5 flex flex-wrap justify-center gap-3">
               <button
                 type="button"
@@ -322,6 +337,7 @@ export default function SubjectPage() {
                 Upload a file
               </button>
             </div>
+            )}
           </div>
         )}
 

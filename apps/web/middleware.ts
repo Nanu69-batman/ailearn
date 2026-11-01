@@ -18,9 +18,14 @@ function isProtected(pathname: string): boolean {
     pathname === "/ai-tutor" ||
     pathname.startsWith("/ai-tutor/") ||
     pathname === "/malai" ||
-    pathname.startsWith("/malai/")
+    pathname.startsWith("/malai/") ||
+    pathname === "/classes" ||
+    pathname.startsWith("/classes/") ||
+    pathname.startsWith("/join/")
   );
 }
+
+const ROLES = new Set(["individual", "teacher", "student"]);
 
 export async function middleware(request: NextRequest) {
   // Auth disabled: behave exactly as before.
@@ -56,6 +61,18 @@ export async function middleware(request: NextRequest) {
     url.search = `?next=${encodeURIComponent(pathname + search)}`;
     const redirect = NextResponse.redirect(url);
     // Carry any refreshed/cleared auth cookies onto the redirect.
+    for (const cookie of response.cookies.getAll()) {
+      redirect.cookies.set(cookie);
+    }
+    return redirect;
+  }
+  // Signed in but no role chosen yet (Google sign-in, older accounts): ask once.
+  const role = (user?.user_metadata as Record<string, unknown> | undefined)?.role;
+  if (user && !ROLES.has(String(role)) && isProtected(pathname)) {
+    const url = request.nextUrl.clone();
+    url.pathname = "/onboarding";
+    url.search = `?next=${encodeURIComponent(pathname + search)}`;
+    const redirect = NextResponse.redirect(url);
     for (const cookie of response.cookies.getAll()) {
       redirect.cookies.set(cookie);
     }

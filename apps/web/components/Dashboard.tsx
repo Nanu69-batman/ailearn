@@ -20,6 +20,7 @@ import { LearnerName } from "@/components/LearnerName";
 import { SUBJECTS_PATH, contentPath } from "@/lib/learn";
 import SubjectCard, { AddSubjectTile, ProgressBar, SubjectCardSkeleton } from "@/components/SubjectCard";
 import SubjectCreateDialog from "@/components/SubjectCreateDialog";
+import { useRole } from "@/lib/role";
 import SubjectDeleteDialog from "@/components/SubjectDeleteDialog";
 import { Notice, SubjectsError } from "@/components/SubjectList";
 import { useSubjects } from "@/components/useSubjects";
@@ -209,6 +210,7 @@ export default function Dashboard() {
   const [now, setNow] = useState<Date | null>(null);
   const [activity, setActivity] = useState<Activity | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const role = useRole();
   const [pendingDelete, setPendingDelete] = useState<Subject | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -465,7 +467,7 @@ export default function Dashboard() {
                 />
               </li>
             ))}
-            {apiLive && (
+            {apiLive && role !== "student" && (
               <li>
                 <AddSubjectTile onClick={() => setCreateOpen(true)} />
               </li>

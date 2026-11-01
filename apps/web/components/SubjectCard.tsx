@@ -158,6 +158,9 @@ export default function SubjectCard({
     </span>
   );
 
+  // Class subjects seen by a student are read-only (managed by the teacher).
+  const canDelete = subject.can_edit !== false;
+
   return (
     <div
       className={[
@@ -216,6 +219,7 @@ export default function SubjectCard({
       </Link>
 
       {/* Sibling of the link (never nested), so it can't trigger navigation. */}
+      {(canDelete || onToggleArchive) && (
       <div ref={menuRef} className={layout === "list" ? "absolute right-3 top-1/2 -translate-y-1/2" : "absolute right-4 top-6"}>
         <button
           ref={menuButtonRef}
@@ -261,6 +265,7 @@ export default function SubjectCard({
                 {archived ? "Unarchive" : "Archive"}
               </button>
             )}
+            {canDelete && (
             <button
               type="button"
               role="menuitem"
@@ -278,9 +283,11 @@ export default function SubjectCard({
               </svg>
               Delete subject
             </button>
+            )}
           </div>
         )}
       </div>
+      )}
     </div>
   );
 }

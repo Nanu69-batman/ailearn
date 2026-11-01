@@ -8,6 +8,8 @@ import {
   safeNextPath,
   supabaseConfigured,
 } from "@/lib/supabase/client";
+import { RolePicker } from "@/components/RolePicker";
+import type { Role } from "@/lib/role";
 
 type Mode = "signin" | "signup";
 
@@ -23,6 +25,8 @@ export default function LoginForm() {
   const [mode, setMode] = useState<Mode>(
     params.get("mode") === "signup" ? "signup" : "signin",
   );
+  const [name, setName] = useState("");
+  const [role, setRole] = useState<Role>("individual");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -52,10 +56,17 @@ export default function LoginForm() {
         router.refresh();
         return;
       }
+      if (!name.trim()) {
+        setError("Please enter your name.");
+        return;
+      }
       const { data, error: err } = await supabase.auth.signUp({
         email,
         password,
-        options: { emailRedirectTo: callbackUrl() },
+        options: {
+          emailRedirectTo: callbackUrl(),
+          data: { full_name: name.trim(), role },
+        },
       });
       if (err) {
         setError(err.message);
@@ -159,6 +170,27 @@ export default function LoginForm() {
           </div>
 
           <form onSubmit={onSubmit} className="flex flex-col gap-3">
+            {mode === "signup" && (
+              <>
+                <label className="flex flex-col gap-1 text-sm font-medium text-gray-700">
+                  Name
+                  <input
+                    type="text"
+                    required
+                    maxLength={100}
+                    autoComplete="name"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    className={INPUT_CLASS}
+                    placeholder="Your full name"
+                  />
+                </label>
+                <div className="flex flex-col gap-1 text-sm font-medium text-gray-700">
+                  I am a…
+                  <RolePicker value={role} onChange={setRole} />
+                </div>
+              </>
+            )}
             <label className="flex flex-col gap-1 text-sm font-medium text-gray-700">
               Email
               <input

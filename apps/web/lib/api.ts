@@ -1069,6 +1069,11 @@ export interface Subject {
   resource_count: number;
   resource_ids?: string[];
   created_at?: string;
+  /** Set when the subject belongs to a teacher's class. */
+  class_id?: string | null;
+  class_name?: string | null;
+  /** False for a class subject seen by a student (read-only). */
+  can_edit?: boolean;
 }
 
 export interface SubjectListResponse {
@@ -1086,6 +1091,92 @@ export function getSubject(subjectId: string): Promise<Subject> {
 export interface CreateSubjectRequest {
   name: string;
   description?: string;
+  /** Teacher only: create the subject inside one of their classes. */
+  class_id?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Classes (teacher creates, students join by code)
+// ---------------------------------------------------------------------------
+
+export interface ClassSubject {
+  id: string;
+  name: string;
+  description: string;
+  resource_count: number;
+  created_at?: string;
+}
+
+export interface ClassStudent {
+  id: string;
+  name: string | null;
+  email: string | null;
+  joined_at: string;
+}
+
+export interface ClassInfo {
+  id: string;
+  name: string;
+  description: string;
+  teacher_name: string | null;
+  is_teacher: boolean;
+  student_count: number;
+  subjects: ClassSubject[];
+  created_at: string;
+  /** Teacher only. */
+  join_code?: string;
+  students?: ClassStudent[];
+}
+
+export interface ClassPreview {
+  id: string;
+  name: string;
+  description: string;
+  teacher_name: string | null;
+  student_count: number;
+  is_teacher: boolean;
+  already_member: boolean;
+}
+
+export function listClasses(): Promise<{ role: string; classes: ClassInfo[] }> {
+  return apiFetch("/classes");
+}
+
+export function getClass(classId: string): Promise<ClassInfo> {
+  return apiFetch(`/classes/${encodeURIComponent(classId)}`);
+}
+
+export function createClass(body: { name: string; description?: string }): Promise<ClassInfo> {
+  return apiFetch("/classes", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function deleteClass(classId: string): Promise<{ deleted: string }> {
+  return apiFetch(`/classes/${encodeURIComponent(classId)}`, { method: "DELETE" });
+}
+
+export function regenerateClassCode(classId: string): Promise<ClassInfo> {
+  return apiFetch(`/classes/${encodeURIComponent(classId)}/code`, { method: "POST" });
+}
+
+export function removeClassMember(classId: string, userId: string): Promise<{ removed: string }> {
+  return apiFetch(
+    `/classes/${encodeURIComponent(classId)}/members/${encodeURIComponent(userId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export function previewClassInvite(code: string): Promise<ClassPreview> {
+  return apiFetch(`/classes/join/${encodeURIComponent(code)}`);
+}
+
+export function joinClass(code: string): Promise<ClassInfo> {
+  return apiFetch("/classes/join", { method: "POST", body: JSON.stringify({ code }) });
+}
+
+/** The invite link a teacher shares: opens /join/<code>. */
+export function classInviteUrl(code: string): string {
+  const origin = typeof window === "undefined" ? "" : window.location.origin;
+  return `${origin}/join/${code}`;
 }
 
 /** POST /subjects -> 201 with the created Subject. */

@@ -14,6 +14,7 @@ import { DASHBOARD_PATH, SUBJECTS_PATH } from "@/lib/learn";
 import { MALAI_PATH } from "@/lib/malai";
 import MalaiSidebar from "@/components/MalaiSidebar";
 import AccountMenu from "@/components/AccountMenu";
+import { useRole } from "@/lib/role";
 
 /**
  * The chrome every route inside the `(learn)` group shares: sidebar, mobile
@@ -103,9 +104,23 @@ function writeSidebarCollapsed(value: boolean): void {
   }
 }
 
+const CLASSES_ITEM: NavItem = {
+  label: "Classes",
+  icon: "M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8zM23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75",
+  implemented: true,
+  href: "/classes",
+  activePrefix: "/classes",
+};
+
 export default function LearnShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
+  const role = useRole();
+  // Teachers and students get "Classes" right after "My Subjects".
+  const navItems: ReadonlyArray<NavItem> =
+    role === "teacher" || role === "student"
+      ? [...NAV_ITEMS.slice(0, 2), CLASSES_ITEM, ...NAV_ITEMS.slice(2)]
+      : NAV_ITEMS;
 
   /**
    * Starts false so the server-rendered HTML and the first client render agree;
@@ -417,7 +432,7 @@ export default function LearnShell({ children }: { children: ReactNode }) {
             className={sidebarCollapsed ? "flex flex-col gap-1 px-2" : "flex flex-col gap-1 px-3"}
             aria-label="Primary"
           >
-            {NAV_ITEMS.map((item) => renderNavItem(item, sidebarCollapsed))}
+            {navItems.map((item) => renderNavItem(item, sidebarCollapsed))}
           </nav>
           <div className="mx-5 my-4 border-t border-white/10" />
           <nav
@@ -522,7 +537,7 @@ export default function LearnShell({ children }: { children: ReactNode }) {
               aria-label="Primary"
               onClick={closeDrawer}
             >
-              {NAV_ITEMS.map((item) => renderNavItem(item, false))}
+              {navItems.map((item) => renderNavItem(item, false))}
             </nav>
             <div className="mx-5 my-4 border-t border-white/10" />
             <nav

@@ -166,6 +166,16 @@ def _resource_id() -> str:
     return f"res_{uuid.uuid4().hex[:12]}"
 
 
+def _check_subject_owner(subject, user: AuthUser | None) -> None:
+    """403 when a signed-in user adds material to a subject they do not own.
+
+    Students in a class can read the teacher's subjects but never add to them.
+    """
+    owner = getattr(subject, "owner_id", None)
+    if owner is not None and user is not None and user.id != owner:
+        raise HTTPException(status_code=403, detail="only the subject's owner can add material")
+
+
 def _resolve_ingest_subject(
     course_id: str, subject_id: str | None
 ) -> tuple[str, object | None]:
@@ -251,6 +261,8 @@ async def ingest_file(
     original_name = sanitize_filename(file.filename)
 
     target_course_id, subject = _resolve_ingest_subject(course_id, subject_id)
+    if subject is not None:
+        _check_subject_owner(subject, user)
     _take_upload_slot()
 
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -368,6 +380,7 @@ async def ingest_youtube_route(
             raise HTTPException(
                 status_code=404, detail=f"unknown subject {body.subject_id}"
             )
+        _check_subject_owner(subject, user)
         if not subject.course_id:
             raise HTTPException(
                 status_code=422,

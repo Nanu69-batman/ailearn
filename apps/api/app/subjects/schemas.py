@@ -17,6 +17,8 @@ class SubjectCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=2000)
     course_id: str | None = Field(default=None, min_length=1, max_length=256)
+    #: Teacher only: create the subject inside one of their classes.
+    class_id: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class SubjectUpdateRequest(BaseModel):
@@ -43,6 +45,11 @@ class SubjectResponse(BaseModel):
     resource_count: int = 0
     resource_ids: list[str] = Field(default_factory=list)
     created_at: str
+    #: The class this subject belongs to, if any (teacher-managed).
+    class_id: str | None = None
+    class_name: str | None = None
+    #: False for a class subject seen by a student: read-only.
+    can_edit: bool = True
 
 
 class SubjectListResponse(BaseModel):

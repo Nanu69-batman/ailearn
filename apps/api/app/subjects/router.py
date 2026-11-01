@@ -28,6 +28,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.auth import AuthUser, get_current_user, require_user
+from app.classes.store import class_store
 from app.config import settings
 from app.subjects.schemas import (
     AttachResourceRequest,
@@ -53,7 +54,11 @@ WriteUser = Annotated[AuthUser | None, Depends(require_user)]
 router = APIRouter(prefix="/subjects")
 
 
-def _to_response(subject: Subject) -> SubjectResponse:
+def _to_response(subject: Subject, user: AuthUser | None = None) -> SubjectResponse:
+    klass = class_store.class_of_subject(subject.id)
+    can_edit = subject.owner_id is None or (
+        user is not None and user.id == subject.owner_id
+    )
     return SubjectResponse(
         id=subject.id,
         name=subject.name,
@@ -62,14 +67,22 @@ def _to_response(subject: Subject) -> SubjectResponse:
         resource_count=len(subject.resource_ids),
         resource_ids=list(subject.resource_ids),
         created_at=subject.created_at,
+        class_id=klass.id if klass else None,
+        class_name=klass.name if klass else None,
+        can_edit=can_edit,
     )
 
 
 def _visible(subject: Subject, user: AuthUser | None) -> bool:
-    """Public (no owner) subjects are visible to all; owned ones to the owner."""
+    """Public (no owner) subjects are visible to all; owned ones to the owner
+    and to students of a class the subject belongs to."""
     if subject.owner_id is None:
         return True
-    return user is not None and user.id == subject.owner_id
+    if user is None:
+        return False
+    return user.id == subject.owner_id or class_store.student_can_read_subject(
+        user.id, subject.id
+    )
 
 
 def _require(subject_id: str, user: AuthUser | None) -> Subject:
@@ -84,6 +97,9 @@ def _require_writable(subject_id: str, user: AuthUser | None) -> Subject:
     subject = _require(subject_id, user)
     if subject.owner_id is None and user is not None and settings.auth_required:
         raise HTTPException(status_code=403, detail="public subjects are read-only")
+    if subject.owner_id is not None and (user is None or user.id != subject.owner_id):
+        # A class student can read the teacher's subject but never change it.
+        raise HTTPException(status_code=403, detail="only the teacher can change this subject")
     return subject
 
 
@@ -91,26 +107,38 @@ def _require_writable(subject_id: str, user: AuthUser | None) -> Subject:
 async def create_subject(
     body: SubjectCreateRequest, user: WriteUser
 ) -> SubjectResponse:
-    return _to_response(
-        subject_store.create(
-            name=body.name,
-            description=body.description,
-            course_id=body.course_id,
-            owner_id=user.id if user is not None else None,
+    if user is not None and user.role == "student":
+        raise HTTPException(
+            status_code=403, detail="subjects are managed by your teacher"
         )
+    klass = None
+    if body.class_id is not None:
+        klass = class_store.get(body.class_id)
+        if klass is None or user is None or klass.teacher_id != user.id:
+            raise HTTPException(status_code=404, detail=f"unknown class {body.class_id}")
+    subject = subject_store.create(
+        name=body.name,
+        description=body.description,
+        course_id=body.course_id,
+        owner_id=user.id if user is not None else None,
     )
+    if klass is not None:
+        class_store.add_subject(klass, subject.id)
+    return _to_response(subject, user)
 
 
 @router.get("")
 async def list_subjects(user: CurrentUser) -> SubjectListResponse:
     return SubjectListResponse(
-        subjects=[_to_response(s) for s in subject_store.list_all() if _visible(s, user)]
+        subjects=[
+            _to_response(s, user) for s in subject_store.list_all() if _visible(s, user)
+        ]
     )
 
 
 @router.get("/{subject_id}")
 async def read_subject(subject_id: str, user: CurrentUser) -> SubjectResponse:
-    return _to_response(_require(subject_id, user))
+    return _to_response(_require(subject_id, user), user)
 
 
 @router.patch("/{subject_id}")
@@ -123,7 +151,7 @@ async def update_subject(
     )
     if subject is None:
         raise HTTPException(status_code=404, detail=f"unknown subject {subject_id}")
-    return _to_response(subject)
+    return _to_response(subject, user)
 
 
 @router.delete("/{subject_id}")
@@ -136,6 +164,7 @@ async def delete_subject(subject_id: str, user: WriteUser) -> dict:
     _require_writable(subject_id, user)
     if not subject_store.delete(subject_id):
         raise HTTPException(status_code=404, detail=f"unknown subject {subject_id}")
+    class_store.remove_subject(subject_id)
     return {"deleted": subject_id}
 
 
@@ -188,7 +217,7 @@ async def attach_resource(
         raise HTTPException(
             status_code=422, detail=f"unknown resource {exc}"
         ) from exc
-    return _to_response(subject)
+    return _to_response(subject, user)
 
 
 @router.delete("/{subject_id}/resources/{resource_id}")
@@ -199,4 +228,4 @@ async def detach_resource(
     subject = subject_store.detach_resource(subject_id, resource_id)
     if subject is None:
         raise HTTPException(status_code=404, detail=f"unknown subject {subject_id}")
-    return _to_response(subject)
+    return _to_response(subject, user)

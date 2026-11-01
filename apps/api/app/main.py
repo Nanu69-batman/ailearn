@@ -8,13 +8,14 @@ from fastapi.responses import JSONResponse
 
 from app.chat.attachments import router as chat_attachments_router
 from app.chat.chats import router as malai_chats_router
+from app.chat.models import ModelChoiceMiddleware
+from app.chat.models import router as llm_models_router
 from app.chat.router import describe_active_providers
 from app.chat.router import router as chat_router
+from app.classes.router import router as classes_router
 from app.config import settings
 from app.ingestion.backoff import QuotaExhaustedError
 from app.ingestion.router import router as ingestion_router
-from app.chat.models import ModelChoiceMiddleware
-from app.chat.models import router as llm_models_router
 from app.middleware import RequestIDMiddleware
 from app.subjects.router import router as subjects_router
 from app.voice.router import router as voice_router
@@ -45,6 +46,14 @@ async def lifespan(_: FastAPI):
         load_subjects_from_supabase()
         seed_demo_subjects_to_supabase()
         load_sessions_from_supabase()
+
+    # Classes: the Supabase `classes` table when present, plus a local JSON
+    # mirror (the only store without Supabase, a fallback if the table is missing).
+    from app.classes import store as class_state
+
+    class_state.set_persistence_enabled(True)
+    if not class_state.load_from_supabase():
+        class_state.load_state()
     if settings.use_in_memory:
         # Sessions/messages are process-local; mirror them to data/ so an API
         # restart does not 404 every open browser tab (see chat/sessions.py).
@@ -123,6 +132,9 @@ app.include_router(ingestion_router)
 # Subject organisation: POST/GET /subjects, plus per-subject resource
 # attach/detach. Additive; no existing route shape is touched.
 app.include_router(subjects_router)
+
+# Teacher classes: create, join by code, manage students and class subjects.
+app.include_router(classes_router)
 
 # Live voice: GET /voice/models, WS /voice/live, WS /voice/transcribe.
 app.include_router(voice_router)
