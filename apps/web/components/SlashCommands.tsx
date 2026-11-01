@@ -125,12 +125,14 @@ export function quizFromCommand(command: SlashCommand, rest: string): {
   count: number;
   types: QuizQuestionType[];
   prompt: string;
+  kind: "quiz";
 } {
   const option = command.options.find((o) => o.text.toLowerCase() === rest.toLowerCase());
   return {
     count: option?.count ?? 5,
     types: option?.types ?? ALL_TYPES,
     prompt: option ? "" : rest,
+    kind: "quiz",
   };
 }
 

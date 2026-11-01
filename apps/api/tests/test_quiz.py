@@ -135,6 +135,53 @@ def test_validation_per_type():
     assert subj.model_answer == "Because." and subj.key_points == ["held constant"]
 
 
+def test_quiz_drops_explanations_practice_keeps_them_with_steps():
+    class P:
+        chunk_id, source_type, video_id = "c1", "pdf", None
+        start_ms = end_ms = slide_no = image_no = None
+        page_no, text, kind, metadata = 1, "t", None, None
+
+    raw = {"questions": [
+        _mcq("c1"),
+        {"type": "numerical", "prompt": "f_x at (1,2)?", "answer": 4, "chunk_id": "c1",
+         "explanation": "Differentiate in x.", "steps": ["$f_x = 2x$", "", "$f_x(1,2) = 2$", 7]},
+    ]}
+    quiz = validate_questions(raw, [P()], random.Random(1))
+    assert [q.explanation for q in quiz] == ["", ""]
+    assert all(q.steps is None for q in quiz)
+
+    practice = validate_questions(raw, [P()], random.Random(1), kind="practice")
+    assert practice[0].explanation == "By definition." and practice[0].steps is None
+    assert practice[1].explanation == "Differentiate in x."
+    assert practice[1].steps == ["$f_x = 2x$", "$f_x(1,2) = 2$", "7"]
+
+
+def test_practice_tests_may_be_bigger_than_quizzes():
+    with pytest.raises(ValueError):
+        QuizRequest(session_id="s", current_time_ms=0, count=21)
+    assert QuizRequest(session_id="s", current_time_ms=0, count=30, kind="practice").count == 30
+    with pytest.raises(ValueError):
+        QuizRequest(session_id="s", current_time_ms=0, count=31, kind="practice")
+
+
+def test_practice_prompt_asks_for_steps_quiz_prompt_forbids_explanations(chroma_store, embedder):
+    reply = json.dumps({"questions": [_mcq("open_early")]})
+    svc, sid, llm = _setup(chroma_store, embedder, reply)
+    seen: list[str] = []
+    orig = llm.complete
+
+    async def spy(*, system, user_prompt, passages, mode):
+        seen.append(system)
+        return await orig(system=system, user_prompt=user_prompt, passages=passages, mode=mode)
+
+    llm.complete = spy
+    quiz = _quiz(svc, sid)
+    practice = _quiz(svc, sid, kind="practice")
+    assert "NO explanations" in seen[0] and '"steps"' in seen[1] and "PRACTICE TEST" in seen[1]
+    assert quiz.questions[0].explanation == ""
+    assert practice.questions[0].explanation == "By definition."
+
+
 def test_parse_json_object_tolerates_fences_and_single_latex_backslashes():
     raw = '```json\n{"questions": [{"prompt": "Find $\\frac{\\partial f}{\\partial x}$"}]}\n```'
     obj = parse_json_object(raw)

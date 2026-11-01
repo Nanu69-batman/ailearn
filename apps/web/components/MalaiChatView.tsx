@@ -14,6 +14,7 @@ import {
   type ChatMode,
   type ChatResponse,
   type ChatRequest,
+  type QuizKind,
   type QuizScope,
 } from "@/lib/api";
 import { detectQuizIntent } from "@/lib/quizIntent";
@@ -268,6 +269,8 @@ export default function MalaiChatView() {
   const [quizChat, setQuizChat] = useState<MalaiChat | null>(null);
   const [quizOpen, setQuizOpen] = useState(false);
   const [quizPreset, setQuizPreset] = useState<QuizPreset | null>(null);
+  /** Which tab the panel shows: a one-time quiz or a saved practice test. */
+  const [panelKind, setPanelKind] = useState<QuizKind>("quiz");
 
   useEffect(() => setMounted(true), []);
 
@@ -524,6 +527,7 @@ export default function MalaiChatView() {
         // The quiz is written in the panel; the chat records it when it is.
         setQuizChat(current);
         setQuizPreset({ ...quizAsk, nonce: Date.now() });
+        setPanelKind(quizAsk.kind ?? "quiz");
         setQuizOpen(true);
         updateChat(current.id, { updatedAt: Date.now(), preview: titleFrom(text) });
         return;
@@ -627,15 +631,15 @@ export default function MalaiChatView() {
 
   // Quiz events land in the chat: written by the server, so they are part of
   // the conversation Malai sees next turn. Not answering is fine.
-  const quizStarted = async (request: string, count: number): Promise<void> => {
+  const quizStarted = async (request: string, count: number, kind: QuizKind): Promise<void> => {
     if (!quizChat) return;
     try {
       const lines = await postQuizNote(
-        { session_id: quizChat.sessionId, thread_id: quizChat.threadId, event: "started", request, count },
+        { session_id: quizChat.sessionId, thread_id: quizChat.threadId, event: "started", request, count, kind },
       );
       setMessages((prev) => [...prev, ...lines.filter((m) => m.role === "assistant")]);
     } catch {
-      note(`I've made you a ${count}-question quiz. It's open beside the chat.`);
+      note(`I've made you a ${count}-question ${kind === "practice" ? "practice test" : "quiz"}. It's open beside the chat.`);
     }
   };
   const quizFinished = async (o: QuizOutcome): Promise<void> => {
@@ -649,12 +653,13 @@ export default function MalaiChatView() {
           count: o.count,
           score: o.score,
           to_review: o.toReview,
+          kind: o.kind,
         },
       );
       setMessages((prev) => [...prev, ...lines]);
       updateChat(quizChat.id, { updatedAt: Date.now() });
     } catch {
-      note(`**Quiz completed** — you scored **${o.score} / ${o.count}**.`);
+      note(`**${o.kind === "practice" ? "Practice test" : "Quiz"} completed** — you scored **${o.score} / ${o.count}**.`);
     }
   };
 
@@ -793,20 +798,32 @@ export default function MalaiChatView() {
               </Link>
             )}
             {chat && !quizOpen && (
-              <button
-                type="button"
-                onClick={() => {
-                  setQuizChat(chat);
-                  setQuizOpen(true);
-                }}
-                // Floats: stays put while the conversation scrolls.
-                className="fixed right-4 top-20 z-30 inline-flex shrink-0 items-center gap-1.5 rounded-full border border-violet-200 bg-white px-3.5 py-1.5 text-xs font-medium text-violet-700 shadow-md shadow-violet-900/10 transition hover:bg-violet-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 md:right-[4.75rem] md:top-5 lg:right-[5.75rem] lg:top-7"
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5" aria-hidden="true">
-                  <path d="M12 22a10 10 0 110-20 10 10 0 010 20zM12 16a4 4 0 110-8 4 4 0 010 8zM12 12h.01" />
-                </svg>
-                Quiz
-              </button>
+              // Floats: stays put while the conversation scrolls.
+              <span className="fixed right-4 top-20 z-30 inline-flex shrink-0 items-center gap-2 md:right-[4.75rem] md:top-5 lg:right-[5.75rem] lg:top-7">
+                {(["quiz", "practice"] as const).map((k) => (
+                  <button
+                    key={k}
+                    type="button"
+                    onClick={() => {
+                      setQuizChat(chat);
+                      setPanelKind(k);
+                      setQuizOpen(true);
+                    }}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-violet-200 bg-white px-3.5 py-1.5 text-xs font-medium text-violet-700 shadow-md shadow-violet-900/10 transition hover:bg-violet-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5" aria-hidden="true">
+                      <path
+                        d={
+                          k === "quiz"
+                            ? "M12 22a10 10 0 110-20 10 10 0 010 20zM12 16a4 4 0 110-8 4 4 0 010 8zM12 12h.01"
+                            : "M9 4h6v3H9zM7 5H5v16h14V5h-2M9 12l2 2 4-4M9 17h6"
+                        }
+                      />
+                    </svg>
+                    {k === "quiz" ? "Quiz" : "Practice test"}
+                  </button>
+                ))}
+              </span>
             )}
           </p>
         </header>
@@ -917,20 +934,35 @@ export default function MalaiChatView() {
 
       {quizChat && quizScope && (
         <aside
-          aria-label="Quiz"
+          aria-label={panelKind === "practice" ? "Practice test" : "Quiz"}
           aria-hidden={!quizOpen}
           className={`fixed inset-y-0 right-0 z-50 flex w-full flex-col border-l border-gray-200 bg-white shadow-2xl shadow-gray-900/10 transition-transform duration-300 ease-out sm:w-[26rem] ${
             quizOpen ? "translate-x-0" : "pointer-events-none translate-x-full"
           }`}
         >
           <div className="flex shrink-0 items-center gap-2 border-b border-gray-100 px-4 py-3">
-            <h2 className="flex-1 text-sm font-semibold text-gray-900">Quiz</h2>
-            <span className="truncate text-xs text-gray-400">{subject ? subject.name : "General"}</span>
+            <div className="flex flex-1 items-center gap-1 rounded-full bg-gray-100 p-0.5" role="tablist" aria-label="Quiz or practice test">
+              {(["quiz", "practice"] as const).map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  role="tab"
+                  aria-selected={panelKind === k}
+                  onClick={() => setPanelKind(k)}
+                  className={`flex-1 rounded-full px-3 py-1 text-xs font-medium transition ${
+                    panelKind === k ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-800"
+                  }`}
+                >
+                  {k === "quiz" ? "Quiz" : "Practice test"}
+                </button>
+              ))}
+            </div>
+            <span className="max-w-[6rem] truncate text-xs text-gray-400">{subject ? subject.name : "General"}</span>
             <button
               type="button"
               onClick={() => setQuizOpen(false)}
-              aria-label="Close quiz"
-              title="Close (your quiz is kept)"
+              aria-label="Close panel"
+              title="Close (your progress is kept)"
               className="flex h-8 w-8 items-center justify-center rounded-full text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
             >
               <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="h-4 w-4" aria-hidden="true">
@@ -938,27 +970,33 @@ export default function MalaiChatView() {
               </svg>
             </button>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-            <QuizPanel
-              key={quizChat.id}
-              sessionId={quizChat.sessionId}
-              getCurrentTimeMs={() => 0}
-              scope={quizScope}
-              subjectId={subject?.id ?? null}
-              chatId={quizChat.id}
-              sourceNote={
-                subject
-                  ? `From ${subject.name}: its documents and the videos you've marked done.`
-                  : "From general knowledge on your topic. Mention your notes or lectures to quiz on your materials."
-              }
-              onSeek={() => {}}
-              offline={false}
-              preset={quizPreset}
-              onStarted={(request, count) => void quizStarted(request, count)}
-              onFailed={(_request, message) => note(`I couldn't write that quiz: ${message}`, true)}
-              onFinished={(o) => void quizFinished(o)}
-            />
-          </div>
+          {/* Both stay mounted, so switching tabs keeps an unfinished one. */}
+          {(["quiz", "practice"] as const).map((k) => (
+            <div key={k} className={`min-h-0 flex-1 overflow-y-auto px-4 py-4 ${panelKind === k ? "" : "hidden"}`}>
+              <QuizPanel
+                key={`${quizChat.id}-${k}`}
+                kind={k}
+                sessionId={quizChat.sessionId}
+                getCurrentTimeMs={() => 0}
+                scope={quizScope}
+                subjectId={subject?.id ?? null}
+                chatId={quizChat.id}
+                sourceNote={
+                  subject
+                    ? `From ${subject.name}: its documents and the videos you've marked done.`
+                    : "From general knowledge on your topic. Mention your notes or lectures to use your materials."
+                }
+                onSeek={() => {}}
+                offline={false}
+                preset={(quizPreset?.kind ?? "quiz") === k ? quizPreset : null}
+                onStarted={(request, count) => void quizStarted(request, count, k)}
+                onFailed={(_request, message) =>
+                  note(`I couldn't write that ${k === "practice" ? "practice test" : "quiz"}: ${message}`, true)
+                }
+                onFinished={(o) => void quizFinished(o)}
+              />
+            </div>
+          ))}
         </aside>
       )}
     </div>

@@ -1,10 +1,15 @@
 "use client";
 
 /**
- * Saved quizzes and their attempts. Each quiz is filed under its subject
- * (Resources > Quizzes in Malai's sidebar) or, in a chat with no subject,
- * under that chat's menu, and has its own page with analytics, a re-attempt,
- * and every past attempt.
+ * Saved PRACTICE TESTS and their attempts. Each test is filed under its
+ * subject (Resources > Practice tests in Malai's sidebar) or, in a chat with
+ * no subject, under that chat's menu, and has its own page with analytics, a
+ * re-attempt, and every past attempt.
+ *
+ * Quizzes are NOT saved here: a quiz is a one-time check that lives in its
+ * chat (the chat records that it was taken and the score). Entries saved
+ * before practice tests existed were quizzes; they are kept and shown as
+ * practice tests, so no learner loses their attempt history.
  *
  * Kept in Supabase (`saved_quizzes`, supabase/migrations/0004) for a
  * signed-in learner, mirrored to localStorage so the UI reads synchronously
@@ -204,6 +209,7 @@ export function deleteQuiz(quizId: string): void {
   void remove(quizId);
 }
 
+/** A practice test's own page (analytics, re-attempt, past attempts). */
 export function quizPath(quizId: string): string {
-  return `/malai/quiz/${encodeURIComponent(quizId)}`;
+  return `/malai/practice/${encodeURIComponent(quizId)}`;
 }

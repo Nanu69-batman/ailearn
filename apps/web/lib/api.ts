@@ -1161,13 +1161,21 @@ export interface QuizQuestion {
   unit?: string | null;
   model_answer?: string | null;
   key_points?: string[] | null;
+  /** Practice tests only; empty in a quiz. */
   explanation: string;
+  /** Practice tests only: the worked solution, one step each. */
+  steps?: string[] | null;
   /** Null only in a general quiz (a Malai chat in no subject). */
   citation: Citation | null;
 }
 
+/** A quick one-time quiz, or a longer practice test with explanations. */
+export type QuizKind = "quiz" | "practice";
+
 /** Most questions a quiz may have. */
 export const MAX_QUIZ_QUESTIONS = 20;
+/** Most questions a practice test may have. */
+export const MAX_PRACTICE_QUESTIONS = 30;
 
 export interface QuizRequest {
   session_id: string;
@@ -1176,6 +1184,7 @@ export interface QuizRequest {
   completed_resource_ids?: string[];
   count?: number;
   types?: QuizQuestionType[];
+  kind?: QuizKind;
   attempt?: number;
   /** Optional learner instructions: a topic, a focus, a difficulty. */
   prompt?: string;
@@ -1205,6 +1214,7 @@ export interface QuizNote {
   /** completed: total score, and the questions not fully right. */
   score?: number;
   to_review?: string[];
+  kind?: QuizKind;
 }
 
 /** Record a quiz in its chat; the server writes the lines and returns them. */

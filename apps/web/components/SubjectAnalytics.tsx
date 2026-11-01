@@ -8,8 +8,9 @@ import { formatStudyTime } from "@/lib/activity";
 
 /**
  * A subject's learning analytics: overall completion (completed resources,
- * plus how far each unfinished video has been watched), and its quizzes
- * (attempts, average and best score, the latest scores as bars).
+ * plus how far each unfinished video has been watched), and its practice
+ * tests (attempts, average and best score, the latest scores as bars).
+ * Quizzes are one-time checks kept in their chat and are not counted here.
  * Shown on the subject page in My subjects and on its Malai page.
  */
 
@@ -99,7 +100,7 @@ export default function SubjectAnalytics({
           <div className="grid grid-cols-3 gap-2 text-xs text-gray-500">
             <div className={stat}>
               <div className="text-base font-semibold tabular-nums text-gray-900">{quizzes.length}</div>
-              quiz{quizzes.length === 1 ? "" : "zes"}
+              practice test{quizzes.length === 1 ? "" : "s"}
             </div>
             <div className={stat}>
               <div className="text-base font-semibold tabular-nums text-gray-900">{avg === null ? "—" : `${avg}%`}</div>
@@ -115,7 +116,7 @@ export default function SubjectAnalytics({
               <p className="text-[11px] font-medium text-gray-500">
                 Latest {recent.length} attempt{recent.length === 1 ? "" : "s"} · {attempts.length} in all
               </p>
-              <div className="mt-1.5 flex h-16 items-end gap-1" role="img" aria-label={`Latest quiz scores: ${recent.map((a) => `${a.p}%`).join(", ")}`}>
+              <div className="mt-1.5 flex h-16 items-end gap-1" role="img" aria-label={`Latest practice test scores: ${recent.map((a) => `${a.p}%`).join(", ")}`}>
                 {recent.map((a, i) => (
                   <div
                     key={`${a.quiz.id}-${a.at}-${i}`}
@@ -127,7 +128,7 @@ export default function SubjectAnalytics({
               </div>
             </div>
           ) : (
-            <p className="mt-3 text-xs text-gray-500">No quiz attempts yet. Ask Malai to quiz you on this subject.</p>
+            <p className="mt-3 text-xs text-gray-500">No practice test attempts yet. Ask Malai for a practice test on this subject.</p>
           )}
           {recentQuizzes.length > 0 && (
             <ul className="mt-3 flex flex-col gap-1">

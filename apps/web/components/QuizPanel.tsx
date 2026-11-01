@@ -2,11 +2,13 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
+  MAX_PRACTICE_QUESTIONS,
   MAX_QUIZ_QUESTIONS,
   formatApiError,
   gradeQuizAnswer,
   postQuiz,
   type QuizGrade,
+  type QuizKind,
   type QuizQuestion,
   type QuizQuestionType,
   type QuizResponse,
@@ -36,11 +38,14 @@ export interface QuizPreset {
   prompt: string;
   /** The chat message that asked for it, when it came from the chat. */
   request?: string;
+  /** A quiz (default) or a practice test. */
+  kind?: QuizKind;
   nonce: number;
 }
 
 /** A finished quiz, as reported to the chat it belongs to. */
 export interface QuizOutcome {
+  kind: QuizKind;
   count: number;
   score: number;
   /** The questions not fully right, for Malai to follow up on. */
@@ -65,13 +70,23 @@ interface QuizPanelProps {
   onFailed?: (request: string, message: string) => void;
   /** Every answer of the current quiz was submitted. */
   onFinished?: (outcome: QuizOutcome) => void;
-  /** The subject a new quiz is saved under (Resources > Quizzes). */
+  /**
+   * "quiz": a quick one-time check that lives in its chat — not saved, no
+   * explanations. "practice": a longer test, saved with its attempts
+   * (Resources > Practice tests), with explanations and worked steps.
+   */
+  kind?: QuizKind;
+  /** The subject a new practice test is saved under (Resources > Practice tests). */
   subjectId?: string | null;
-  /** The Malai chat it is taken in; a quiz with no subject is listed in its menu. */
+  /** The Malai chat it is taken in; a test with no subject is listed in its menu. */
   chatId?: string | null;
-  /** Re-attempt this saved quiz: no form, attempts are added to it. */
+  /** Re-attempt this saved practice test: no form, attempts are added to it. */
   saved?: SavedQuiz;
 }
+
+const NOUN: Record<QuizKind, string> = { quiz: "quiz", practice: "practice test" };
+const MAX_COUNT: Record<QuizKind, number> = { quiz: MAX_QUIZ_QUESTIONS, practice: MAX_PRACTICE_QUESTIONS };
+const DEFAULT_COUNT: Record<QuizKind, number> = { quiz: 5, practice: 15 };
 
 type Verdict = QuizGrade["verdict"];
 
@@ -108,10 +123,10 @@ function fmtNumber(x: number): string {
   return Number.isInteger(x) ? String(x) : String(Number(x.toPrecision(6)));
 }
 
-/** The question count typed in the form, or null when it is not 1..MAX. */
-function parseCount(raw: string): number | null {
+/** The question count typed in the form, or null when it is not 1..max. */
+function parseCount(raw: string, max: number): number | null {
   const n = Number(raw.trim());
-  return Number.isInteger(n) && n >= 1 && n <= MAX_QUIZ_QUESTIONS ? n : null;
+  return Number.isInteger(n) && n >= 1 && n <= max ? n : null;
 }
 
 function typesLabel(types: QuizQuestionType[]): string {
@@ -150,12 +165,15 @@ export default function QuizPanel({
   onStarted,
   onFailed,
   onFinished,
+  kind = "quiz",
   subjectId = null,
   chatId = null,
   saved,
 }: QuizPanelProps) {
+  const noun = NOUN[kind];
+  const maxCount = MAX_COUNT[kind];
   // The form. The count is kept as typed so the box can be cleared and retyped.
-  const [countText, setCountText] = useState("5");
+  const [countText, setCountText] = useState(String(DEFAULT_COUNT[kind]));
   const [types, setTypes] = useState<QuizQuestionType[]>(ALL_TYPES);
   const [prompt, setPrompt] = useState("");
   const [formOpen, setFormOpen] = useState(!saved);
@@ -182,7 +200,7 @@ export default function QuizPanel({
   /** The preset already acted on: a remount or a re-run must not write it twice. */
   const usedPreset = useRef<number | null>(null);
 
-  const count = parseCount(countText);
+  const count = parseCount(countText, maxCount);
 
   // Follows the saved choice (changed here, in Settings, or pulled from the account).
   useEffect(() => setQuizModel(savedQuizModel), [savedQuizModel]);
@@ -202,14 +220,14 @@ export default function QuizPanel({
   useEffect(() => {
     if (!preset || usedPreset.current === preset.nonce) return;
     usedPreset.current = preset.nonce;
-    setCountText(String(preset.count));
+    setCountText(String(Math.min(preset.count, maxCount)));
     setTypes(preset.types);
     setPrompt(preset.prompt);
     // Asked for in the chat: the model the chat is set to writes it.
     const chatModel = loadModelSettings().mode;
     setQuizModel(chatModel);
     if (offline) {
-      if (preset.request) onFailed?.(preset.request, "Quizzes need the live backend, which isn't reachable right now.");
+      if (preset.request) onFailed?.(preset.request, `A ${noun} needs the live backend, which isn't reachable right now.`);
       return;
     }
     void generate({ count: preset.count, types: preset.types, prompt: preset.prompt }, preset.request, chatModel);
@@ -231,6 +249,7 @@ export default function QuizPanel({
           ...scope,
           count: settings.count,
           types: settings.types,
+          kind,
           attempt,
           ...(settings.prompt.trim() ? { prompt: settings.prompt.trim() } : {}),
           ...(quizModelHeaders(model) ? { use_chosen_model: true } : {}),
@@ -242,19 +261,23 @@ export default function QuizPanel({
       setResults({});
       setGradeErrors({});
       if (res.refused) {
-        const message = res.message ?? "Couldn't write a quiz from this material yet.";
+        const message = res.message ?? `Couldn't write a ${noun} from this material yet.`;
         setQuiz(null);
         setError(message);
         if (request) onFailed?.(request, message);
       } else {
         setQuiz(res);
         setWritten(settings);
-        savedId.current = saveQuiz({
-          subjectId,
-          chatId,
-          questions: res.questions,
-          title: settings.prompt.trim() || res.questions[0]?.prompt.slice(0, 80) || "Quiz",
-        });
+        // Only practice tests are saved; a quiz is a one-time check in its chat.
+        savedId.current =
+          kind === "practice"
+            ? saveQuiz({
+                subjectId,
+                chatId,
+                questions: res.questions,
+                title: settings.prompt.trim() || res.questions[0]?.prompt.slice(0, 80) || "Practice test",
+              })
+            : null;
         setFormOpen(false);
         if (request) onStarted?.(request, res.questions.length);
       }
@@ -299,21 +322,25 @@ export default function QuizPanel({
   useEffect(() => {
     if (!done || reported.current === attempt) return;
     reported.current = attempt;
-    if (savedId.current) {
-      addAttempt(savedId.current, {
-        answers,
-        results,
+    // Progress is recorded for practice tests only; a quiz's score goes to its chat.
+    if (kind === "practice") {
+      if (savedId.current) {
+        addAttempt(savedId.current, {
+          answers,
+          results,
+          score: Math.round(score * 10) / 10,
+          total: questions.length,
+        });
+      }
+      void pushQuizAttempt({
+        resourceId: scope.video_id ?? null,
+        subjectId: subjectId ?? saved?.subjectId ?? null,
         score: Math.round(score * 10) / 10,
         total: questions.length,
       });
     }
-    void pushQuizAttempt({
-      resourceId: scope.video_id ?? null,
-      subjectId: null,
-      score: Math.round(score * 10) / 10,
-      total: questions.length,
-    });
     onFinished?.({
+      kind,
       count: questions.length,
       score: Math.round(score * 10) / 10,
       toReview: questions.filter((q) => results[q.id].score < 1).map((q) => q.prompt.slice(0, 280)),
@@ -324,7 +351,7 @@ export default function QuizPanel({
   if (offline) {
     return (
       <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700">
-        Quizzes need the live backend, which isn&apos;t reachable right now.
+        {kind === "practice" ? "Practice tests" : "Quizzes"} need the live backend, which isn&apos;t reachable right now.
       </div>
     );
   }
@@ -337,14 +364,19 @@ export default function QuizPanel({
       {formOpen || !quiz ? (
         <form
           className="rounded-2xl border border-gray-200 bg-gray-50/70 p-4"
-          aria-label="New quiz"
+          aria-label={`New ${noun}`}
           onSubmit={(e) => {
             e.preventDefault();
             if (count !== null && !loading) void generate({ count, types, prompt });
           }}
         >
-          <h3 className="text-sm font-semibold text-gray-900">New quiz</h3>
+          <h3 className="text-sm font-semibold text-gray-900">New {noun}</h3>
           <p className="mt-0.5 text-xs text-gray-500">{sourceNote}</p>
+          <p className="mt-1 text-xs text-gray-500">
+            {kind === "practice"
+              ? "A longer, conclusive test. Every answer comes with an explanation (and worked steps where there is something to work out). Your attempts and progress are saved."
+              : "A quick one-time check. Answers are marked right or wrong, without explanations; the score is noted in this chat."}
+          </p>
 
           <div className="mt-4 grid gap-4 sm:grid-cols-[8rem_1fr]">
             <label className="block">
@@ -353,14 +385,14 @@ export default function QuizPanel({
                 type="number"
                 inputMode="numeric"
                 min={1}
-                max={MAX_QUIZ_QUESTIONS}
+                max={maxCount}
                 step={1}
                 value={countText}
                 onChange={(e) => setCountText(e.target.value)}
                 onBlur={() => {
                   const n = Math.round(Number(countText));
                   if (Number.isFinite(n) && countText.trim() !== "") {
-                    setCountText(String(Math.min(MAX_QUIZ_QUESTIONS, Math.max(1, n))));
+                    setCountText(String(Math.min(maxCount, Math.max(1, n))));
                   }
                 }}
                 disabled={loading}
@@ -369,7 +401,7 @@ export default function QuizPanel({
                 className={`${field} tabular-nums ${count === null ? "border-red-300" : ""}`}
               />
               <span id="quiz-count-help" className={`mt-1 block text-[11px] ${count === null ? "text-red-600" : "text-gray-400"}`}>
-                1 to {MAX_QUIZ_QUESTIONS}
+                1 to {maxCount}
               </span>
             </label>
 
@@ -451,7 +483,7 @@ export default function QuizPanel({
               className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-4 py-2 text-sm font-medium text-white shadow-sm shadow-violet-600/20 transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {loading && <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-t-transparent" aria-hidden="true" />}
-              {loading ? "Writing quiz…" : "Generate quiz"}
+              {loading ? `Writing ${noun}…` : kind === "practice" ? "Generate test" : "Generate quiz"}
             </button>
           </div>
         </form>
@@ -468,7 +500,7 @@ export default function QuizPanel({
             disabled={loading}
             className="shrink-0 rounded-lg border border-violet-200 bg-white px-3 py-1 text-xs font-medium text-violet-700 transition hover:bg-violet-50"
           >
-            New quiz
+            New {noun}
           </button>}
         </div>
       )}
@@ -480,7 +512,7 @@ export default function QuizPanel({
       )}
 
       {loading && (
-        <div className="space-y-2" role="status" aria-label="Writing quiz">
+        <div className="space-y-2" role="status" aria-label={`Writing ${noun}`}>
           {[0, 1, 2].map((i) => (
             <div key={i} className="h-24 animate-pulse rounded-xl bg-gray-100" />
           ))}
@@ -514,6 +546,7 @@ export default function QuizPanel({
             {questions.map((q, i) => (
               <QuestionCard
                 key={`${attempt}-${q.id}`}
+                kind={kind}
                 n={i + 1}
                 q={q}
                 answer={answers[q.id] ?? ""}
@@ -532,7 +565,11 @@ export default function QuizPanel({
             <div className="rounded-xl border border-gray-200 bg-white p-3 text-center text-sm text-gray-700">
               Finished: <span className="font-semibold">{fmtNumber(Math.round(score * 10) / 10)}</span> out of{" "}
               {questions.length}.{" "}
-              {saved ? "Saved to this quiz's attempts." : <>Saved under Resources &gt; Quizzes. Use <span className="font-medium">New quiz</span> for a different set.</>}
+              {kind === "quiz"
+                ? "Your score is noted in this chat."
+                : saved
+                  ? "Saved to this test's attempts."
+                  : <>Saved under Resources &gt; Practice tests, with your progress. Use <span className="font-medium">New practice test</span> for a different set.</>}
             </div>
           )}
         </>
@@ -548,6 +585,8 @@ export default function QuizPanel({
 }
 
 interface QuestionCardProps {
+  /** Practice tests show explanations and worked steps; quizzes do not. */
+  kind?: QuizKind;
   n: number;
   q: QuizQuestion;
   answer: string;
@@ -561,6 +600,7 @@ interface QuestionCardProps {
 }
 
 export function QuestionCard({
+  kind = "quiz",
   n,
   q,
   answer,
@@ -676,17 +716,19 @@ export function QuestionCard({
         </div>
       )}
 
-      {result && <Reveal q={q} result={result} onSeek={onSeek} openDoc={openDoc} />}
+      {result && <Reveal kind={kind} q={q} result={result} onSeek={onSeek} openDoc={openDoc} />}
     </li>
   );
 }
 
 function Reveal({
+  kind,
   q,
   result,
   onSeek,
   openDoc,
 }: {
+  kind: QuizKind;
   q: QuizQuestion;
   result: Result;
   onSeek: (startMs: number) => void;
@@ -720,7 +762,25 @@ function Reveal({
           <MarkdownBody text={q.model_answer} />
         </div>
       )}
-      {q.explanation && <MarkdownBody text={q.explanation} className="mt-1 text-gray-700" />}
+      {kind === "practice" && q.steps && q.steps.length > 0 && (
+        <div className="mt-2 rounded-md bg-white/70 p-2 text-gray-800">
+          <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-gray-500">Step-by-step solution</p>
+          <ol className="flex flex-col gap-1">
+            {q.steps.map((s, i) => (
+              <li key={i} className="flex gap-2">
+                <span className="mt-0.5 w-5 shrink-0 text-xs font-semibold tabular-nums text-gray-400">{i + 1}.</span>
+                <MarkdownBody text={s} className="min-w-0 flex-1" />
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+      {kind === "practice" && q.explanation && (
+        <div className="mt-2 rounded-md bg-white/70 p-2 text-gray-800">
+          <p className="mb-0.5 text-[11px] font-medium uppercase tracking-wide text-gray-500">Explanation</p>
+          <MarkdownBody text={q.explanation} />
+        </div>
+      )}
       {q.citation ? (
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
           <span className="text-[11px] text-gray-500">Source</span>

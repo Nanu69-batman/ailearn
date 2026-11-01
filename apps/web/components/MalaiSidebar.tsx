@@ -108,7 +108,8 @@ function ChatMenu({
   const top = Math.max(8, Math.min(anchor.top, window.innerHeight - 296));
   const left = anchor.right + 6 + 224 <= window.innerWidth - 8 ? anchor.right + 6 : anchor.left - 230;
   const router = useRouter();
-  // A chat in no subject lists its quizzes here (a subject's go under Resources).
+  // A chat in no subject lists its practice tests here (a subject's go under
+  // Resources). Quizzes are one-time and live in the chat itself.
   const quizzes = useSavedQuizzes().filter((q) => q.chatId === chat.id && !chat.subjectId);
   const item = "flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition focus:outline-none";
 
@@ -149,7 +150,7 @@ function ChatMenu({
           )}
           {quizzes.length > 0 && (
             <div className="my-1 border-y border-gray-100 py-1">
-              <p className="px-3 pb-0.5 pt-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">Quizzes</p>
+              <p className="px-3 pb-0.5 pt-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">Practice tests</p>
               {quizzes.map((q) => (
                 <button
                   key={q.id}
@@ -486,13 +487,15 @@ function ResourcesFlyout({
             className="flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition hover:bg-violet-50 focus:bg-violet-50 focus:outline-none"
           >
             <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-violet-100 text-sm" aria-hidden="true">📝</span>
-            <span className="flex-1 text-sm font-medium text-gray-900">Quizzes</span>
+            <span className="flex-1 text-sm font-medium text-gray-900">Practice tests</span>
             <span className="text-xs tabular-nums text-gray-400">{quizzes.length}</span>
             <Icon d={quizzesOpen ? "M18 15l-6-6-6 6" : "M6 9l6 6 6-6"} className="h-4 w-4 text-gray-400" />
           </button>
           {quizzesOpen &&
             (quizzes.length === 0 ? (
-              <p className="px-3 py-2 text-xs text-gray-500">No quizzes yet. Quizzes you take in this subject are saved here.</p>
+              <p className="px-3 py-2 text-xs text-gray-500">
+                No practice tests yet. Open a chat in this subject and choose Practice test; each one is saved here with its attempts and progress.
+              </p>
             ) : (
               quizzes.map((q) => {
                 const last = q.attempts[q.attempts.length - 1];

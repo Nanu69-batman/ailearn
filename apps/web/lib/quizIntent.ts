@@ -1,4 +1,4 @@
-import { MAX_QUIZ_QUESTIONS, type QuizQuestionType } from "./api";
+import { MAX_PRACTICE_QUESTIONS, MAX_QUIZ_QUESTIONS, type QuizKind, type QuizQuestionType } from "./api";
 
 /**
  * Is this chat message asking for a quiz? "quiz me on entropy", "give me 5
@@ -13,7 +13,11 @@ export interface QuizIntent {
   types: QuizQuestionType[];
   /** The message itself: its topic and wording steer the quiz. */
   prompt: string;
+  /** "practice test", "mock test", "full test": a practice test, else a quiz. */
+  kind: QuizKind;
 }
+
+const PRACTICE_RE = /\b(?:practice|mock|full|full[- ]length|sample|exam)\s+(?:tests?|papers?|exams?)\b/i;
 
 const ALL_TYPES: QuizQuestionType[] = ["mcq", "numerical", "subjective"];
 
@@ -42,13 +46,15 @@ export function detectQuizIntent(text: string): QuizIntent | null {
   const t = text.trim();
   if (!t || t.startsWith("/") || t.length > 400) return null;
   if (!PATTERNS.some((re) => re.test(t))) return null;
-  return { count: quizCount(t), types: quizTypes(t), prompt: t };
+  const kind: QuizKind = PRACTICE_RE.test(t) ? "practice" : "quiz";
+  return { count: quizCount(t, kind), types: quizTypes(t), prompt: t, kind };
 }
 
-function quizCount(t: string): number {
+function quizCount(t: string, kind: QuizKind): number {
   const m = new RegExp(String.raw`\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|few|couple)\s+(?:of\s+)?(?:more\s+)?(?:[\w-]+\s+){0,2}?(?:questions?|problems?|mcqs?|numericals?|exercises?)\b`, "i").exec(t);
   const raw = m?.[1]?.toLowerCase();
   const n = raw ? (Number.isNaN(Number(raw)) ? WORD_NUMBERS[raw] : Number(raw)) : undefined;
+  if (kind === "practice") return Math.min(MAX_PRACTICE_QUESTIONS, Math.max(1, n ?? 15));
   return Math.min(MAX_QUIZ_QUESTIONS, Math.max(1, n ?? 5));
 }
 

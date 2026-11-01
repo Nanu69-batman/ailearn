@@ -162,7 +162,7 @@ export default function ProfileView() {
 
       <section className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat label="Chats" value={String(chats.length)} />
-        <Stat label="Quizzes" value={String(quizzes.length)} />
+        <Stat label="Practice tests" value={String(quizzes.length)} />
         <Stat label="Attempts" value={String(attempts.length)} />
         <Stat label="Avg score" value={avg === null ? "—" : `${avg}%`} />
       </section>

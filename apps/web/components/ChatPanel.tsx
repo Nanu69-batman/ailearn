@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import type { ChatMessage, ChatMode, ChatResponse, LiveFrameCapture } from "../lib/api";
+import type { ChatMessage, ChatMode, ChatResponse, LiveFrameCapture, QuizKind } from "../lib/api";
 import {
   ApiError,
   formatApiError,
@@ -201,7 +201,7 @@ export default function ChatPanel({
   const [historyError, setHistoryError] = useState<string | null>(null);
   /** Set by /quiz or a message asking for one: QuizPanel writes it now. */
   const [quizPreset, setQuizPreset] = useState<QuizPreset | null>(null);
-  const [tab, setTab] = useState<"chat" | "quiz">("chat");
+  const [tab, setTab] = useState<"chat" | QuizKind>("chat");
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   // The answer as it is being written (POST /chat/stream). Only a preview: the
@@ -442,7 +442,7 @@ export default function ChatPanel({
       if (!offline) onAsk?.(threadId, quizAsk.request);
       setQuizPreset({ ...quizAsk, nonce: Date.now() });
       setInput("");
-      setTab("quiz");
+      setTab(quizAsk.kind === "practice" ? "practice" : "quiz");
       return;
     }
     const mode: ChatMode = cmd?.command.mode ?? "qa";
@@ -638,12 +638,15 @@ export default function ChatPanel({
   // A quiz asked for in the chat is recorded there: that it was written, and
   // its score once every answer is in. Not answering is fine; the chat
   // carries on either way.
-  async function quizStarted(request: string, count: number): Promise<void> {
-    const fallback = `I've made you a ${count}-question quiz. It's open in the Quiz tab — answer it whenever you like.`;
+  async function quizStarted(request: string, count: number, kind: QuizKind = "quiz"): Promise<void> {
+    const fallback =
+      kind === "practice"
+        ? `I've made you a ${count}-question practice test. It's open in the Practice test tab.`
+        : `I've made you a ${count}-question quiz. It's open in the Quiz tab — answer it whenever you like.`;
     if (offline) return localNote(fallback);
     try {
       const lines = await postQuizNote(
-        { session_id: sessionId, thread_id: threadId, event: "started", request, count },
+        { session_id: sessionId, thread_id: threadId, event: "started", request, count, kind },
       );
       // The learner's line is already on screen.
       setMessages((prev) => [...prev, ...lines.filter((m) => m.role === "assistant")]);
@@ -652,12 +655,9 @@ export default function ChatPanel({
     }
   }
 
-  function quizFailed(_request: string, message: string): void {
-    localNote(`I couldn't write that quiz: ${message}`, true);
-  }
-
   async function quizFinished(outcome: QuizOutcome): Promise<void> {
-    const fallback = `**Quiz completed** — you scored **${outcome.score} / ${outcome.count}**.`;
+    const label = outcome.kind === "practice" ? "Practice test" : "Quiz";
+    const fallback = `**${label} completed** — you scored **${outcome.score} / ${outcome.count}**.`;
     if (offline) return localNote(fallback);
     try {
       const lines = await postQuizNote(
@@ -668,6 +668,7 @@ export default function ChatPanel({
           count: outcome.count,
           score: outcome.score,
           to_review: outcome.toReview,
+          kind: outcome.kind,
         },
       );
       setMessages((prev) => [...prev, ...lines]);
@@ -694,7 +695,7 @@ export default function ChatPanel({
       <div className="flex shrink-0 items-center gap-2 border-b border-gray-100 px-3 py-2.5">
         {headerLead}
         <div className="flex shrink-0 rounded-full bg-gray-100 p-0.5" role="tablist" aria-label="Tutor view">
-          {(["chat", "quiz"] as const).map((t) => (
+          {(["chat", "quiz", "practice"] as const).map((t) => (
             <button
               key={t}
               type="button"
@@ -705,7 +706,7 @@ export default function ChatPanel({
                 tab === t ? "bg-white text-violet-700 shadow-sm" : "text-gray-500 hover:text-gray-800"
               }`}
             >
-              {t === "chat" ? "Chat" : "Quiz"}
+              {t === "chat" ? "Chat" : t === "quiz" ? "Quiz" : "Practice test"}
             </button>
           ))}
         </div>
@@ -714,29 +715,35 @@ export default function ChatPanel({
         {headerActions}
       </div>
 
-      {/* Both stay mounted so switching tabs keeps the chat and an unfinished quiz. */}
-      <div
-        className={tab === "quiz" ? `min-h-0 flex-1 overflow-y-auto px-4 py-3 ${fill ? "" : "max-h-[60vh]"}` : "hidden"}
-        role="tabpanel"
-        aria-label="Quiz"
-      >
-        <QuizPanel
-          sessionId={sessionId}
-          getCurrentTimeMs={getCurrentTimeMs}
-          subjectId={subjectId}
-          scope={{ video_id: videoId, completed_resource_ids: completedResourceIds, thread_id: threadId }}
-          sourceNote={`From this ${isVideo ? "video up to where you are" : "material"}${
-            extraDone > 0 ? ` + ${extraDone} completed material${extraDone === 1 ? "" : "s"}` : ""
-          }.`}
-          onSeek={onSeek}
-          openDoc={openDoc}
-          offline={offline || backendUnreachable}
-          preset={quizPreset}
-          onStarted={(request, count) => void quizStarted(request, count)}
-          onFailed={quizFailed}
-          onFinished={(o) => void quizFinished(o)}
-        />
-      </div>
+      {/* All stay mounted so switching tabs keeps the chat and an unfinished quiz or test. */}
+      {(["quiz", "practice"] as const).map((k) => (
+        <div
+          key={k}
+          className={tab === k ? `min-h-0 flex-1 overflow-y-auto px-4 py-3 ${fill ? "" : "max-h-[60vh]"}` : "hidden"}
+          role="tabpanel"
+          aria-label={k === "quiz" ? "Quiz" : "Practice test"}
+        >
+          <QuizPanel
+            kind={k}
+            sessionId={sessionId}
+            getCurrentTimeMs={getCurrentTimeMs}
+            subjectId={subjectId}
+            scope={{ video_id: videoId, completed_resource_ids: completedResourceIds, thread_id: threadId }}
+            sourceNote={`From this ${isVideo ? "video up to where you are" : "material"}${
+              extraDone > 0 ? ` + ${extraDone} completed material${extraDone === 1 ? "" : "s"}` : ""
+            }.`}
+            onSeek={onSeek}
+            openDoc={openDoc}
+            offline={offline || backendUnreachable}
+            preset={(quizPreset?.kind ?? "quiz") === k ? quizPreset : null}
+            onStarted={(request, count) => void quizStarted(request, count, k)}
+            onFailed={(_request, message) =>
+              localNote(`I couldn't write that ${k === "practice" ? "practice test" : "quiz"}: ${message}`, true)
+            }
+            onFinished={(o) => void quizFinished(o)}
+          />
+        </div>
+      ))}
 
       <div className={tab === "chat" ? "flex min-h-0 flex-1 flex-col" : "hidden"} role="tabpanel" aria-label="Chat">
         <div ref={scrollRef} className={`min-h-0 flex-1 overflow-y-auto px-4 pb-3 ${fill ? "" : "max-h-[60vh]"}`}>

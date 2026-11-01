@@ -23,7 +23,7 @@ import re
 from collections.abc import Sequence
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.chat.completed import (
     COMPLETED_K,
@@ -45,11 +45,19 @@ log = logging.getLogger(__name__)
 
 QuestionType = Literal["mcq", "numerical", "subjective"]
 ALL_TYPES: tuple[QuestionType, ...] = ("mcq", "numerical", "subjective")
+#: "quiz": a quick one-time check, answers only (no explanations).
+#: "practice": a longer, conclusive test whose questions carry an explanation
+#: and, where the answer is worked out (maths, derivations), the steps.
+QuizKind = Literal["quiz", "practice"]
 
 #: Passages the quiz is written from. More than a chat answer: a quiz should
 #: range over the covered material, not one spot in it.
 QUIZ_K = 12
 MIN_QUESTIONS, MAX_QUESTIONS = 1, 20
+#: A practice test is bigger than a quiz.
+MAX_PRACTICE_QUESTIONS = 30
+#: Worked steps kept per practice question.
+MAX_STEPS = 12
 #: What the learner may type to steer a quiz ("only chapter 2", "harder").
 MAX_QUIZ_PROMPT = 500
 
@@ -64,6 +72,8 @@ SPEECH_SHARE = 0.7
 LESSON_ROW_LIMIT = 2_000
 #: A quiz is one long reply; give it more room than an agent step.
 QUIZ_MAX_TOKENS = 16_384
+#: A practice test is longer and carries explanations and worked steps.
+PRACTICE_MAX_TOKENS = 32_768
 
 QUIZ_REFUSAL_TEXT = (
     "There isn't enough covered material to quiz you on yet. Watch a little "
@@ -88,8 +98,9 @@ class QuizRequest(BaseModel):
     completed_resource_ids: list[Annotated[str, Field(max_length=64)]] = Field(
         default_factory=list, max_length=100
     )
-    count: int = Field(default=5, ge=MIN_QUESTIONS, le=MAX_QUESTIONS)
+    count: int = Field(default=5, ge=MIN_QUESTIONS, le=MAX_PRACTICE_QUESTIONS)
     types: list[QuestionType] = Field(default_factory=lambda: list(ALL_TYPES), max_length=3)
+    kind: QuizKind = "quiz"
     #: Bumped by "New quiz" so the same playhead does not return the same quiz.
     attempt: int = Field(default=0, ge=0, le=10_000)
     #: Optional learner instructions: a topic, a difficulty, a section.
@@ -108,6 +119,12 @@ class QuizRequest(BaseModel):
     #: fastest provider first.
     use_chosen_model: bool = False
 
+    @model_validator(mode="after")
+    def _quiz_size(self) -> QuizRequest:
+        if self.kind == "quiz" and self.count > MAX_QUESTIONS:
+            raise ValueError(f"a quiz has at most {MAX_QUESTIONS} questions")
+        return self
+
 
 class QuizQuestion(BaseModel):
     id: str
@@ -123,7 +140,11 @@ class QuizQuestion(BaseModel):
     #: subjective only: what a full-marks answer says.
     model_answer: str | None = None
     key_points: list[str] | None = None
+    #: Practice tests only; always empty in a quiz.
     explanation: str = ""
+    #: Practice tests only: the worked solution, one step per item, for a
+    #: question whose answer is worked out (a calculation, a derivation).
+    steps: list[str] | None = None
     #: The passage that supports the question. None only in a general quiz,
     #: which reads no materials and so has nothing to cite.
     citation: Citation | None = None
@@ -174,13 +195,14 @@ class QuizNoteRequest(BaseModel):
     event: Literal["started", "completed"]
     #: started: the learner's message that asked for the quiz.
     request: str | None = Field(default=None, max_length=1000)
-    count: int = Field(ge=1, le=MAX_QUESTIONS)
+    count: int = Field(ge=1, le=MAX_PRACTICE_QUESTIONS)
     #: completed: the total score (partial credit counts) and the questions
     #: the learner got wrong or only partly right, for Malai to follow up on.
-    score: float | None = Field(default=None, ge=0, le=MAX_QUESTIONS)
+    score: float | None = Field(default=None, ge=0, le=MAX_PRACTICE_QUESTIONS)
     to_review: list[Annotated[str, Field(max_length=300)]] = Field(
-        default_factory=list, max_length=MAX_QUESTIONS
+        default_factory=list, max_length=MAX_PRACTICE_QUESTIONS
     )
+    kind: QuizKind = "quiz"
 
 
 def _fmt_score(x: float) -> str:
@@ -190,18 +212,27 @@ def _fmt_score(x: float) -> str:
 def quiz_note_lines(req: QuizNoteRequest) -> list[tuple[str, str]]:
     """The (role, text) chat lines a quiz event adds to its chat."""
     n = req.count
+    practice = req.kind == "practice"
     if req.event == "started":
         lines: list[tuple[str, str]] = []
         if req.request and req.request.strip():
             lines.append(("user", req.request.strip()))
-        started = (
-            f"I've made you a {n}-question quiz. It's open in the quiz panel — "
-            "answer it whenever you like, or keep chatting here."
-        )
+        if practice:
+            started = (
+                f"I've made you a {n}-question practice test. It's open in the "
+                "panel and saved under Practice tests, where your attempts and "
+                "progress are kept."
+            )
+        else:
+            started = (
+                f"I've made you a {n}-question quiz. It's open in the quiz panel — "
+                "answer it whenever you like, or keep chatting here."
+            )
         lines.append(("assistant", started))
         return lines
     score = min(req.score or 0.0, float(n))
-    text = f"**Quiz completed** — you scored **{_fmt_score(score)} / {n}**."
+    label = "Practice test completed" if practice else "Quiz completed"
+    text = f"**{label}** — you scored **{_fmt_score(score)} / {n}**."
     review = [strip_citation_markers(q).strip() for q in req.to_review if q.strip()]
     if review:
         text += "\n\nWorth another look:\n" + "\n".join(f"- {q}" for q in review[:5])
@@ -237,17 +268,16 @@ QUIZ_SYSTEM = (
     "be conceptual or theoretical (what something means, why a step works, "
     "when a method applies, how two ideas relate), not reading or copying a "
     "formula; numericals may use screen passages.\n"
-    'Every question has "explanation" (1-2 sentences on why the answer is '
-    'right) and "chunk_id": the id of the ONE passage that supports it, copied '
-    "exactly from its tag. Spread the questions over different passages: no "
+    'Every question has "chunk_id": the id of the ONE passage that supports '
+    "it, copied exactly from its tag. Spread the questions over different passages: no "
     "passage supports more than two questions. Most questions must come from "
     'passages marked open="true" (the material the learner is studying now); '
     "the rest are from materials they already finished, as review. Write "
     "EXACTLY the number of each type asked for. "
     "Reply with ONLY a JSON object, no prose and no code fence: "
-    '{"questions": [{"type": ..., "prompt": ..., ..., "explanation": ..., '
-    '"chunk_id": ...}]}. In JSON strings write every LaTeX backslash doubled '
-    '(\\\\frac) and use no line breaks.'
+    '{"questions": [{"type": ..., "prompt": ..., ..., "chunk_id": ...}]}. '
+    "In JSON strings write every LaTeX backslash doubled "
+    "(\\\\frac) and use no line breaks."
 )
 
 #: A Malai chat in no subject reads no materials, so its quiz is written from
@@ -270,13 +300,33 @@ QUIZ_GENERAL_SYSTEM = (
     '- "subjective": a short explain/why/compare question. Give '
     '"model_answer" (2-4 sentences) and "key_points" (2-4 short phrases a good '
     "answer must contain).\n"
-    "At least half of all questions must be conceptual. Every question has "
-    '"explanation" (1-2 sentences on why the answer is right). Write EXACTLY '
+    "At least half of all questions must be conceptual. Write EXACTLY "
     "the number of each type asked for. Reply with ONLY a JSON object, no prose "
-    'and no code fence: {"questions": [{"type": ..., "prompt": ..., ..., '
-    '"explanation": ...}]}. In JSON strings write every LaTeX backslash doubled '
+    'and no code fence: {"questions": [{"type": ..., "prompt": ..., ...}]}. '
+    "In JSON strings write every LaTeX backslash doubled "
     '(\\\\frac) and use no line breaks.'
 )
+
+#: Appended to either system prompt: what kind of test this is.
+QUIZ_KIND_RULE = (
+    "\nThis is a quick quiz: write NO explanations and NO worked solutions "
+    '(no "explanation" or "steps" fields).'
+)
+PRACTICE_KIND_RULE = (
+    "\nThis is a PRACTICE TEST: a longer, conclusive test of the material, "
+    "ranging over all of it, from the basics to exam-level questions. Every "
+    'question has "explanation": 2-4 sentences on why the answer is right '
+    "(for an mcq, also why the tempting wrong options are wrong). A question "
+    "whose answer is worked out (a calculation, derivation, proof or "
+    'multi-step reasoning, as in maths) ALSO has "steps": the full worked '
+    "solution as a JSON list of short strings, one step each, in order, "
+    "showing the working (LaTeX allowed) and ending with the final answer. "
+    'Leave out "steps" for a question with nothing to work out.'
+)
+
+
+def kind_rule(kind: str) -> str:
+    return PRACTICE_KIND_RULE if kind == "practice" else QUIZ_KIND_RULE
 
 #: The learner's own words for the quiz, when they gave any.
 LEARNER_INSTRUCTIONS_RULE = (
@@ -451,13 +501,21 @@ def _number(v) -> float | None:
 
 
 def validate_questions(
-    raw: dict | None, passages: Sequence, rng: random.Random, *, general: bool = False
+    raw: dict | None,
+    passages: Sequence,
+    rng: random.Random,
+    *,
+    general: bool = False,
+    kind: str = "quiz",
 ) -> list[QuizQuestion]:
     """Keep well-formed questions whose ``chunk_id`` is a retrieved passage.
 
     ``general`` (a quiz from no materials) is the one case without a citation:
     any ``chunk_id`` the model writes there is ignored, never trusted.
+    A quiz keeps no explanation or steps even if the model wrote them; a
+    practice test keeps both.
     """
+    practice = kind == "practice"
     # Lazy: app.chat.service imports the chat modules this one sits beside.
     from app.chat.service import _passage_to_citation
 
@@ -480,9 +538,17 @@ def validate_questions(
             "id": f"q{len(out) + 1}",
             "type": kind,
             "prompt": prompt,
-            "explanation": _text(item.get("explanation"), 1000),
+            "explanation": _text(item.get("explanation"), 1500) if practice else "",
             "citation": _passage_to_citation(passage) if passage is not None else None,
         }
+        if practice:
+            raw_steps = item.get("steps")
+            steps = [
+                _text(s, 600) for s in (raw_steps if isinstance(raw_steps, list) else [])
+            ]
+            steps = [s for s in steps if s][:MAX_STEPS]
+            if steps:
+                q["steps"] = steps
         if kind == "mcq":
             opts = [_text(o, 300) for o in item.get("options") or []]
             idx = item.get("answer_index")
@@ -576,7 +642,7 @@ class QuizService:
 
     async def _replies(
         self, system: str, user_prompt: str, passages: Sequence, mode: str,
-        chosen_first: bool = False,
+        chosen_first: bool = False, kind: str = "quiz",
     ):
         """Each configured model's reply in turn, fastest first.
 
@@ -596,7 +662,7 @@ class QuizService:
         async def agent() -> str:
             return await self._agent.complete_text(
                 system, user_prompt, json_mode=True,
-                max_tokens=QUIZ_MAX_TOKENS,
+                max_tokens=PRACTICE_MAX_TOKENS if kind == "practice" else QUIZ_MAX_TOKENS,
             )
 
         order = [chat_llm]
@@ -699,7 +765,9 @@ class QuizService:
             )
             lesson = apply_strict_timestamp(lesson, t_ms, "quiz")
         if lesson:
-            passages = lesson_sample(lesson, req.attempt)
+            # A practice test ranges over more of the lesson than a quiz.
+            budget = QUIZ_CHAR_BUDGET * 3 // 2 if req.kind == "practice" else QUIZ_CHAR_BUDGET
+            passages = lesson_sample(lesson, req.attempt, budget)
             devtrace.emit(
                 "sample", "end", title="Sample the lesson for the prompt",
                 data={"watched_chunks": len(lesson), "sampled": len(passages),
@@ -712,7 +780,8 @@ class QuizService:
             topic = (req.prompt or "").strip()
             passages = await retrieval.retrieve(
                 f"{topic} {COVERAGE_QUERY}" if topic else COVERAGE_QUERY,
-                session.course_id, allowed, t_ms, k=QUIZ_K,
+                session.course_id, allowed, t_ms,
+                k=QUIZ_K * 2 if req.kind == "practice" else QUIZ_K,
                 focus_resource_id=req.video_id,
             )
             passages = apply_strict_timestamp(passages, t_ms, "quiz")
@@ -739,11 +808,12 @@ class QuizService:
             passages, req.count, req.types, req.attempt, req.video_id, req.prompt
         )
         async for text in self._replies(
-            QUIZ_SYSTEM, prompt, passages, "quiz_json", req.use_chosen_model
+            QUIZ_SYSTEM + kind_rule(req.kind), prompt, passages, "quiz_json",
+            req.use_chosen_model, req.kind,
         ):
             rng = random.Random(f"{req.session_id}:{t_ms}:{req.attempt}")
             raw = parse_json_object(text)
-            questions = validate_questions(raw, passages, rng)
+            questions = validate_questions(raw, passages, rng, kind=req.kind)
             proposed = raw.get("questions") if isinstance(raw, dict) else None
             devtrace.emit(
                 "validate", "end" if questions else "error",
@@ -781,10 +851,13 @@ class QuizService:
             req.count, req.types, req.attempt, req.prompt, history
         )
         async for text in self._replies(
-            QUIZ_GENERAL_SYSTEM, prompt, [], "quiz_json", req.use_chosen_model
+            QUIZ_GENERAL_SYSTEM + kind_rule(req.kind), prompt, [], "quiz_json",
+            req.use_chosen_model, req.kind,
         ):
             rng = random.Random(f"{req.session_id}:general:{req.attempt}")
-            questions = validate_questions(parse_json_object(text), [], rng, general=True)
+            questions = validate_questions(
+                parse_json_object(text), [], rng, general=True, kind=req.kind
+            )
             if questions:
                 return QuizResponse(questions=questions[: req.count], current_time_ms=t_ms)
             log.warning("quiz: no valid general questions (%d chars)", len(text or ""))

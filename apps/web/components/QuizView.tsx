@@ -82,18 +82,19 @@ function Analytics({ quiz, attempts }: { quiz: SavedQuiz; attempts: QuizAttempt[
 }
 
 export default function QuizView() {
-  const params = useParams<{ quizId: string }>();
+  const params = useParams<{ testId?: string; quizId?: string }>();
   const router = useRouter();
   const quizzes = useSavedQuizzes();
   const { subjects } = useSubjects();
-  const quiz = quizzes.find((q) => q.id === decodeURIComponent(params.quizId));
+  const id = decodeURIComponent(params.testId ?? params.quizId ?? "");
+  const quiz = quizzes.find((q) => q.id === id);
   const [run, setRun] = useState(0);
   const [openAttempt, setOpenAttempt] = useState<string | null>(null);
 
   if (!quiz) {
     return (
       <div className="mx-auto max-w-3xl p-6 text-sm text-gray-600">
-        This quiz isn&apos;t saved in this browser. <Link href={MALAI_PATH} className="text-violet-700 underline">Back to Malai</Link>
+        This practice test isn&apos;t saved in this browser. <Link href={MALAI_PATH} className="text-violet-700 underline">Back to Malai</Link>
       </div>
     );
   }
@@ -107,7 +108,7 @@ export default function QuizView() {
           <div className="min-w-0 flex-1">
             {subject && (
               <Link href={malaiSubjectPath(subject.id)} className="text-xs font-medium text-violet-700 hover:underline">
-                {subject.name} · Quizzes
+                {subject.name} · Practice tests
               </Link>
             )}
             <h1 className="mt-1 text-xl font-bold text-gray-900">{quiz.title}</h1>
@@ -125,13 +126,13 @@ export default function QuizView() {
           <button
             type="button"
             onClick={() => {
-              if (!window.confirm("Delete this quiz and all its attempts?")) return;
+              if (!window.confirm("Delete this practice test and all its attempts?")) return;
               deleteQuiz(quiz.id);
               router.push(subject ? malaiSubjectPath(subject.id) : MALAI_PATH);
             }}
             className="rounded-xl border border-gray-200 px-3 py-2 text-sm text-gray-600 hover:border-red-200 hover:bg-red-50 hover:text-red-700"
           >
-            Delete quiz
+            Delete test
           </button>
         </header>
 
@@ -146,6 +147,7 @@ export default function QuizView() {
             <QuizPanel
               key={run}
               saved={quiz}
+              kind="practice"
               sessionId=""
               getCurrentTimeMs={() => 0}
               scope={{}}
@@ -210,6 +212,7 @@ export default function QuizView() {
                           {quiz.questions.map((q, i) => (
                             <QuestionCard
                               key={q.id}
+                              kind="practice"
                               n={i + 1}
                               q={q}
                               answer={shown.answers[q.id] ?? ""}
