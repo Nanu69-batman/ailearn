@@ -6,7 +6,8 @@ import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 /**
  * Which models answer the learner, picked under the chat input.
  *
- * - Four built-in modes: free models on the app's key.
+ * - Built-in modes on the app's keys: Gemini 3.5 Flash Lite (the default),
+ *   then four modes of free OpenRouter models.
  * - Any number of the learner's own keys (BYOK), each for a provider. From
  *   each key the learner turns individual models on in Settings; only the
  *   modes and models that are turned on appear in the chooser.
@@ -17,10 +18,11 @@ import { getSupabaseBrowserClient } from "@/lib/supabase/client";
  * also saved to their own Supabase row (`user_settings`, owner-only RLS) so
  * they follow the account.
  */
-export type ModelMode = "auto" | "fast" | "balanced" | "powerful" | "custom";
+export type ModelMode = "gemini" | "auto" | "fast" | "balanced" | "powerful" | "custom";
 export type BuiltInMode = Exclude<ModelMode, "custom">;
 
 export const MODEL_MODES: { id: BuiltInMode; label: string; hint: string }[] = [
+  { id: "gemini", label: "Gemini 3.5 Flash Lite", hint: "Google's fast model (default)" },
   { id: "auto", label: "Auto", hint: "Picks a free model for you" },
   { id: "fast", label: "Fast", hint: "Quick answers from lighter models" },
   { id: "balanced", label: "Balanced", hint: "Good answers at a good speed" },
@@ -78,8 +80,10 @@ export interface ModelSettings {
 }
 
 const STORE_KEY = "malai:model-settings";
+/** Settings saved before this version defaulted to Auto; they move to Gemini once. */
+const SETTINGS_VERSION = 2;
 const DEFAULTS: ModelSettings = {
-  mode: "auto",
+  mode: "gemini",
   keys: [],
   enabled: [],
   disabledModes: [],
@@ -167,8 +171,10 @@ function clean(raw: unknown): ModelSettings {
     ? (r.disabledModes as unknown[]).filter((m): m is BuiltInMode => BUILT_IN_IDS.includes(m as BuiltInMode))
     : [];
 
-  const modes: ModelMode[] = ["auto", "fast", "balanced", "powerful", "custom"];
-  let mode: ModelMode = modes.includes(r.mode as ModelMode) ? (r.mode as ModelMode) : "auto";
+  const modes: ModelMode[] = ["gemini", "auto", "fast", "balanced", "powerful", "custom"];
+  let mode: ModelMode = modes.includes(r.mode as ModelMode) ? (r.mode as ModelMode) : "gemini";
+  // Auto was the old default: settings from before Gemini existed start on Gemini.
+  if (r.v !== SETTINGS_VERSION && mode === "auto") mode = "gemini";
   let model = str(r.model);
   let active = enabled.find((m) => m.keyId === activeKeyId && m.id === model);
 
@@ -183,7 +189,7 @@ function clean(raw: unknown): ModelSettings {
       mode = "custom";
       active = enabled[0];
     } else {
-      mode = "auto"; // Nothing on at all: Auto still answers.
+      mode = "gemini"; // Nothing on at all: the default still answers.
       active = undefined;
     }
   }
@@ -210,7 +216,7 @@ function stored(s: ModelSettings) {
   const { provider: _p, key: _k, ...rest } = s;
   void _p;
   void _k;
-  return rest;
+  return { ...rest, v: SETTINGS_VERSION };
 }
 
 export function loadModelSettings(): ModelSettings {
@@ -395,16 +401,16 @@ export function modelHeaders(): Record<string, string> {
   return modelHeadersFor(loadModelSettings().mode);
 }
 
-/** Headers for `mode`; "custom" sends only the key of the model in use (Auto without one). */
+/** Headers for `mode`; "custom" sends only the key of the model in use (the default without one). */
 export function modelHeadersFor(mode: ModelMode): Record<string, string> {
   const s = loadModelSettings();
-  if (mode !== "custom" || !(s.key && s.model)) return { "X-Model-Mode": mode === "custom" ? "auto" : mode };
+  if (mode !== "custom" || !(s.key && s.model)) return { "X-Model-Mode": mode === "custom" ? "gemini" : mode };
   return { "X-Model-Mode": "custom", "X-LLM-Provider": s.provider, "X-LLM-Key": s.key, "X-LLM-Model": s.model };
 }
 
 /**
  * Which model writes a quiz, picked in the quiz form. "default" is the app's
- * fastest provider; a built-in mode, or any own-key model that is turned on
+ * Gemini 3.5 Flash Lite; a built-in mode, or any own-key model that is turned on
  * (`own:<keyId>:<modelId>`), is tried first. "custom" (older builds) means the
  * chat's own-key model in use. A quiz asked for in the chat uses the chat's
  * own choice.
@@ -424,7 +430,7 @@ export function parseOwnValue(v: string): { keyId: string; modelId: string } | n
 }
 
 function cleanQuizModel(raw: unknown): QuizModel {
-  const ok: QuizModel[] = ["default", "auto", "fast", "balanced", "powerful", "custom"];
+  const ok: QuizModel[] = ["default", "gemini", "auto", "fast", "balanced", "powerful", "custom"];
   if (typeof raw !== "string") return "default";
   if (ok.includes(raw as QuizModel)) return raw as QuizModel;
   return parseOwnValue(raw) ? (raw as QuizModel) : "default";
@@ -460,7 +466,7 @@ export function effectiveQuizModel(s: ModelSettings, q: QuizModel): QuizModel {
 /** What the quiz model menus list: Default, the built-in modes on, then every own-key model on. */
 export function quizModelOptions(s: ModelSettings): { value: QuizModel; label: string }[] {
   return [
-    { value: "default", label: "Default (fastest)" },
+    { value: "default", label: "Default · Gemini 3.5 Flash Lite" },
     ...enabledOptions(s).map((o) => ({
       value: o.value as QuizModel,
       label:

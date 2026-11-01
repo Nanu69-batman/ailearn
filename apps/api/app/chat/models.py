@@ -2,6 +2,9 @@
 
 The learner picks under the chat input:
 
+* ``gemini`` (the default): Gemini 3.5 Flash Lite on the server's Gemini key
+  (``LLM_API_KEY`` / ``LLM_MODEL``) through Google's OpenAI-compatible
+  endpoint, with the free OpenRouter router behind it as the fallback.
 * a mode, ``auto``, ``fast``, ``balanced`` or ``powerful``: free OpenRouter
   models on the server's key. ``auto`` is OpenRouter's own free router
   (``openrouter/free``); the others are ordered lists of free models with
@@ -30,8 +33,8 @@ from fastapi import APIRouter, HTTPException
 
 log = logging.getLogger(__name__)
 
-MODES = ("auto", "fast", "balanced", "powerful", "custom")
-DEFAULT_MODE = "auto"
+MODES = ("gemini", "auto", "fast", "balanced", "powerful", "custom")
+DEFAULT_MODE = "gemini"
 
 #: OpenRouter's router over free models.
 FREE_ROUTER = "openrouter/free"
@@ -39,6 +42,9 @@ FREE_ROUTER = "openrouter/free"
 #: Free models with tool calling, per mode. ``openrouter/free`` closes every
 #: list: if each named model is busy, the router still finds one that is not.
 FREE_MODELS: dict[str, list[str]] = {
+    # Gemini itself comes from the server's Gemini key (targets_for); this is
+    # what stands behind it.
+    "gemini": [FREE_ROUTER],
     "auto": [FREE_ROUTER],
     "fast": [
         "nvidia/nemotron-3.5-lightning:free",
@@ -153,16 +159,25 @@ def reset_choice(token) -> None:
 
 
 def models_for(mode: str) -> list[str]:
-    """The free OpenRouter fallback list for ``mode`` (custom falls back to auto)."""
+    """The free OpenRouter fallback list for ``mode`` (custom falls back to the default)."""
     mode = normalize_mode(mode)
     return list(FREE_MODELS.get(mode, FREE_MODELS[DEFAULT_MODE]))
 
 
-def targets_for(choice: ModelChoice, server_key: str) -> list[Target]:
-    """What to try, in order, for this request."""
+def targets_for(
+    choice: ModelChoice, server_key: str, gemini_key: str = "", gemini_model: str = ""
+) -> list[Target]:
+    """What to try, in order, for this request.
+
+    ``gemini_key``/``gemini_model`` are the server's Gemini key and model; they
+    lead in ``gemini`` mode, and also stand in when a custom choice is
+    incomplete.
+    """
     targets: list[Target] = []
     if choice.custom:
         targets.append(Target(choice.provider, choice.key, choice.model))
+    if gemini_key and gemini_model and (choice.mode == "gemini" or (choice.mode == "custom" and not choice.custom)):
+        targets.append(Target("google", gemini_key, gemini_model))
     if server_key:
         targets.extend(Target("openrouter", server_key, m) for m in models_for(choice.mode))
     return targets

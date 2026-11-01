@@ -28,7 +28,7 @@ def test_modes_use_free_models_only(mode):
 
 
 def test_unknown_mode_and_bad_values_are_ignored():
-    assert m.normalize_mode("ULTRA") == "auto"
+    assert m.normalize_mode("ULTRA") == "gemini"
     assert m.normalize_mode(" Fast ") == "fast"
     assert m.normalize_provider("nope") == ""
     assert m.normalize_key("x" * 500) == ""
@@ -49,6 +49,19 @@ def test_custom_without_a_model_is_just_auto():
     choice = m.ModelChoice(mode="custom", provider="openai", key="sk-1", model="")
     assert [t.model for t in m.targets_for(choice, "srv")] == [m.FREE_ROUTER]
     assert m.targets_for(choice, "") == []
+
+
+def test_default_mode_is_gemini_then_the_free_fallback():
+    choice = m.ModelChoice()
+    assert choice.mode == "gemini"
+    targets = m.targets_for(choice, "srv", "g-key", "gemini-3.5-flash-lite")
+    assert targets[0] == m.Target("google", "g-key", "gemini-3.5-flash-lite")
+    assert targets[0].url == "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    assert [t.model for t in targets[1:]] == [m.FREE_ROUTER]
+    # No Gemini key: the free router alone.
+    assert [t.model for t in m.targets_for(choice, "srv")] == [m.FREE_ROUTER]
+    # Another mode never uses Gemini.
+    assert all(t.provider == "openrouter" for t in m.targets_for(m.ModelChoice(mode="fast"), "srv", "g", "gm"))
 
 
 def test_payload_is_adapted_per_provider():
@@ -76,13 +89,18 @@ def test_middleware_reads_the_headers_per_request():
         headers={"X-Model-Mode": "custom", "X-LLM-Provider": "Groq", "X-LLM-Key": "gsk_1", "X-LLM-Model": "llama"},
     ).json()
     assert got == {"mode": "custom", "provider": "groq", "model": "llama", "key": True}
-    assert client.get("/c").json() == {"mode": "auto", "provider": "", "model": "", "key": False}
+    assert client.get("/c").json() == {"mode": "gemini", "provider": "", "model": "", "key": False}
 
 
 def test_get_agent_uses_the_learners_key(monkeypatch):
     from app.config import settings
 
     monkeypatch.setattr(settings, "openrouter_api_key", "")
+    monkeypatch.setattr(settings, "llm_api_key", "g-key")
+    monkeypatch.setattr(settings, "llm_model", "gemini-3.5-flash-lite")
+    agent = get_agent()  # the default mode: the server's Gemini model
+    assert agent is not None and agent.model == "gemini-3.5-flash-lite"
+    monkeypatch.setattr(settings, "llm_api_key", "")
     assert get_agent() is None
     token = m.set_choice(m.ModelChoice(mode="custom", provider="openai", key="sk-mine", model="gpt-4.1"))
     try:

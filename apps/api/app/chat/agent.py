@@ -1217,13 +1217,16 @@ class LessonAgent:
 def get_agent() -> LessonAgent | None:
     """The agent for this request's model choice (app.chat.models).
 
-    The learner's own key and model first when they chose one, then the
-    server's free OpenRouter models. ``None`` when there is neither.
+    The learner's own key and model first when they chose one; in the default
+    ``gemini`` mode the server's Gemini model; then the server's free
+    OpenRouter models. ``None`` when there is none of these.
     """
     from app.chat.models import current_choice, targets_for
     from app.config import settings
 
-    targets = targets_for(current_choice(), settings.openrouter_api_key)
+    targets = targets_for(
+        current_choice(), settings.openrouter_api_key, settings.llm_api_key, settings.llm_model
+    )
     if not targets:
         return None
     return LessonAgent(

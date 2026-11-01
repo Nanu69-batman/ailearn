@@ -353,7 +353,7 @@ export default function SettingsView() {
       <Section title="Chat model" hint="Which model answers you in Malai and the lesson chat. Only models turned on below are listed.">
         <Select<string>
           label="Chat model"
-          value={active?.value ?? "auto"}
+          value={active?.value ?? "gemini"}
           onChange={(v) => {
             const o = options.find((x) => x.value === v);
             if (o) chooseOption(o);
