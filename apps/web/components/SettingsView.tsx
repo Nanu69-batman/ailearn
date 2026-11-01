@@ -56,6 +56,20 @@ function Switch({ on, onChange, label }: { on: boolean; onChange: (on: boolean) 
   );
 }
 
+const TABS = [
+  { id: "models", label: "Models", hint: "Chat, built-in and quiz models", icon: "M13 2L4 14h7l-1 8 9-12h-7l1-8z" },
+  { id: "keys", label: "API keys", hint: "Your keys and their models", icon: "M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" },
+  { id: "personalization", label: "Personalization", hint: "How Malai talks to you", icon: "M12 3l1.9 5.8H20l-4.9 3.6 1.9 5.8L12 14.6l-5 3.6 1.9-5.8L4 8.8h6.1z" },
+  { id: "account", label: "Account", hint: "Sign-in and profile", icon: "M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" },
+] as const;
+type TabId = (typeof TABS)[number]["id"];
+
+function tabFromHash(): TabId {
+  if (typeof window === "undefined") return "models";
+  const h = window.location.hash.replace("#", "");
+  return (TABS.find((t) => t.id === h)?.id ?? "models") as TabId;
+}
+
 const field =
   "w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-violet-400 focus:ring-4 focus:ring-violet-100";
 
@@ -232,6 +246,19 @@ export default function SettingsView() {
   const [keyModels, setKeyModels] = useState<Record<string, KeyModels>>({});
   const [quizModel, setQuizModel] = useState<QuizModel>("default");
   const [personalizing, setPersonalizing] = useState(false);
+  const [tab, setTab] = useState<TabId>("models");
+
+  // The tab lives in the URL hash, so /settings#keys links straight to it.
+  useEffect(() => {
+    const sync = () => setTab(tabFromHash());
+    sync();
+    window.addEventListener("hashchange", sync);
+    return () => window.removeEventListener("hashchange", sync);
+  }, []);
+  function openTab(id: TabId) {
+    setTab(id);
+    window.history.replaceState(null, "", `#${id}`);
+  }
 
   useEffect(() => setQuizModel(loadQuizModel()), [settings]);
 
@@ -271,12 +298,52 @@ export default function SettingsView() {
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-5 pb-10">
+    <div className="mx-auto flex w-full max-w-5xl flex-col gap-5 pb-10">
       <header>
         <h1 className="text-2xl font-bold tracking-tight text-gray-900">Settings</h1>
         <p className="mt-1 text-sm text-gray-500">Saved to your account, so they follow you to any device you sign in on.</p>
       </header>
 
+      <div className="flex flex-col gap-5 md:flex-row md:items-start">
+        <nav aria-label="Settings sections" className="md:sticky md:top-4 md:w-56 md:shrink-0">
+          <ul role="tablist" aria-orientation="vertical" className="-mx-1 flex gap-1 overflow-x-auto px-1 pb-1 md:mx-0 md:flex-col md:overflow-visible md:px-0 md:pb-0">
+            {TABS.map((t) => {
+              const on = tab === t.id;
+              return (
+                <li key={t.id} className="shrink-0">
+                  <button
+                    type="button"
+                    role="tab"
+                    id={`settings-tab-${t.id}`}
+                    aria-selected={on}
+                    aria-controls={`settings-panel-${t.id}`}
+                    onClick={() => openTab(t.id)}
+                    className={`flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 ${
+                      on ? "bg-violet-50 text-violet-800 ring-1 ring-violet-200" : "text-gray-700 hover:bg-gray-100"
+                    }`}
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={`h-4 w-4 shrink-0 ${on ? "text-violet-600" : "text-gray-400"}`} aria-hidden="true">
+                      <path d={t.icon} />
+                    </svg>
+                    <span className="min-w-0">
+                      <span className="block whitespace-nowrap text-sm font-medium">
+                        {t.label}
+                        {t.id === "keys" && settings.keys.length > 0 && (
+                          <span className="ml-1.5 rounded-full bg-gray-200 px-1.5 text-[10px] font-semibold text-gray-700">{settings.keys.length}</span>
+                        )}
+                      </span>
+                      <span className="hidden truncate text-xs text-gray-500 md:block">{t.hint}</span>
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </nav>
+
+        <div role="tabpanel" id={`settings-panel-${tab}`} aria-labelledby={`settings-tab-${tab}`} className="flex min-w-0 flex-1 flex-col gap-5">
+      {tab === "models" && (
+      <>
       <Section title="Chat model" hint="Which model answers you in Malai and the lesson chat. Only models turned on below are listed.">
         <Select<string>
           label="Chat model"
@@ -314,8 +381,38 @@ export default function SettingsView() {
         {options.length === 0 && (
           <p className="mt-2 text-xs text-amber-700">Everything is turned off, so Auto is used.</p>
         )}
+        <p className="mt-3 text-xs text-gray-500">
+          Models from your own keys are turned on in{" "}
+          <button type="button" onClick={() => openTab("keys")} className="font-medium text-violet-700 hover:underline">
+            API keys
+          </button>
+          .
+        </p>
       </Section>
 
+      <Section title="Quizzes" hint="The model that writes a quiz from the quiz form. A quiz asked for in the chat uses the chat model.">
+        <Select<QuizModel>
+          label="Quiz model"
+          value={quizModel === "custom" && !hasOwnModel ? "default" : quizModel}
+          onChange={(v) => {
+            setQuizModel(v);
+            saveQuizModel(v);
+          }}
+          options={[
+            { value: "default", label: "Default (fastest)" },
+            ...MODEL_MODES.filter((m) => !settings.disabledModes.includes(m.id)).map((m) => ({
+              value: m.id as QuizModel,
+              label: `${m.label} · ${m.hint}`,
+            })),
+            ...(hasOwnModel ? [{ value: "custom" as QuizModel, label: `Own key · ${settings.modelName || settings.model}` }] : []),
+          ]}
+          className="sm:w-80"
+        />
+      </Section>
+      </>
+      )}
+
+      {tab === "keys" && (
       <Section
         title="Your API keys"
         hint="Add keys for any provider, then choose which of their models appear in the model chooser. Keys are saved to your account (only you can read them); only the key of the model in use is sent with a question, and the API never stores it."
@@ -392,27 +489,9 @@ export default function SettingsView() {
           )}
         </div>
       </Section>
+      )}
 
-      <Section title="Quizzes" hint="The model that writes a quiz from the quiz form. A quiz asked for in the chat uses the chat model.">
-        <Select<QuizModel>
-          label="Quiz model"
-          value={quizModel === "custom" && !hasOwnModel ? "default" : quizModel}
-          onChange={(v) => {
-            setQuizModel(v);
-            saveQuizModel(v);
-          }}
-          options={[
-            { value: "default", label: "Default (fastest)" },
-            ...MODEL_MODES.filter((m) => !settings.disabledModes.includes(m.id)).map((m) => ({
-              value: m.id as QuizModel,
-              label: `${m.label} · ${m.hint}`,
-            })),
-            ...(hasOwnModel ? [{ value: "custom" as QuizModel, label: `Own key · ${settings.modelName || settings.model}` }] : []),
-          ]}
-          className="sm:w-80"
-        />
-      </Section>
-
+      {tab === "personalization" && (
       <Section title="Personalization" hint="Your name, what you're studying, how Malai should answer.">
         <button
           type="button"
@@ -422,7 +501,9 @@ export default function SettingsView() {
           Edit personalization
         </button>
       </Section>
+      )}
 
+      {tab === "account" && (
       <Section title="Account">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className="text-sm text-gray-700">
@@ -439,6 +520,9 @@ export default function SettingsView() {
           </Link>
         </div>
       </Section>
+      )}
+        </div>
+      </div>
 
       {personalizing && <PersonalizationModal onClose={() => setPersonalizing(false)} />}
     </div>

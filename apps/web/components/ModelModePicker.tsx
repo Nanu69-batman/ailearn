@@ -178,7 +178,7 @@ export default function ModelModePicker({ className = "", down = false }: { clas
 
           <div className="mt-1 border-t border-gray-100 pt-1">
             <Link
-              href="/settings"
+              href="/settings#keys"
               onClick={() => setOpen(false)}
               className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 focus:bg-gray-50 focus:outline-none"
             >
