@@ -197,7 +197,7 @@ curl -s -D - -o /dev/null -X OPTIONS $A/lms/session -H "Origin: $W" \
 
 # Signed launch via the web app's server route -> 200 with session_id + session_token
 S=$(curl -s -X POST $W/api/launch -H "content-type: application/json" \
-  -d '{"learner_id":"judge","course_id":"demo","resource_id":"res_2e629d682a3d","resource_scope":["res_2e629d682a3d"],"current_time_ms":0,"issued_at":0}')
+  -d '{"learner_id":"demo","course_id":"demo","resource_id":"res_2e629d682a3d","resource_scope":["res_2e629d682a3d"],"current_time_ms":0,"issued_at":0}')
 curl -s -X POST $A/lms/session -H "content-type: application/json" -d "$S"
 
 # Unsigned launch -> 401 {"detail":"invalid launch"}; a tampered signature -> 401 too

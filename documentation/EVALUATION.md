@@ -32,11 +32,11 @@ and the 41-page `UNIT-1-001.pdf` notes, as indexed by the app (263 video pieces:
 ### How it was built
 
 - **29 questions** written from the lecture transcript, the screen
-  descriptions and the PDF (`submission/eval/golden-partial-derivatives.jsonl`).
+  descriptions and the PDF (`documentation/eval/golden-partial-derivatives.jsonl`).
   Each has the moment the learner paused, whether it should be answered, and
   the exact piece(s) of the course that contain the answer.
 - **The course pieces** are exported to
-  `submission/eval/partial-derivatives-chunks.jsonl`, so anyone can re-run this
+  `documentation/eval/partial-derivatives-chunks.jsonl`, so anyone can re-run this
   without our index.
 - **The PDF counts as marked done**, as on the lesson page, so it may be read in
   full beside the video. The video is only readable up to the pause.
@@ -63,7 +63,7 @@ The full answer pipeline, exactly as `POST /chat` runs it: the spoiler guard,
 Gemini (`gemini-3.5-flash-lite`) writing the answer, and the citation check. Embeddings are
 Pinecone's `llama-text-embed-v2`, as on the hosted app. Each question had a fresh
 session. Run on 2026-10-22 (`python -m app.eval.end_to_end`, results in
-`submission/eval-results/partial-derivatives-end-to-end.json`).
+`documentation/eval-results/partial-derivatives-end-to-end.json`).
 
 | Measure | Result | In plain words |
 |---|---|---|
@@ -89,7 +89,7 @@ Embedder: Pinecone `llama-text-embed-v2`, as on the hosted app.
 | Production gap (the live search path, re-checked against the strict rule) | **0** |
 
 Results: `partial-derivatives-pinecone-k5.json` and
-`partial-derivatives-pinecone-k8.json` in `submission/eval-results/`.
+`partial-derivatives-pinecone-k8.json` in `documentation/eval-results/`.
 
 ### What we learned
 
@@ -149,11 +149,11 @@ Results: `partial-derivatives-pinecone-k5.json` and
 ```bash
 cd apps/api
 # Retrieval (needs PINECONE_API_KEY):
-python -m app.eval.harness --golden ../../submission/eval/golden-partial-derivatives.jsonl \
-  --chunks ../../submission/eval/partial-derivatives-chunks.jsonl --embedder pinecone --k 5
+python -m app.eval.harness --golden ../../documentation/eval/golden-partial-derivatives.jsonl \
+  --chunks ../../documentation/eval/partial-derivatives-chunks.jsonl --embedder pinecone --k 5
 # The full answer pipeline (needs LLM_API_KEY and PINECONE_API_KEY):
-python -m app.eval.end_to_end --golden ../../submission/eval/golden-partial-derivatives.jsonl \
-  --chunks ../../submission/eval/partial-derivatives-chunks.jsonl --out <results.json>
+python -m app.eval.end_to_end --golden ../../documentation/eval/golden-partial-derivatives.jsonl \
+  --chunks ../../documentation/eval/partial-derivatives-chunks.jsonl --out <results.json>
 # Re-score saved answers without calling any model:
 python -m app.eval.end_to_end ... --rescore <results.json>
 ```

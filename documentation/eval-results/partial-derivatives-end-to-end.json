@@ -14,8 +14,8 @@
     "refused": 1,
     "supplemental": 6
   },
-  "golden_path": "../../submission/eval/golden-partial-derivatives.jsonl",
-  "chunks_path": "../../submission/eval/partial-derivatives-chunks.jsonl",
+  "golden_path": "../../documentation/eval/golden-partial-derivatives.jsonl",
+  "chunks_path": "../../documentation/eval/partial-derivatives-chunks.jsonl",
   "embedder": "Pinecone Inference llama-text-embed-v2",
   "llm": "gemini-3.5-flash-lite",
   "agent": null,

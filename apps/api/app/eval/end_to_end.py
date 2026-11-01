@@ -29,9 +29,9 @@ golden file without calling any model.
 Usage (from ``apps/api``; needs ``LLM_API_KEY`` and ``PINECONE_API_KEY``)::
 
     python -m app.eval.end_to_end \\
-        --golden ../../submission/eval/golden-partial-derivatives.jsonl \\
-        --chunks ../../submission/eval/partial-derivatives-chunks.jsonl \\
-        --out ../../submission/eval-results/partial-derivatives-end-to-end.json
+        --golden ../../documentation/eval/golden-partial-derivatives.jsonl \\
+        --chunks ../../documentation/eval/partial-derivatives-chunks.jsonl \\
+        --out ../../documentation/eval-results/partial-derivatives-end-to-end.json
 """
 
 from __future__ import annotations

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from app.eval import end_to_end
 from app.eval.harness import CachedEmbedder, load_course_chunks, load_golden, run_eval
 
-EVAL = Path(__file__).resolve().parents[3] / "submission" / "eval"
+EVAL = Path(__file__).resolve().parents[3] / "documentation" / "eval"
 CHUNKS = EVAL / "partial-derivatives-chunks.jsonl"
 GOLDEN = EVAL / "golden-partial-derivatives.jsonl"
 

@@ -9,9 +9,9 @@ tests.
 |---|---|---|---|
 | `test-data/Partial-derivatives.mp4` | Whiteboard lecture video on partial derivatives. 655.5 s (about 11 min), 1280x720 H.264 with AAC audio | 15,403,788 bytes (about 15 MB) | Demo video: transcript, on-screen frames, live frame, stream ingest |
 | `test-data/UNIT-1-001.pdf` | Lecture notes, *System Modelling Techniques - I: Functions of Several Variables, Partial Derivatives, Chain Rule, Implicit Functions, Exact Differentials, and Potential Function Reconstruction* (Prof. Pravin Chandra, GGSIPU). 41 pages with a text layer (about 66,000 extracted characters), so no OCR is needed | 475,959 bytes (about 465 KB) | Companion document for the same subject. Citations carry `page_no` |
-| `submission/eval/golden-partial-derivatives.jsonl` | 29 labelled questions on the two files above (19 answer, 10 withhold) | 29 lines | Evaluation on our own course material ([EVALUATION.md](EVALUATION.md#a-evaluation-on-our-own-course-material)) |
-| `submission/eval/partial-derivatives-chunks.jsonl` | The two files above as the app indexed them: 263 video pieces and 97 PDF pieces, with times and pages | 360 lines | Lets anyone re-run that evaluation without our index |
-| `submission/eval/golden.jsonl`, `submission/eval/fixture-course.md` | A small invented course (*Bioenergetics 101*) and 25 questions on it | 25 lines | Used only by the automated tests (`test_eval_harness.py`); not an evaluation result |
+| `documentation/eval/golden-partial-derivatives.jsonl` | 29 labelled questions on the two files above (19 answer, 10 withhold) | 29 lines | Evaluation on our own course material ([EVALUATION.md](EVALUATION.md#a-evaluation-on-our-own-course-material)) |
+| `documentation/eval/partial-derivatives-chunks.jsonl` | The two files above as the app indexed them: 263 video pieces and 97 PDF pieces, with times and pages | 360 lines | Lets anyone re-run that evaluation without our index |
+| `documentation/eval/golden.jsonl`, `documentation/eval/fixture-course.md` | A small invented course (*Bioenergetics 101*) and 25 questions on it | 25 lines | Used only by the automated tests (`test_eval_harness.py`); not an evaluation result |
 
 The video and the PDF are on the same topic, so one subject can hold both. A
 question at the playhead can then be answered from the lecture so far plus the
@@ -98,7 +98,7 @@ plus vision calls for frames. On the free tier, a fresh full ingest of the
 
 ## The golden set on our own course
 
-`submission/eval/golden-partial-derivatives.jsonl` has 29 questions written
+`documentation/eval/golden-partial-derivatives.jsonl` has 29 questions written
 from the lecture and the PDF notes, in JSON lines. Each records where the learner paused, whether the question should be
 answered, and the exact piece(s) of the course that contain the answer
 (`{"kind": "video", "start_ms", "end_ms"}` or `{"kind": "pdf", "page"}`).

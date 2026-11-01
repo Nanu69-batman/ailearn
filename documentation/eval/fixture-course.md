@@ -47,7 +47,7 @@ segment / page / slide, course `course_fixture`).
 | 7 | Elodea procedure, **exactly 5 ordered steps** |
 | 8 | Summary + quiz key A, C, B |
 
-## Golden-set design notes (`submission/eval/golden.jsonl`, 25 items)
+## Golden-set design notes (`documentation/eval/golden.jsonl`, 25 items)
 
 - 6 `video_before`, 4 `video_later`, 4 `pdf`, 3 `ppt`, 3 `unanswerable`,
   3 `followup` (one chain: `eval-f1 → eval-f2 → eval-f3`), 2 `adversarial`.

@@ -1,6 +1,6 @@
-# Updates since last submission docs (5769644)
+# Changelog (since 5769644)
 
-36 commits, `5769644..21d8cc4`. The rest of `submission/` still describes the state at `5769644`; this file lists what has changed since then.
+36 commits, `5769644..21d8cc4`. The rest of `documentation/` describes the state at `5769644`; this file lists what has changed since then.
 
 ## Accounts and auth
 - **Session token removed entirely.** Google or email sign-in is the only way in. Every session route checks that the signed-in user owns the session (`6e3cf40`, `e70cf5d`).

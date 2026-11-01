@@ -20,18 +20,18 @@ tuned against human relevance judgments. Likewise ``should_refuse`` here is a
 retrieval-score proxy, NOT the production LLM refusal path (prompt +
 allowlist + uncited-answer handling in ``app.chat.service``); treat
 ``refusal_correctness`` as a retrieval-gating signal only. See
-``submission/eval/threshold-note.md`` for a small threshold-sensitivity sweep.
+``documentation/eval/threshold-note.md`` for a small threshold-sensitivity sweep.
 
 Usage (from ``apps/api``)::
 
     python -m app.eval.harness
-    python -m app.eval.harness --golden ../../submission/eval/golden.jsonl --k 5
+    python -m app.eval.harness --golden ../../documentation/eval/golden.jsonl --k 5
 
     # The real demo course (the lecture video + UNIT-1 PDF, exported chunks),
     # with the production embedder (needs PINECONE_API_KEY):
     python -m app.eval.harness \\
-        --golden ../../submission/eval/golden-partial-derivatives.jsonl \\
-        --chunks ../../submission/eval/partial-derivatives-chunks.jsonl \\
+        --golden ../../documentation/eval/golden-partial-derivatives.jsonl \\
+        --chunks ../../documentation/eval/partial-derivatives-chunks.jsonl \\
         --embedder pinecone
 """
 
@@ -67,7 +67,7 @@ GAP_MODE = "chroma"
 DEFAULT_K = 5
 DEFAULT_THRESHOLD = 0.08
 GOLDEN_DEFAULT = (
-    Path(__file__).resolve().parents[4] / "submission" / "eval" / "golden.jsonl"
+    Path(__file__).resolve().parents[4] / "documentation" / "eval" / "golden.jsonl"
 )
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")

@@ -1,4 +1,4 @@
-"""Safety coverage for the two core product invariants (submission/ARCHITECTURE.md, "Safety invariants").
+"""Safety coverage for the two core product invariants (documentation/ARCHITECTURE.md, "Safety invariants").
 
     Rule 6.1  strict timestamp gate -- a video passage is only ever usable
               when ``end_ms IS NOT NULL AND end_ms <= T``.

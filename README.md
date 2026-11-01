@@ -1,13 +1,5 @@
 # Malai Pioneer: AI Learning Assistant
 
-**AHGV BuildVerse 2026, Problem Statement 1.**
-
-> **AHGV evaluators:** every submission deliverable (architecture diagrams, API
-> documentation, sample dataset, evaluation results and testing, deployment
-> instructions) is in the [`submission/`](submission/) folder. Start with its
-> [index](submission/README.md). Setup instructions are in this README under
-> [Quickstart](#quickstart-local).
-
 Malai Pioneer is a lecture-aware AI tutor. A student watches a recorded lecture,
 pauses at any moment, and asks a question. The tutor answers only from what has
 already played: every passage it may use must end at or before the playhead, so
@@ -70,7 +62,7 @@ minutes takes up to a minute while it wakes.
   when `end_ms <= T`, where `T` is the playhead. The filter is inside the vector
   query and is checked again in Python. A passage with no known end is dropped.
   The prompt does not decide this; retrieval does. Eval leakage rate: **0.0**
-  ([submission/EVALUATION.md](submission/EVALUATION.md)).
+  ([documentation/EVALUATION.md](documentation/EVALUATION.md)).
 - **Citations are checked, and clicking one seeks the video.** Every citation
   id the model returns is compared against the passages actually retrieved. An
   answer with no citation, or with an id that was not retrieved, is refused.
@@ -106,7 +98,7 @@ minutes takes up to a minute while it wakes.
   general-knowledge quizzes when the chat is in no subject. Multiple-choice and
   numerical answers are checked in the browser with no model call; only written
   answers are graded by the model
-  ([diagram](submission/ARCHITECTURE.md#d-practice-quizzes)).
+  ([diagram](documentation/ARCHITECTURE.md#d-practice-quizzes)).
 - **Streaming answers.** `POST /chat/stream` (Server-Sent Events) sends status
   lines, then the answer so far with citation markers stripped, then the
   validated `ChatResponse`, which replaces the preview. Gemini streams token by
@@ -226,7 +218,7 @@ flowchart LR
 ```
 
 More diagrams (hosting, ingest pipeline, question flow, practice quizzes, lesson page, accounts, voice) and the safety
-invariants are in [submission/ARCHITECTURE.md](submission/ARCHITECTURE.md).
+invariants are in [documentation/ARCHITECTURE.md](documentation/ARCHITECTURE.md).
 
 ## Tech stack
 
@@ -281,7 +273,7 @@ Open http://localhost:3000. API docs are at http://localhost:8123/docs.
 Locally, the vector store is Chroma under `apps/api/data/` and uploads are kept on
 disk, so no cloud account is needed beyond the Gemini key.
 
-To load the sample lecture, see [submission/DATASET.md](submission/DATASET.md).
+To load the sample lecture, see [documentation/DATASET.md](documentation/DATASET.md).
 
 ### Pages
 
@@ -316,7 +308,7 @@ not implemented yet). With Supabase configured, `/dashboard`, `/ai-tutor/*` and
 intersection only), `general` (a chat in no subject) and `personalization`
 (style only). The stream's final `done` event carries `thread_title` when the
 chat was just named. The full reference is
-[submission/API.md](submission/API.md) and the live `/docs`.
+[documentation/API.md](documentation/API.md) and the live `/docs`.
 
 ## Environment variables
 
@@ -379,8 +371,8 @@ Never commit `apps/api/.env`. It holds the API keys and the launch secret.
 cd apps/api
 python -m pytest -q -p no:warnings        # backend suite (660 tests collected)
 python -m pytest --co -q | tail -1        # confirm it collects with no errors
-# RAG evaluation on the lecture + PDF (needs keys; see submission/EVALUATION.md):
-python -m app.eval.harness --golden ../../submission/eval/golden-partial-derivatives.jsonl --chunks ../../submission/eval/partial-derivatives-chunks.jsonl --embedder pinecone
+# RAG evaluation on the lecture + PDF (needs keys; see documentation/EVALUATION.md):
+python -m app.eval.harness --golden ../../documentation/eval/golden-partial-derivatives.jsonl --chunks ../../documentation/eval/partial-derivatives-chunks.jsonl --embedder pinecone
 
 cd apps/web
 npx tsc --noEmit                          # types
@@ -388,7 +380,7 @@ npm run contract-check                    # client/server contract + rendering s
 ```
 
 Current results and what each test file protects are listed in
-[submission/EVALUATION.md](submission/EVALUATION.md).
+[documentation/EVALUATION.md](documentation/EVALUATION.md).
 
 ## Branches and deploys
 
@@ -402,24 +394,23 @@ built from `dev`), so testing on `dev` never touches the live site.
 (`deploy/seed/chapters/res_2e629d682a3d.json`, 3 chapters, and
 `res_7c1f4a92d0e5.json`, 8 chapters) into the image. The chapters were generated
 against the same Pinecone chunks, so they survive Render restarts with no model
-calls. Full steps are in [submission/DEPLOYMENT.md](submission/DEPLOYMENT.md).
+calls. Full steps are in [documentation/DEPLOYMENT.md](documentation/DEPLOYMENT.md).
 
-## Submission deliverables
+## Documentation
 
-All deliverables are in [submission/](submission/), and its
-[index](submission/README.md) lists them.
+All technical documentation is in [documentation/](documentation/), and its
+[index](documentation/README.md) lists every file.
 
-| BuildVerse requirement | Where |
+| Topic | Where |
 |---|---|
 | Hosted, working application | [Live demo](#live-demo): `https://ailearn-theta.vercel.app` |
 | Source code | This repository (`apps/api` backend, `apps/web` frontend) |
-| System architecture diagram | [submission/ARCHITECTURE.md](submission/ARCHITECTURE.md); PNGs in [submission/diagrams/](submission/diagrams/) |
+| System architecture diagram | [documentation/ARCHITECTURE.md](documentation/ARCHITECTURE.md); PNGs in [documentation/diagrams/](documentation/diagrams/) |
 | README and setup | This file: [Quickstart](#quickstart-local), [Environment variables](#environment-variables) |
-| API documentation | [submission/API.md](submission/API.md); live Swagger UI at `/docs` |
-| Sample dataset | [submission/DATASET.md](submission/DATASET.md) and `test-data/` (lecture video and PDF notes); golden set in `submission/eval/` |
-| Evaluation results and testing | [submission/EVALUATION.md](submission/EVALUATION.md); raw results in `submission/eval-results/` |
-| Demo video | [submission/My Video-2.mp4](submission/My%20Video-2.mp4) |
-| Deployment instructions | [submission/DEPLOYMENT.md](submission/DEPLOYMENT.md) |
+| API documentation | [documentation/API.md](documentation/API.md); live Swagger UI at `/docs` |
+| Sample dataset | [documentation/DATASET.md](documentation/DATASET.md) and `test-data/` (lecture video and PDF notes); golden set in `documentation/eval/` |
+| Evaluation results and testing | [documentation/EVALUATION.md](documentation/EVALUATION.md); raw results in `documentation/eval-results/` |
+| Deployment instructions | [documentation/DEPLOYMENT.md](documentation/DEPLOYMENT.md) |
 
 ## Known limitations
 
