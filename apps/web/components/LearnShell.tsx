@@ -39,7 +39,7 @@ const NAV_ITEMS: ReadonlyArray<NavItem> = [
   { label: "Dashboard", icon: "M3 12l9-9 9 9M5 10v10h5v-6h4v6h5V10", implemented: true, href: DASHBOARD_PATH, activePrefix: DASHBOARD_PATH },
   { label: "My Subjects", icon: "M4 19.5A2.5 2.5 0 016.5 17H20V4H6.5A2.5 2.5 0 004 6.5v13zM4 19.5A2.5 2.5 0 006.5 22H20v-5", implemented: true, href: SUBJECTS_PATH, activePrefix: SUBJECTS_PATH },
   { label: "Malai", icon: "M12 2a7 7 0 00-7 7c0 2.4 1.2 4.5 3 5.7V17a2 2 0 002 2h4a2 2 0 002-2v-2.3c1.8-1.2 3-3.3 3-5.7a7 7 0 00-7-7zM9 22h6", implemented: true, href: MALAI_PATH, activePrefix: MALAI_PATH },
-  { label: "Practice", icon: "M9 11l3 3L22 4M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11", implemented: false },
+  { label: "Practice", icon: "M9 11l3 3L22 4M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11", implemented: true, href: "/practice", activePrefix: "/practice" },
   { label: "Progress", icon: "M3 3v18h18M7 14l4-4 4 4 5-6", implemented: false },
   { label: "Resources", icon: "M4 4h16v16H4zM4 9h16M9 4v5", implemented: false },
 ];
