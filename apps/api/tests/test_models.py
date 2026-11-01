@@ -163,7 +163,27 @@ def test_list_models_google_keeps_the_key_out_of_the_url():
         ]})
 
     got = asyncio.run(m.list_models("google", "AIza1", transport=httpx.MockTransport(handler)))
-    assert got == [{"id": "gemini-3.8-flash", "name": "Gemini 3.8 Flash"}]
+    # Google publishes no prices: free is unknown (None), never guessed.
+    assert got == [{"id": "gemini-3.8-flash", "name": "Gemini 3.8 Flash", "free": None}]
+
+
+def test_list_models_marks_free_openrouter_models():
+    def handler(request):
+        if request.url.path.endswith("/key"):
+            return httpx.Response(200, json={"data": {}})
+        tools = ["tools"]
+        return httpx.Response(200, json={"data": [
+            {"id": "a/zero:free", "name": "Zero", "supported_parameters": tools},
+            {"id": "b/priced-zero", "name": "Priced zero", "supported_parameters": tools,
+             "pricing": {"prompt": "0", "completion": "0"}},
+            {"id": "c/paid", "name": "Paid", "supported_parameters": tools,
+             "pricing": {"prompt": "0.000002", "completion": "0.000008"}},
+            {"id": "d/no-price", "name": "No price", "supported_parameters": tools},
+        ]})
+
+    got = asyncio.run(m.list_models("openrouter", "sk-or-1", transport=httpx.MockTransport(handler)))
+    free = {x["id"]: x["free"] for x in got}
+    assert free == {"a/zero:free": True, "b/priced-zero": True, "c/paid": False, "d/no-price": None}
 
 
 def test_list_models_rejected_key():

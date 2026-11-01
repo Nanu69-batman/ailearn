@@ -1,9 +1,15 @@
 "use client";
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { formatApiError, listProviderModels, type ProviderModel } from "@/lib/api";
-import { MODEL_MODES, PROVIDERS, saveModelSettings, useModelSettings } from "@/lib/modelMode";
-import Select from "@/components/Select";
+import Link from "next/link";
+import {
+  chooseOption,
+  enabledOptions,
+  isOptionActive,
+  saveModelSettings,
+  useModelSettings,
+  type ModelOption,
+} from "@/lib/modelMode";
 
 const CHECK = "M5 12l5 5L20 7";
 
@@ -19,34 +25,40 @@ function Check({ on }: { on: boolean }) {
   );
 }
 
+export function FreeBadge({ free }: { free: boolean | null }) {
+  if (free !== true) return null;
+  return <span className="shrink-0 rounded bg-emerald-50 px-1.5 py-px text-[10px] font-semibold text-emerald-700">Free</span>;
+}
+
 /**
- * The model chooser under the chat input: the four free modes, and an
- * Advanced section to use your own key for any provider and pick one of the
- * models on it. Opens upward over the composer, or downward (`down`) when the
- * composer sits high on the page.
+ * The model chooser under the chat input. It lists only what is turned on in
+ * Settings: the built-in free modes the learner kept, then the models turned
+ * on from each of their own keys. "Free only" hides models that are not known
+ * to be free. Opens upward over the composer, or downward (`down`).
  */
 export default function ModelModePicker({ className = "", down = false }: { className?: string; down?: boolean }) {
   const settings = useModelSettings();
-  const { mode } = settings;
   const [open, setOpen] = useState(false);
-  const [advanced, setAdvanced] = useState(false);
-  const [provider, setProvider] = useState(settings.provider);
-  const [key, setKey] = useState(settings.key);
-  const [models, setModels] = useState<ProviderModel[] | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const rootRef = useRef<HTMLDivElement | null>(null);
   const menuId = useId();
-  const keyId = useId();
 
-  const label =
-    mode === "custom"
-      ? settings.modelName || settings.model
-      : (MODEL_MODES.find((m) => m.id === mode) ?? MODEL_MODES[0]).label;
+  const options = useMemo(() => enabledOptions(settings), [settings]);
+  const active = options.find((o) => isOptionActive(settings, o));
+  const label = active?.label ?? "Auto";
+
+  const shown = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    return options.filter(
+      (o) =>
+        (!settings.freeOnly || o.free === true || isOptionActive(settings, o)) &&
+        (!q || o.label.toLowerCase().includes(q) || o.hint.toLowerCase().includes(q)),
+    );
+  }, [options, filter, settings]);
 
   useEffect(() => {
     if (!open) return;
+    setFilter("");
     function onDown(e: MouseEvent): void {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
     }
@@ -61,43 +73,14 @@ export default function ModelModePicker({ className = "", down = false }: { clas
     };
   }, [open]);
 
-  // Opening the menu starts from what is saved.
-  useEffect(() => {
-    if (!open) return;
-    setProvider(settings.provider);
-    setKey(settings.key);
-    setAdvanced(mode === "custom");
-    setError(null);
-    setFilter("");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
-
-  const shown = useMemo(() => {
-    const q = filter.trim().toLowerCase();
-    const list = models ?? [];
-    return q ? list.filter((m) => m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q)) : list;
-  }, [models, filter]);
-
-  async function loadModels(): Promise<void> {
-    const k = key.trim();
-    if (!k || loading) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const list = await listProviderModels(provider, k);
-      setModels(list);
-      // The key worked: keep it, so the list can be reopened later.
-      saveModelSettings({ provider, key: k });
-      if (list.length === 0) setError("This key has no chat models.");
-    } catch (err) {
-      setModels(null);
-      setError(formatApiError(err));
-    } finally {
-      setLoading(false);
-    }
+  // Group own-key models under their key's name.
+  const groups: { title: string | null; items: ModelOption[] }[] = [];
+  for (const o of shown) {
+    const title = o.kind === "mode" ? null : o.keyLabel;
+    const last = groups[groups.length - 1];
+    if (last && last.title === title) last.items.push(o);
+    else groups.push({ title, items: [o] });
   }
-
-  const placeholder = PROVIDERS.find((p) => p.id === provider)?.placeholder ?? "API key";
 
   return (
     <div ref={rootRef} className={`relative flex items-center gap-2 ${className}`}>
@@ -114,7 +97,7 @@ export default function ModelModePicker({ className = "", down = false }: { clas
           <path d="M13 2L4 14h7l-1 8 9-12h-7l1-8z" />
         </svg>
         <span className="truncate">{label}</span>
-        {mode === "custom" && <span className="shrink-0 rounded bg-violet-50 px-1 text-[10px] font-semibold text-violet-700">Own key</span>}
+        {active?.kind === "own" && <span className="shrink-0 rounded bg-violet-50 px-1 text-[10px] font-semibold text-violet-700">Own key</span>}
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" className={`h-3 w-3 shrink-0 transition ${open ? "rotate-180" : ""}`} aria-hidden="true">
           <path d="M6 9l6 6 6-6" />
         </svg>
@@ -126,149 +109,85 @@ export default function ModelModePicker({ className = "", down = false }: { clas
           role="menu"
           className={`absolute left-0 z-40 ${down ? "top-full mt-2" : "bottom-full mb-2"} flex max-h-[min(34rem,70dvh)] w-80 max-w-[calc(100vw-2rem)] flex-col rounded-2xl border border-gray-200 bg-white p-1.5 shadow-xl`}
         >
+          <div className="flex items-center gap-2 px-1.5 pb-1.5 pt-1">
+            {options.length > 6 && (
+              <input
+                type="search"
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                placeholder="Search models"
+                aria-label="Search models"
+                className="min-w-0 flex-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs text-gray-900 outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-100"
+              />
+            )}
+            <button
+              type="button"
+              role="menuitemcheckbox"
+              aria-checked={settings.freeOnly}
+              onClick={() => saveModelSettings({ freeOnly: !settings.freeOnly })}
+              title="Show only models known to be free"
+              className={`ml-auto shrink-0 rounded-full border px-2.5 py-1 text-xs font-medium transition ${
+                settings.freeOnly
+                  ? "border-emerald-300 bg-emerald-50 text-emerald-700"
+                  : "border-gray-200 text-gray-600 hover:border-emerald-200 hover:text-emerald-700"
+              }`}
+            >
+              {settings.freeOnly ? "✓ Free only" : "Free only"}
+            </button>
+          </div>
+
           <div className="min-h-0 overflow-y-auto">
-            {MODEL_MODES.map((m) => (
-              <button
-                key={m.id}
-                type="button"
-                role="menuitemradio"
-                aria-checked={m.id === mode}
-                onClick={() => {
-                  saveModelSettings({ mode: m.id });
-                  setOpen(false);
-                }}
-                className="flex w-full items-start gap-2.5 rounded-xl px-3 py-2 text-left transition hover:bg-gray-50 focus:bg-gray-50 focus:outline-none"
-              >
-                <Check on={m.id === mode} />
-                <span className="min-w-0">
-                  <span className="block text-sm font-medium text-gray-900">{m.label}</span>
-                  <span className="block text-xs text-gray-500">{m.hint}</span>
-                </span>
-              </button>
+            {groups.map((g) => (
+              <div key={g.title ?? "_modes"} className={g.title ? "mt-1 border-t border-gray-100 pt-1" : ""}>
+                {g.title && (
+                  <p className="truncate px-3 pb-0.5 pt-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">{g.title}</p>
+                )}
+                {g.items.map((o) => {
+                  const on = isOptionActive(settings, o);
+                  return (
+                    <button
+                      key={o.value}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={on}
+                      onClick={() => {
+                        chooseOption(o);
+                        setOpen(false);
+                      }}
+                      className="flex w-full items-start gap-2.5 rounded-xl px-3 py-2 text-left transition hover:bg-gray-50 focus:bg-gray-50 focus:outline-none"
+                    >
+                      <Check on={on} />
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-1.5">
+                          <span className="truncate text-sm font-medium text-gray-900">{o.label}</span>
+                          <FreeBadge free={o.free} />
+                        </span>
+                        <span className="block truncate text-xs text-gray-500">{o.hint}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
             ))}
+            {shown.length === 0 && (
+              <p className="px-3 py-3 text-xs text-gray-500">
+                {settings.freeOnly ? "No free models are turned on." : "No model matches."}
+              </p>
+            )}
+          </div>
 
-            <div className="mt-1 border-t border-gray-100 pt-1">
-              <button
-                type="button"
-                onClick={() => setAdvanced((a) => !a)}
-                aria-expanded={advanced}
-                className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm font-medium text-gray-700 transition hover:bg-gray-50 focus:bg-gray-50 focus:outline-none"
-              >
-                <span>
-                  Advanced
-                  <span className="ml-1.5 text-xs font-normal text-gray-500">your own key</span>
-                </span>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" className={`h-3.5 w-3.5 transition ${advanced ? "rotate-180" : ""}`} aria-hidden="true">
-                  <path d="M6 9l6 6 6-6" />
-                </svg>
-              </button>
-
-              {advanced && (
-                <div className="flex flex-col gap-2 px-3 pb-2 pt-1">
-                  <div className="flex gap-2">
-                    <Select
-                      label="Provider"
-                      value={provider}
-                      onChange={(v) => {
-                        setProvider(v);
-                        setModels(null);
-                        setError(null);
-                      }}
-                      options={PROVIDERS.map((p) => ({ value: p.id, label: p.label }))}
-                      className="w-36 shrink-0"
-                    />
-                    <label htmlFor={keyId} className="sr-only">API key</label>
-                    <input
-                      id={keyId}
-                      type="password"
-                      autoComplete="off"
-                      spellCheck={false}
-                      value={key}
-                      onChange={(e) => {
-                        setKey(e.target.value);
-                        setModels(null);
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          void loadModels();
-                        }
-                      }}
-                      placeholder={placeholder}
-                      className="min-w-0 flex-1 rounded-lg border border-gray-300 px-2.5 py-1.5 text-xs text-gray-900 outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-100"
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => void loadModels()}
-                    disabled={!key.trim() || loading}
-                    className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-violet-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-violet-700 disabled:opacity-50"
-                  >
-                    {loading && <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/60 border-t-transparent" aria-hidden="true" />}
-                    {loading ? "Loading models…" : models ? "Reload models" : "Show models on this key"}
-                  </button>
-                  {error && <p role="alert" className="text-xs text-red-600">{error}</p>}
-
-                  {models && models.length > 0 && (
-                    <>
-                      <input
-                        type="search"
-                        value={filter}
-                        onChange={(e) => setFilter(e.target.value)}
-                        placeholder={`Search ${models.length} models`}
-                        aria-label="Search models"
-                        className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs text-gray-900 outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-100"
-                      />
-                      <ul className="max-h-48 overflow-y-auto rounded-lg border border-gray-100">
-                        {shown.map((m) => {
-                          const on = mode === "custom" && settings.model === m.id && settings.provider === provider;
-                          return (
-                            <li key={m.id}>
-                              <button
-                                type="button"
-                                role="menuitemradio"
-                                aria-checked={on}
-                                onClick={() => {
-                                  saveModelSettings({ mode: "custom", provider, key: key.trim(), model: m.id, modelName: m.name });
-                                  setOpen(false);
-                                }}
-                                className="flex w-full items-start gap-2 px-2.5 py-1.5 text-left hover:bg-gray-50 focus:bg-gray-50 focus:outline-none"
-                              >
-                                <Check on={on} />
-                                <span className="min-w-0">
-                                  <span className="block truncate text-xs font-medium text-gray-900">{m.name}</span>
-                                  {m.name !== m.id && <span className="block truncate text-[11px] text-gray-400">{m.id}</span>}
-                                </span>
-                              </button>
-                            </li>
-                          );
-                        })}
-                        {shown.length === 0 && <li className="px-2.5 py-2 text-xs text-gray-500">No model matches.</li>}
-                      </ul>
-                    </>
-                  )}
-
-                  <div className="flex items-start justify-between gap-2">
-                    <p className="text-[11px] leading-snug text-gray-500">
-                      Kept only in this browser and sent with your questions. If your model fails, the free models answer.
-                    </p>
-                    {settings.key && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          saveModelSettings({ mode: mode === "custom" ? "auto" : mode, key: "", model: "", modelName: "" });
-                          setKey("");
-                          setModels(null);
-                        }}
-                        className="shrink-0 rounded-lg px-2 py-0.5 text-xs text-red-600 hover:bg-red-50"
-                      >
-                        Remove key
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
+          <div className="mt-1 border-t border-gray-100 pt-1">
+            <Link
+              href="/settings"
+              onClick={() => setOpen(false)}
+              className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 focus:bg-gray-50 focus:outline-none"
+            >
+              <span>
+                Manage models
+                <span className="ml-1.5 text-xs font-normal text-gray-500">keys &amp; on/off</span>
+              </span>
+              <span aria-hidden="true">→</span>
+            </Link>
           </div>
         </div>
       )}

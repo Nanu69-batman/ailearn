@@ -234,8 +234,30 @@ _NOT_CHAT = re.compile(
 )
 
 
+def _is_free(provider: str, model_id: str, raw: dict) -> bool | None:
+    """True/False only where the provider publishes prices (OpenRouter); else None.
+
+    None means "unknown", never "paid": other providers' lists carry no
+    pricing, and guessing would mislabel a model the learner pays for.
+    """
+    if provider != "openrouter":
+        return None
+    if model_id.endswith(":free"):
+        return True
+    pricing = raw.get("pricing")
+    if not isinstance(pricing, dict):
+        return None
+    try:
+        return float(pricing.get("prompt", "x")) == 0 and float(pricing.get("completion", "x")) == 0
+    except (TypeError, ValueError):
+        return None
+
+
 async def list_models(provider: str, key: str, *, transport=None) -> list[dict]:
-    """``[{id, name}]`` of the chat models ``key`` can use at ``provider``.
+    """``[{id, name, free}]`` of the chat models ``key`` can use at ``provider``.
+
+    ``free`` is True/False for OpenRouter (from its published pricing) and
+    None for providers whose list says nothing about price.
 
     Raises ``PermissionError`` when the provider rejects the key, and
     ``RuntimeError`` when it cannot be reached.
@@ -285,7 +307,7 @@ async def list_models(provider: str, key: str, *, transport=None) -> list[dict]:
                 continue
             mid = str(m.get("name", "")).removeprefix("models/")
             if mid and not _NOT_CHAT.search(mid):
-                out.append({"id": mid, "name": m.get("displayName") or mid})
+                out.append({"id": mid, "name": m.get("displayName") or mid, "free": None})
     else:
         for m in data.get("data") or []:
             mid = str(m.get("id", ""))
@@ -294,7 +316,11 @@ async def list_models(provider: str, key: str, *, transport=None) -> list[dict]:
             # Only OpenRouter says which models call tools; the agent needs them.
             if provider == "openrouter" and "tools" not in (m.get("supported_parameters") or []):
                 continue
-            out.append({"id": mid, "name": m.get("display_name") or m.get("name") or mid})
+            out.append({
+                "id": mid,
+                "name": m.get("display_name") or m.get("name") or mid,
+                "free": _is_free(provider, mid, m),
+            })
     out.sort(key=lambda m: m["name"].lower())
     return out
 

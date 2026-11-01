@@ -409,6 +409,8 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 export interface ProviderModel {
   id: string;
   name: string;
+  /** True/false where the provider publishes prices (OpenRouter); null = unknown. */
+  free: boolean | null;
 }
 
 /** The chat models a learner's own key can use (GET /llm/models). */
@@ -416,7 +418,8 @@ export async function listProviderModels(provider: string, key: string): Promise
   const res = await apiFetch<{ models: ProviderModel[] }>("/llm/models", {
     headers: { "X-LLM-Provider": provider, "X-LLM-Key": key },
   });
-  return res.models;
+  // An older API sends no `free`: unknown, not paid.
+  return res.models.map((m) => ({ ...m, free: typeof m.free === "boolean" ? m.free : null }));
 }
 
 /**

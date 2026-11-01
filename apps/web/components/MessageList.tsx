@@ -3,6 +3,7 @@
 import type { ChatMessage, Citation, MessageKind } from "../lib/api";
 import CitationBadge, { type CitationBadgeProps } from "./CitationBadge";
 import MarkdownBody from "./MarkdownBody";
+import ThinkingLine from "./ThinkingLine";
 
 interface MessageListProps {
   messages: ChatMessage[];
@@ -160,7 +161,7 @@ export default function MessageList({ messages, loading, preview, onSeek, openDo
               />
             ))}
           </div>
-          {preview?.status && <span className="text-xs text-gray-500">{preview.status}…</span>}
+          <ThinkingLine status={preview?.status} />
         </div>
       )}
     </div>

@@ -424,7 +424,10 @@ export default function QuizPanel({
               onChange={chooseModel}
               options={[
                 { value: "default", label: "Default (fastest)" },
-                ...MODEL_MODES.map((m) => ({ value: m.id as QuizModel, label: `${m.label} · ${m.hint}` })),
+                ...MODEL_MODES.filter((m) => !modelSettings.disabledModes.includes(m.id)).map((m) => ({
+                  value: m.id as QuizModel,
+                  label: `${m.label} · ${m.hint}`,
+                })),
                 ...(hasOwnKey ? [{ value: "custom" as QuizModel, label: `Own key · ${modelSettings.modelName || modelSettings.model}` }] : []),
               ]}
               className={loading ? "pointer-events-none opacity-60" : ""}
