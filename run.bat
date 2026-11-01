@@ -1,6 +1,6 @@
 @echo off
 REM ===================================================================
-REM  Malai Pioneer - one-click launcher for the API and the web server.
+REM  Biryani Builders - one-click launcher for the API and the web server.
 REM
 REM  Starts both, waits until the API is actually healthy, shows you the
 REM  URLs, and stops both again when you press a key.
@@ -26,7 +26,7 @@ set "PYBESTARG="
 
 echo.
 echo  ==========================================================
-echo    Malai Pioneer  -  local launcher
+echo    Biryani Builders  -  local launcher
 echo  ==========================================================
 echo.
 

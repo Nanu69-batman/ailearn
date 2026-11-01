@@ -2,7 +2,7 @@ import { Suspense } from "react";
 import MalaiChatView from "@/components/MalaiChatView";
 
 export const metadata = {
-  title: "Malai — Malai Pioneer",
+  title: "Malai — Biryani Builders",
   description: "Your learning companion: ask anything about your subjects.",
 };
 

@@ -1,6 +1,6 @@
 # Architecture
 
-Malai Pioneer has two deployable parts: a Next.js web app and a FastAPI API.
+Biryani Builders has two deployable parts: a Next.js web app and a FastAPI API.
 The API makes every decision that matters for correctness: which passages a
 learner may see at time `T`, which citations are real, and when to refuse. The
 browser plays media, captures a frame when asked, and posts requests.
@@ -87,7 +87,7 @@ them.
 
 ## The RAG pipeline at a glance
 
-Malai Pioneer is a retrieval-augmented generation (RAG) system. No model is
+Biryani Builders is a retrieval-augmented generation (RAG) system. No model is
 trained or fine-tuned on the course. The lesson files are indexed once, and for
 every question the relevant pieces are retrieved and handed to the model, which
 may answer only from them.

@@ -3,7 +3,7 @@ import { Suspense } from "react";
 import OnboardingForm from "./OnboardingForm";
 
 export const metadata = {
-  title: "Set up your account — Malai Pioneer",
+  title: "Set up your account — Biryani Builders",
 };
 
 export default function OnboardingPage() {

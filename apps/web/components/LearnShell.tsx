@@ -400,7 +400,7 @@ export default function LearnShell({ children }: { children: ReactNode }) {
                 M
               </span>
               <div className="min-w-0 flex-1 animate-[shell-fade_200ms_ease-out]">
-                <p className="truncate text-sm font-bold leading-tight text-white">Malai Pioneer</p>
+                <p className="truncate text-sm font-bold leading-tight text-white">Biryani Builders</p>
                 <p className="text-[11px] text-gray-400">Learning</p>
               </div>
               <button
@@ -502,7 +502,7 @@ export default function LearnShell({ children }: { children: ReactNode }) {
                 </span>
                 <div className="min-w-0">
                   <p className="text-sm font-bold leading-tight text-white">
-                    Malai Pioneer
+                    Biryani Builders
                   </p>
                   <p className="text-[11px] text-gray-400">Learning</p>
                 </div>
@@ -594,7 +594,7 @@ export default function LearnShell({ children }: { children: ReactNode }) {
                 M
               </span>
               {/* Brand label, not a heading: each page owns its own <h1>. */}
-              <span className="text-lg font-bold tracking-tight text-gray-900">Malai Pioneer</span>
+              <span className="text-lg font-bold tracking-tight text-gray-900">Biryani Builders</span>
             </div>
             <div className="hidden flex-1 justify-center sm:flex">
               <label className="sr-only" htmlFor="top-search">Search</label>

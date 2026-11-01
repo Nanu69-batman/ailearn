@@ -73,7 +73,7 @@ export default function ProfileView() {
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-5 pb-10">
       <header>
         <h1 className="text-2xl font-bold tracking-tight text-gray-900">Profile</h1>
-        <p className="mt-1 text-sm text-gray-500">How you appear in Malai Pioneer.</p>
+        <p className="mt-1 text-sm text-gray-500">How you appear in Biryani Builders.</p>
       </header>
 
       <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">

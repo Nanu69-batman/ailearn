@@ -1,7 +1,7 @@
 import Dashboard from "@/components/Dashboard";
 
 export const metadata = {
-  title: "Dashboard — Malai Pioneer",
+  title: "Dashboard — Biryani Builders",
   description: "Your learning activity, what to pick up next, and your subjects.",
 };
 

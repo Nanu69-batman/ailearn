@@ -204,7 +204,7 @@ def request_headers(target: Target) -> dict[str, str]:
     headers = {"Authorization": f"Bearer {target.api_key}"}
     if target.provider == "openrouter":
         headers["HTTP-Referer"] = "https://ailearn-theta.vercel.app"
-        headers["X-Title"] = "Malai Pioneer"
+        headers["X-Title"] = "Biryani Builders"
     return headers
 
 

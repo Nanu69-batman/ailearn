@@ -1,6 +1,6 @@
-# Documentation: Malai Pioneer
+# Documentation: Biryani Builders
 
-Technical documentation for Malai Pioneer. Each topic is listed below with the
+Technical documentation for Biryani Builders. Each topic is listed below with the
 file that covers it.
 
 | Topic | File |

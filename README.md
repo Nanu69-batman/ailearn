@@ -1,6 +1,6 @@
-# Malai Pioneer: AI Learning Assistant
+# Biryani Builders: AI Learning Assistant
 
-Malai Pioneer is a lecture-aware AI tutor. A student watches a recorded lecture,
+Biryani Builders is a lecture-aware AI tutor. A student watches a recorded lecture,
 pauses at any moment, and asks a question. The tutor answers only from what has
 already played: every passage it may use must end at or before the playhead, so
 it never spoils what comes next. Every answer cites the exact moments it relied

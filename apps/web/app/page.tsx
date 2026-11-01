@@ -5,7 +5,7 @@ import { DASHBOARD_PATH, contentPath } from "@/lib/learn";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 
 export const metadata = {
-  title: "Malai Pioneer — Timestamp-aware AI learning assistant",
+  title: "Biryani Builders — Timestamp-aware AI learning assistant",
   description:
     "An AI tutor that follows where you are in a lecture or document, explains in context, quizzes you and cites every answer.",
 };
@@ -160,7 +160,7 @@ export default async function Home() {
             <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 text-sm font-bold text-white">
               M
             </span>
-            <span className="font-semibold tracking-tight">Malai Pioneer</span>
+            <span className="font-semibold tracking-tight">Biryani Builders</span>
           </Link>
           <div className="flex items-center gap-2">
             {signedIn ? (
@@ -342,7 +342,7 @@ export default async function Home() {
             </div>
           </Reveal>
           <footer className="absolute inset-x-0 bottom-6 text-center text-sm text-gray-500">
-            © {new Date().getFullYear()} Malai Pioneer
+            © {new Date().getFullYear()} Biryani Builders
           </footer>
         </Screen>
       </main>

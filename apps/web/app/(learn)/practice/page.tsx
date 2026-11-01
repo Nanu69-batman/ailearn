@@ -1,7 +1,7 @@
 import PracticeView from "@/components/PracticeView";
 
 export const metadata = {
-  title: "Practice — Malai Pioneer",
+  title: "Practice — Biryani Builders",
   description: "Your practice tests, their attempts and progress.",
 };
 

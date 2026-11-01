@@ -1,7 +1,7 @@
 import ProfileView from "@/components/ProfileView";
 
 export const metadata = {
-  title: "Profile — Malai Pioneer",
+  title: "Profile — Biryani Builders",
   description: "Your name, photo and account.",
 };
 

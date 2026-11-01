@@ -1,7 +1,7 @@
 import SettingsView from "@/components/SettingsView";
 
 export const metadata = {
-  title: "Settings — Malai Pioneer",
+  title: "Settings — Biryani Builders",
   description: "Chat model, your own API key, quizzes and personalization.",
 };
 

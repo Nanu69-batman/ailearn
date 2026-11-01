@@ -3,8 +3,8 @@ import { Suspense } from "react";
 import LoginForm from "./LoginForm";
 
 export const metadata = {
-  title: "Sign in — Malai Pioneer",
-  description: "Sign in to Malai Pioneer to keep your subjects, chats and progress.",
+  title: "Sign in — Biryani Builders",
+  description: "Sign in to Biryani Builders to keep your subjects, chats and progress.",
 };
 
 export default function LoginPage() {

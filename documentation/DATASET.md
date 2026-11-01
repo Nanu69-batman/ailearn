@@ -1,6 +1,6 @@
 # Sample dataset
 
-The data used to build, demo and evaluate Malai Pioneer. The first two files are
+The data used to build, demo and evaluate Biryani Builders. The first two files are
 real course material for the live demo, and the evaluation questions are
 written from them. A small invented course is kept only for the automated
 tests.

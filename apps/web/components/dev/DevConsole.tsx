@@ -542,7 +542,7 @@ export default function DevConsole() {
             M
           </span>
           <div>
-            <h1 className="text-sm font-semibold text-[var(--dev-strong)]">Malai Pioneer · Developer view</h1>
+            <h1 className="text-sm font-semibold text-[var(--dev-strong)]">Biryani Builders · Developer view</h1>
             <p className="text-xs text-[var(--dev-faint)]">
               Live pipeline trace: every step the API takes, where it runs, and the data it carries
             </p>

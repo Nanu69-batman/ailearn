@@ -1,7 +1,7 @@
 import SubjectList from "@/components/SubjectList";
 
 export const metadata = {
-  title: "My subjects — Malai Pioneer",
+  title: "My subjects — Biryani Builders",
   description: "All your subjects in one place.",
 };
 

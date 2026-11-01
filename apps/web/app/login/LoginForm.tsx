@@ -106,7 +106,7 @@ export default function LoginForm() {
           M
         </span>
         <div>
-          <p className="text-sm font-bold leading-tight text-gray-900">Malai Pioneer</p>
+          <p className="text-sm font-bold leading-tight text-gray-900">Biryani Builders</p>
           <p className="text-[11px] text-gray-500">AI Learning Assistant</p>
         </div>
       </div>
